@@ -67,4 +67,8 @@ test.skipIf(!existsSync(join(sdk, 'server', 'content', 'scripts')))('the real se
   const text = (s: string) => pages.find(p => p.source === s)!.text;
   expect(text('knowledge/best-armour-bodies.md')).toContain('- Defence 30 to 39: Adamant platebody (Defence 30; defence total 240).');
   expect(text('knowledge/food-healing-part1.md')).toContain('Lobster (Cooking 40)');
+  // A topped pizza is made, not cooked: its level is in pizza.struct.
+  const food = pages.filter(p => p.source.startsWith('knowledge/food-')).map(p => p.text).join('\n');
+  expect(food).toContain('Meat pizza (Cooking 45)');
+  expect(food).toContain('Anchovy pizza (Cooking 55)');
 });

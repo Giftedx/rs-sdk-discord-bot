@@ -138,6 +138,15 @@ export function foodPages(scriptsDir: string, objs: Map<string, ObjConfig>): Pag
     const level = Number(r.get('levelrequired')?.[0]?.[0] ?? NaN);
     for (const c of r.get('cooked') ?? []) if (Number.isFinite(level) && c[0]) cookLevel.set(c[0], Math.max(level, 1));
   }
+  // Food made from parts (a topped pizza) has its level in a .struct: param=product and
+  // param=levelrequired. The higher level wins, as the cook step and the make step both apply.
+  for (const f of walk(join(scriptsDir, 'skill_cooking'), '.struct')) {
+    for (const block of readFileSync(f, 'utf8').split(/^\[/m)) {
+      const product = /^param=product,([a-z0-9_]+)\s*$/m.exec(block)?.[1];
+      const level = Number(/^param=levelrequired,(\d+)\s*$/m.exec(block)?.[1] ?? NaN);
+      if (product && Number.isFinite(level)) cookLevel.set(product, Math.max(level, cookLevel.get(product) ?? 1));
+    }
+  }
   const heals = new Map<number, string[]>();
   const seen = new Set<string>();
   for (const r of readRows(join(scriptsDir, 'player', 'configs', 'consumption'))) {

@@ -415,7 +415,8 @@ export function searchKnowledge(knowledge: KnowledgeChunk[] | KnowledgePack, que
       });
       // A long generated page splits into parts, best items first: on a near tie, part 1 wins.
       const part = Number(/-part(\d+)\.md$/.exec(c.source)?.[1] ?? 1);
-      return { c, score: score * (1 - 0.08 * (part - 1)) };
+      // At least 0.5: a part past 7 must stay findable.
+      return { c, score: score * Math.max(0.5, 1 - 0.08 * (part - 1)) };
     })
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
