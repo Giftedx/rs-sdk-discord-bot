@@ -13,6 +13,9 @@ Description=rs-sdk Discord bot
 After=network-online.target rs-gamelink.service
 Wants=network-online.target rs-gamelink.service
 OnFailure=rs-alert@%n.service
+# A crash loop stops after 3 failed starts in 10 minutes, instead of going on for ever.
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=simple

@@ -1,4 +1,4 @@
-# Posts a warning to the Discord channel of the bot when the unit %i fails.
+# Posts a warning to the private operator channel (ALERT_CHANNEL_ID) when the unit %i fails.
 # The bot units start it with OnFailure=rs-alert@%n.service.
 [Unit]
 Description=Discord warning for the failure of %i
@@ -12,3 +12,4 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=read-only
+ReadWritePaths=/opt/rs-discord-bot/data

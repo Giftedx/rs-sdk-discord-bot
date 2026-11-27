@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Posts one line to the Discord channel of the bot when a unit fails.
+# Posts one line to a private operator channel (ALERT_CHANNEL_ID) when a unit fails, at most
+# once per unit per hour. Without ALERT_CHANNEL_ID, it posts nothing.
 # deploy/systemd/rs-alert@.service runs it as rsbot through OnFailure= of the bot units.
 #   server-alert.sh <unit name>
-# It reads DISCORD_TOKEN and DISCORD_CHANNEL_ID from ENV_FILE (default
+# It reads DISCORD_TOKEN and ALERT_CHANNEL_ID (a private operator channel) from ENV_FILE (default
 # /opt/rs-discord-bot/secrets/bot.env) without running the file, and sends the token only in
 # an HTTP header from a file, never on a command line.
 set -euo pipefail
@@ -21,8 +22,20 @@ read_env() {
 }
 
 token="$(read_env DISCORD_TOKEN)"
-channel="$(read_env DISCORD_CHANNEL_ID)"
-[ -n "$token" ] && [[ "$channel" =~ ^[0-9]{17,20}$ ]] || { echo "rs-alert: DISCORD_TOKEN or DISCORD_CHANNEL_ID is missing" >&2; exit 1; }
+# Alerts go to a private operator channel only, never to the channel where people play.
+channel="$(read_env ALERT_CHANNEL_ID)"
+if [ -z "$channel" ]; then echo "rs-alert: $unit failed; ALERT_CHANNEL_ID is not set, so no Discord message"; exit 0; fi
+[ -n "$token" ] && [[ "$channel" =~ ^[0-9]{17,20}$ ]] || { echo "rs-alert: DISCORD_TOKEN or ALERT_CHANNEL_ID is not valid" >&2; exit 1; }
+if [ "$channel" = "$(read_env DISCORD_CHANNEL_ID)" ]; then echo "rs-alert: ALERT_CHANNEL_ID is the player channel; no Discord message" >&2; exit 0; fi
+
+# At most one message per unit per hour.
+stamp="$APP_DIR/data/alert-$unit.last"
+now="$(date +%s)"
+if [ -f "$stamp" ] && [ $(( now - $(cat "$stamp" 2>/dev/null || echo 0) )) -lt 3600 ]; then
+  echo "rs-alert: $unit failed again; a message was sent less than an hour ago"
+  exit 0
+fi
+echo "$now" > "$stamp"
 
 hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT
 chmod 600 "$hdr"

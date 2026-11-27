@@ -32,6 +32,7 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 | `GUILDS_FILE` | | | A JSON file with one entry per channel. With it, the bot ignores `RS_ACCOUNT`, `RS_PASSWORD`, `DISCORD_CHANNEL_ID`, `DISCORD_ALLOWED_ROLE_ID` and `DISCORD_ALLOW_EVERYONE`. See "Several channels". |
 | `DISCORD_ALLOWED_ROLE_ID` | yes, or the next row | | Only members with this role can give and stop instructions. |
 | `DISCORD_ALLOW_EVERYONE` | | | `1` lets every member of the channel give and stop instructions. |
+| `ALERT_CHANNEL_ID` | | unset | A private channel for the operator. When a unit fails, `rs-alert@.service` posts one warning there, at most once per unit per hour. Never the player channel: the script refuses `DISCORD_CHANNEL_ID`. Unset: no Discord warning, only the journal. |
 | `ANTHROPIC_API_KEY` | yes | | The API key. |
 | `AI_MODEL` | | `claude-opus-5-5` | The model ID. `claude-sonnet-5-5` costs half as much per token. |
 | `AI_EFFORT` | | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher effort costs more. |
@@ -214,9 +215,10 @@ Setup, as root on the server. Do "The box user" first: it installs `/usr/local/b
    install -d -m 700 -o rsgame -g rsgame /home/rsgame/.cache
    ```
 
-2. Check that `rsgame` can read the repository but not `secrets/`. "The box user" already set `/opt/rs-discord-bot` to mode 751, so other users can open the files that all users may read:
+2. Set `/opt/rs-discord-bot` to mode 755, and check that `rsgame` can read the repository but not `secrets/`. Bun must be able to list that directory: with mode 751 it crashes with a segmentation fault while it loads `puppeteer` (Bun 1.3.14). `secrets/` stays 700 and `server.env` stays 640:
 
    ```bash
+   chmod 755 /opt/rs-discord-bot
    sudo -u rsgame test -r /opt/rs-discord-bot/src/gamelink/main.ts && echo repo-ok
    sudo -u rsgame test -r /opt/rs-discord-bot/secrets/bot.env || echo secrets-closed
    ```

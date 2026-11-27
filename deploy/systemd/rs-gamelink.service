@@ -11,6 +11,9 @@ Description=rs-sdk gamelink (game tabs and proxy of the Discord bot)
 After=network-online.target
 Wants=network-online.target
 OnFailure=rs-alert@%n.service
+# A crash loop stops after 3 failed starts in 10 minutes, instead of going on for ever.
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -18,6 +21,9 @@ User=rsgame
 # The primary group is the shared group rsgate, so /run/rs-gamelink and the socket get the group
 # rsgate. The bot user rsbot is in rsgate; no other user can open the socket.
 Group=rsgate
+# With Group=rsgate the process has only the groups that list rsgame as a member. Its own group
+# rsgame is not one of them, and it needs it to read /etc/rs-gamelink/gamelink.env.
+SupplementaryGroups=rsgame
 RuntimeDirectory=rs-gamelink
 RuntimeDirectoryMode=0750
 UMask=0007
