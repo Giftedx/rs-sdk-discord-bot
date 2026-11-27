@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createKnowledgePack, createStore, createWikiIndex, DEFAULT_PERSONALITY, loadWikiBodies, MAX_DIARY_LINES, searchKnowledge, StoreError, wikiBodyText } from './store';
+import { createKnowledgePack, createStore, createWikiIndex, DEFAULT_PERSONALITY, loadWikiBodies, MAX_DIARY_LINES, searchKnowledge, StoreError, wikiBodyText, wikiHeadingText } from './store';
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
@@ -90,6 +90,39 @@ describe('wiki knowledge', () => {
     await pack.bodyReady;
     expect(pack.wiki.search('shops in port sarim', 10).map(h => h.source)).toContain('wiki/shops/gerrants-fishy-business.md');
     expect(pack.wiki.search('where to buy a fishing net')[0]!.source).toMatch(/fishing-net\.md$/);
+    // A skill-page heading ("## Axes") finds the page with the table of all the axes.
+    expect(pack.wiki.search('which axe can I use')[0]!.source).toBe('wiki/skills/woodcutting.md');
+    expect(pack.wiki.search('pickaxe')[0]!.source).toBe('wiki/skills/mining.md');
+    expect(pack.wiki.search('bronze axe')[0]!.source).toBe('wiki/items/bronze-axe.md');
+    expect(searchKnowledge(pack, 'which axe can I use')).toContain('[knowledge/woodcutting-axes.md]');
+  });
+
+  test('a page in knowledge/ is a learning, with its path from the repository root', () => {
+    const root = fixture();
+    mkdirSync(join(root, 'knowledge'));
+    writeFileSync(join(root, 'knowledge', 'axes.md'), '# Axes\nNo axe needs a Woodcutting level.');
+    const out = searchKnowledge(createKnowledgePack(root), 'woodcutting level');
+    expect(out).toContain('[knowledge/axes.md]\n# Axes\nNo axe needs a Woodcutting level.');
+  });
+});
+
+describe('wiki skill headings', () => {
+  const skill = ['# Woodcutting', '## Axes', '| Rune | 41 |', '## Trees', '### Wilderness Course (Level 52+)', '## Notes', '## Training Tips'].join('\n');
+
+  test('wikiHeadingText keeps the topic words of the headings', () => {
+    expect(wikiHeadingText(skill)).toBe('axe tree wilderness course');
+  });
+
+  test('a heading word of a skill page beats one title word of an item page', async () => {
+    const pages = [
+      { source: 'wiki/items/bronze-axe.md', file: '/i' },
+      { source: 'wiki/skills/woodcutting.md', file: '/s' },
+    ];
+    const text: Record<string, string> = { '/i': '# Bronze axe\n- Sold by: [Bob\'s Brilliant Axes](x.md)', '/s': skill };
+    const idx = createWikiIndex(pages, f => text[f] ?? '');
+    expect(await loadWikiBodies(idx, pages, async f => text[f] ?? '')).toBe(1);
+    expect(idx.search('axe').map(h => h.source)).toEqual(['wiki/skills/woodcutting.md', 'wiki/items/bronze-axe.md']);
+    expect(idx.search('bronze axe')[0]!.source).toBe('wiki/items/bronze-axe.md');
   });
 });
 

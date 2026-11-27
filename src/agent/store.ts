@@ -152,6 +152,12 @@ export function knowledgeFiles(rootDir: string): string[] {
   return files.sort();
 }
 
+/** The pages of this repository's knowledge/ folder: facts checked against the server code. */
+export function ownKnowledgeFiles(rootDir: string): string[] {
+  const dir = join(rootDir, 'knowledge');
+  return existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.md')).map(f => join(dir, f)).sort() : [];
+}
+
 const STOP_WORDS = new Set(['by', 'to','in', 'at', 'of', 'is', 'an', 'do', 'me', 'my', 'the', 'and', 'for', 'how', 'who', 'what', 'where', 'which', 'can', 'get', 'buy', 'sell', 'sells', 'find', 'with', 'from', 'are', 'any', 'does', 'near', 'best', 'its', 'you', 'there']);
 // A plural "s" is cut so that "axes" finds "axe".
 const stem = (t: string) => (t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t);
@@ -166,7 +172,7 @@ function queryTerms(query: string): string[] {
 interface WikiEntry { source: string; file: string; words: string[]; }
 
 /** A wiki page for the index. `body` is the short text of its body lines (see wikiBodyText). */
-export interface WikiPage { source: string; file: string; body?: string }
+export interface WikiPage { source: string; file: string; body?: string; headings?: string }
 
 const LINK_TEXT = /\[([^\]]+)\]/g;
 /**
@@ -184,6 +190,21 @@ export function wikiBodyText(text: string): string {
     }
   }
   return out.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+// Heading words of a skill page that name no topic.
+const GENERIC_HEADING = new Set(['note', 'training', 'tip', 'special']);
+/**
+ * The topic words of the "##" and "###" headings of a skill page, such as "Axes" and "Trees" on
+ * the Woodcutting page. A search for "axe" then finds the page with the axe table.
+ */
+export function wikiHeadingText(text: string): string {
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    const m = /^#{2,3} (.+)/.exec(line);
+    if (m) out.push(...textWords(m[1]!.replace(/\(.*?\)/g, '')).filter(w => !GENERIC_HEADING.has(w) && !/^\d+$/.test(w)));
+  }
+  return out.join(' ');
 }
 
 // Stemmed category words and the wiki folder of each.
@@ -207,13 +228,23 @@ export function createWikiIndex(pages: WikiPage[], read: (file: string) => strin
       else if (list[list.length - 1] !== i) list.push(i);
     }
   };
-  pages.forEach((p, i) => { if (p.body) addBody(i, p.body); });
+  const heads = new Map<string, number[]>();
+  const addHeadings = (i: number, text: string) => {
+    for (const w of new Set(textWords(text))) {
+      const list = heads.get(w);
+      if (!list) heads.set(w, [i]);
+      else if (list[list.length - 1] !== i) list.push(i);
+    }
+  };
+  pages.forEach((p, i) => { if (p.body) addBody(i, p.body); if (p.headings) addHeadings(i, p.headings); });
   return {
     size: entries.length,
     /** The number of distinct words in the body index. */
     get bodyWords() { return body.size; },
     /** Adds the body text (see wikiBodyText) of page number i, in the order of `pages`. */
     addBody(i: number, text: string): void { if (i >= 0 && i < entries.length && text) addBody(i, text); },
+    /** Adds the heading words (see wikiHeadingText) of page number i, in the order of `pages`. */
+    addHeadings(i: number, text: string): void { if (i >= 0 && i < entries.length && text) addHeadings(i, text); },
     /** The best pages for the query, most specific first. */
     search(query: string, limit = 3): KnowledgeChunk[] {
       let terms = queryTerms(query).map(stem);
@@ -224,18 +255,24 @@ export function createWikiIndex(pages: WikiPage[], read: (file: string) => strin
       if (terms.length === 0) return [];
       const bodyHits = new Map<number, number>();
       for (const t of terms) for (const i of body.get(t) ?? []) bodyHits.set(i, (bodyHits.get(i) ?? 0) + 1);
+      const headHits = new Map<number, number>();
+      for (const t of terms) for (const i of heads.get(t) ?? []) headHits.set(i, (headHits.get(i) ?? 0) + 1);
       const scored: { e: WikiEntry; score: number }[] = [];
       entries.forEach((e, i) => {
         let hit = 0;
         for (const w of e.words) if (terms.includes(w)) hit++;
         const b = bodyHits.get(i) ?? 0;
-        if (hit === 0 && b === 0) return;
+        const h = headHits.get(i) ?? 0;
+        if (hit === 0 && b === 0 && h === 0) return;
         // All words of the title are in the query: an exact page, such as "bronze axe". Less
         // when the query has more words: "fishing net" is not the Fishing skill page.
         const exact = hit > 0 && hit === e.words.length ? (hit === terms.length ? 15 : 5) : 0;
         const inDir = dirs.size > 0 && dirs.has(e.source.split('/')[1] ?? '') ? 6 : 0;
-        // A body word counts less than a title word.
-        scored.push({ e, score: hit * 10 + exact - (hit > 0 ? e.words.length : 0) + b * 4 + inDir });
+        // A body word counts less than a title word. A skill-page heading word ("axe" on the
+        // Woodcutting page) counts more than one title word plus one body word ("axe" in
+        // "bronze axe", sold by "Bob's Brilliant Axes"): that page has the table of all the axes.
+        // An exact title ("bronze axe") still comes first.
+        scored.push({ e, score: hit * 10 + exact - (hit > 0 ? e.words.length : 0) + b * 4 + h * 15 + inDir });
       });
       scored.sort((a, b) => b.score - a.score || a.e.source.localeCompare(b.e.source));
       const out: KnowledgeChunk[] = [];
@@ -256,17 +293,24 @@ export type WikiIndex = ReturnType<typeof createWikiIndex>;
  */
 export interface KnowledgePack { learnings: KnowledgeChunk[]; wiki: WikiIndex; bodyReady?: Promise<number>; }
 
-/** Reads the item and shop pages in parallel and adds their body lines to the index. */
+/**
+ * Reads the item and shop pages in parallel and adds their body lines to the index. Also reads
+ * the skill pages and adds their heading words. Returns the number of item and shop pages with
+ * body lines.
+ */
 export async function loadWikiBodies(wiki: WikiIndex, pages: WikiPage[], read: (file: string) => Promise<string> = f => readFile(f, 'utf8'), concurrency = 32): Promise<number> {
-  const todo = pages.map((p, i) => ({ p, i })).filter(({ p }) => /^wiki\/(items|shops)\//.test(p.source));
+  const todo = pages.map((p, i) => ({ p, i })).filter(({ p }) => /^wiki\/(items|shops|skills)\//.test(p.source));
   let next = 0;
   let found = 0;
   const worker = async () => {
     while (next < todo.length) {
       const { p, i } = todo[next++]!;
+      const skill = p.source.startsWith('wiki/skills/');
       let text = '';
-      try { text = wikiBodyText(await read(p.file)); } catch { /* the page was removed */ }
-      if (text) { wiki.addBody(i, text); found++; }
+      try { const raw = await read(p.file); text = skill ? wikiHeadingText(raw) : wikiBodyText(raw); } catch { /* the page was removed */ }
+      if (!text) continue;
+      if (skill) wiki.addHeadings(i, text);
+      else { wiki.addBody(i, text); found++; }
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, todo.length) }, worker));
@@ -283,14 +327,18 @@ function walkMd(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Loads the learnings and indexes every Markdown page under vendor/rs-sdk/wiki. */
+/**
+ * Loads the learnings (vendor/rs-sdk/learnings and this repository's knowledge/ folder) and
+ * indexes every Markdown page under vendor/rs-sdk/wiki.
+ */
 export function createKnowledgePack(rootDir: string): KnowledgePack {
   const base = join(rootDir, 'vendor', 'rs-sdk');
   const pages: WikiPage[] = walkMd(join(base, 'wiki')).sort().map(file => ({ source: toPosix(relative(base, file)), file }));
   const wiki = createWikiIndex(pages);
   // The body index loads in the background: a synchronous read of 1700 small files is slow on some disks.
   const bodyReady = loadWikiBodies(wiki, pages).catch(() => 0);
-  return { learnings: loadKnowledge(knowledgeFiles(rootDir), base), wiki, bodyReady };
+  const learnings = [...loadKnowledge(ownKnowledgeFiles(rootDir), rootDir), ...loadKnowledge(knowledgeFiles(rootDir), base)];
+  return { learnings, wiki, bodyReady };
 }
 
 const isPack = (k: KnowledgeChunk[] | KnowledgePack): k is KnowledgePack => !Array.isArray(k);

@@ -8,7 +8,12 @@ The game is the RuneScape-style server of [rs-sdk](https://github.com/MaxBittker
 
 ## What it looks like
 
-> **you:** can you chop some trees and bank the logs?\n> **bot:** reacts ✅ and starts. Or ⏳ if another request is running.\n> **you:** what are you doing?\n> **bot:** a short answer about the current task.\n> **you:** stop that\n> **bot:** stops the task.
+> **you:** can you chop some trees and bank the logs?\
+> **bot:** reacts ✅ and starts. Or ⏳ if another request is running.\
+> **you:** what are you doing?\
+> **bot:** a short answer about the current task.\
+> **you:** stop that\
+> **bot:** stops the task.
 
 Around the chat, the bot keeps:
 

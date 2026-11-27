@@ -186,6 +186,8 @@ export function systemPrompt(apiReference: string): string {
 
 How to work:
 - Read your notes first if the instruction may relate to earlier work. Check game_state before you act.
+- For a game fact (an item, a level, a requirement, a drop, a price, a place), call search_knowledge first and answer from what it returns. This server is the 2004 game, not today's Old School RuneScape: many items, levels and rules are different, and some items (such as the dragon axe) do not exist. Do not fill a gap from memory. If the knowledge pack and the game state do not tell you, say that you do not know.
+- A knowledge/ page was checked against the server code. When it disagrees with a wiki page, the knowledge/ page is correct.
 - Prefer saved scripts. Test new code with a short run_code, then save the code that works.
 - A long task (such as training a skill for a while) is one job with a loop and a time limit, not many short jobs. Each of your turns costs money; a job costs nothing while it runs.
 - Read the job output. If an action fails, read the reason, fix the code, and try again. After 3 failed tries of one approach, try another approach or finish and say what blocks you.
