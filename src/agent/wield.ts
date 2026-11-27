@@ -121,7 +121,26 @@ const STYLES = [
 ] as const;
 const TIERS = [1, 5, 10, 20, 30, 40, 50, 60];
 
-const METAL = /^(bronze|iron|steel|black|mithril|adamant|adamnt|adam|rune|dragon)\s+(.+)$/i;
+/**
+ * The search shows at most 1500 characters of a page, so a longer page splits into parts. A page
+ * is "## title", "", one head line, "", then one row per line; each part keeps the title and head.
+ */
+export function fitPage(p: { source: string; text: string }): { source: string; text: string }[] {
+  if (p.text.length <= 1_450) return [p];
+  const [title, , head, , ...rows] = p.text.split('\n');
+  const parts: string[][] = [[]];
+  for (const row of rows) {
+    const cur = parts[parts.length - 1]!;
+    if (cur.length && [title, head, ...cur, row].join('\n').length > 1_350) parts.push([row]);
+    else cur.push(row);
+  }
+  return parts.map((part, i) => ({
+    source: p.source.replace(/\.md$/, `-part${i + 1}.md`),
+    text: [`${title} (part ${i + 1} of ${parts.length})`, '', head!, '', ...part].join('\n'),
+  }));
+}
+
+export const METAL = /^(bronze|iron|steel|black|mithril|adamant|adamnt|adam|rune|dragon)\s+(.+)$/i;
 const METALS = ['bronze', 'iron', 'steel', 'black', 'mithril', 'adamant', 'rune', 'dragon'];
 const POISON = /\s*\((p|kp|p\+|p\+\+)\)$/i;
 const RANGED = new Set(['weapon_thrown', 'weapon_javelin', 'weapon_bow', 'weapon_crossbow']);
@@ -164,21 +183,7 @@ export function weaponCatalogPages(objs: Map<string, ObjConfig>, bySym: Map<stri
   const byLevel = (a: W, b: W) => a.level - b.level || a.name.localeCompare(b.name);
   const head = 'From the server item configs and wield checks. Speed: ticks per attack, lower is faster. A higher bonus is better.';
   const out: { source: string; text: string }[] = [];
-  // The search shows at most 1500 characters of a page: a longer page splits into parts.
-  const pages = { push(p: { source: string; text: string }) {
-    if (p.text.length <= 1_450) { out.push(p); return; }
-    const [title, , , , ...rows] = p.text.split('\n');
-    const parts: string[][] = [[]];
-    for (const row of rows) {
-      const cur = parts[parts.length - 1]!;
-      if (cur.length && [title, head, ...cur, row].join('\n').length > 1_350) parts.push([row]);
-      else cur.push(row);
-    }
-    parts.forEach((part, i) => out.push({
-      source: p.source.replace(/\.md$/, `-part${i + 1}.md`),
-      text: [`${title} (part ${i + 1} of ${parts.length})`, '', head, '', ...part].join('\n'),
-    }));
-  } };
+  const pages = { push(p: { source: string; text: string }) { out.push(...fitPage(p)); } };
   for (const metal of METALS) {
     for (const ranged of [false, true]) {
       const items = list.filter(w => w.metal === metal && w.ranged === ranged).sort((a, b) => a.kind.localeCompare(b.kind));

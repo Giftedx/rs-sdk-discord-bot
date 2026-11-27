@@ -47,5 +47,6 @@ describe('classifyMessage', () => {
     const p = addresseePrompt(input);
     expect(p).toContain('A question or request about the game that uses "you" or "your" for the account');
     expect(p).toContain('A follow-up from a person whom the bot answered in the recent lines, on the same subject, is for the bot.');
+    expect(p).toContain('A plain request for game information ("list all the rune armour"');
   });
 });

@@ -98,7 +98,7 @@ describe('wiki knowledge', () => {
     const firstLearning = (q: string) => /^\[((?:learnings|knowledge)\/[^\]]+)\]$/m.exec(searchKnowledge(pack, q))?.[1];
     expect(firstLearning('where is runite ore')).toBe('knowledge/mining-and-smithing.md');
     expect(firstLearning('harralander herblore level')).toBe('knowledge/crafting-fletching-firemaking-herblore.md');
-    expect(firstLearning('what defence for rune platebody')).toBe('knowledge/armour-and-weapon-levels.md');
+    expect(firstLearning('what defence for rune platebody')).toBe('knowledge/armour-rune.md');
     expect(firstLearning('walk to a far location')).toBe('learnings/walking.md');
     expect(firstLearning('how to open the bank')).toBe('learnings/banking.md');
     // The weapon tables made from the item configs.
@@ -109,6 +109,11 @@ describe('wiki knowledge', () => {
     expect(firstLearning('best scimitar for attack 56')).toBe('knowledge/weapons-scimitar.md');
     expect(firstLearning('which bows can I use')).toBe('knowledge/weapons-bows.md');
     expect(searchKnowledge(pack, 'what sword can you use at your current stats')).toContain('- Rune sword: Attack 40;');
+    // The armour and food pages; "bodies" in a file name finds "body".
+    expect(searchKnowledge(pack, 'what body armour can you wear at your current defence')).toContain('[knowledge/best-armour-bodies.md]');
+    expect(firstLearning('list all the rune armour')).toBe('knowledge/armour-rune.md');
+    expect(firstLearning('best helmet you can wear')).toBe('knowledge/best-armour-helmets.md');
+    expect(firstLearning('what food heals the most')).toBe('knowledge/food-healing-part1.md');
     expect(searchKnowledge(pack, 'best slash weapon')).toContain('- Attack 40 to 59: Rune 2h sword (+69 slash, +70 strength, speed 7; needs Attack 40).');
     // The wield check from the server code is at the top of the item page.
     expect(searchKnowledge(pack, 'rune axe')).toContain('[wiki/items/rune-axe.md]\n# Rune axe\n\n> Server code: to wield or wear this item needs Attack 40.');

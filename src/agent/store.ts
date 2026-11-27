@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
+import { armourPages, foodPages } from './catalog';
 import { meleeWeaponPages, readWieldRules, weaponCatalogPages, wieldNote, type WieldRules } from './wield';
 
 export const SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
@@ -160,8 +161,9 @@ export function ownKnowledgeFiles(rootDir: string): string[] {
 }
 
 const STOP_WORDS = new Set(['by', 'to','in', 'at', 'of', 'is', 'an', 'do', 'me', 'my', 'the', 'and', 'for', 'how', 'who', 'what', 'where', 'which', 'can', 'get', 'buy', 'sell', 'sells', 'find', 'with', 'from', 'are', 'any', 'does', 'near', 'best', 'its', 'you', 'there']);
-// A plural "s" is cut so that "axes" finds "axe".
-const stem = (t: string) => (t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t);
+// A plural is cut so that "axes" finds "axe" and "bodies" finds "body".
+const stem = (t: string) => (t.length > 4 && t.endsWith('ies') ? `${t.slice(0, -3)}y`
+  : t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t);
 // Lower case words without stop words. When only stop words remain, all words stay.
 function queryTerms(query: string): string[] {
   const words = query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1);
@@ -348,12 +350,27 @@ export function createKnowledgePack(rootDir: string): KnowledgePack {
   try {
     const r = readWieldRules(base);
     wield = r.rules;
-    if (r.objs.size > 0) learnings.push(...meleeWeaponPages(r.objs, r.bySym), ...weaponCatalogPages(r.objs, r.bySym));
+    if (r.objs.size > 0) {
+      learnings.push(...meleeWeaponPages(r.objs, r.bySym), ...weaponCatalogPages(r.objs, r.bySym), ...armourPages(r.objs, r.bySym),
+        ...foodPages(join(base, 'server', 'content', 'scripts'), r.objs));
+    }
   } catch { /* no server scripts: the wiki pages stay as they are */ }
   return { learnings, wiki, bodyReady, wield };
 }
 
 const isPack = (k: KnowledgeChunk[] | KnowledgePack): k is KnowledgePack => !Array.isArray(k);
+
+// The words of a learning chunk and their stems, made once per chunk: a search reads them for every term.
+const wordCache = new WeakMap<KnowledgeChunk, { words: string[]; stems: string[] }>();
+function chunkWords(c: KnowledgeChunk): { words: string[]; stems: string[] } {
+  let w = wordCache.get(c);
+  if (!w) {
+    const words = c.text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    w = { words, stems: words.map(stem) };
+    wordCache.set(c, w);
+  }
+  return w;
+}
 
 /** Searches the learnings and, for a pack, the wiki. Each result starts with its source path. */
 export function searchKnowledge(knowledge: KnowledgeChunk[] | KnowledgePack, query: string, limit = 5, maxChars = 1_500): string {
@@ -374,8 +391,12 @@ export function searchKnowledge(knowledge: KnowledgeChunk[] | KnowledgePack, que
   // A term of 4 or more letters also counts at the start of a word: "walk" finds "walking".
   const stemmed = terms.map(stem);
   const counts = chunks.map(c => {
-    const words = c.text.toLowerCase().split(/[^a-z0-9]+/);
-    return stemmed.map(t => words.filter(w => stem(w) === t || (t.length >= 4 && w.startsWith(t))).length);
+    const { words, stems } = chunkWords(c);
+    return stemmed.map(t => {
+      let n = 0;
+      for (let i = 0; i < words.length; i++) if (stems[i] === t || (t.length >= 4 && words[i]!.startsWith(t))) n++;
+      return n;
+    });
   });
   // A rare term counts more than a common one: "runite" more than "ore" in "where is runite ore".
   const weight = stemmed.map((_, k) => Math.log(1 + chunks.length / Math.max(1, counts.filter(n => n[k]! > 0).length)));
@@ -392,7 +413,9 @@ export function searchKnowledge(knowledge: KnowledgeChunk[] | KnowledgePack, que
         const inName = fileWords.some(w => w === t || (t.length >= 4 && w.startsWith(t)));
         score += (n * 2.2 / (n + 1.2)) * weight[k]! + (inName ? 2 * weight[k]! : 0);
       });
-      return { c, score };
+      // A long generated page splits into parts, best items first: on a near tie, part 1 wins.
+      const part = Number(/-part(\d+)\.md$/.exec(c.source)?.[1] ?? 1);
+      return { c, score: score * (1 - 0.08 * (part - 1)) };
     })
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
