@@ -1,45 +1,43 @@
 # Development
 
-[design.md](design.md#2-terms) has the terms table.
+This page tells you how to build, test and run this project on your own machine. [design.md](design.md#2-terms) has the terms table.
 
 ## Tools
 
-- git and Bun 1.3.14. CI uses that version. Other versions are untested.
+- You need git and Bun 1.3.14. CI uses that version. Other versions are not tested.
 - The tests (`bun test`) and the type check (`bunx tsc --noEmit`) run on Windows and on Linux. macOS is not tested.
-- The local stack, the proxy proof and the other scripts need Linux. On Windows, use WSL2. This guide was tested with WSL2 Ubuntu 24.04.
+- The local stack, the proxy proof and the other scripts need Linux. On Windows, use WSL2. We tested this guide with WSL2 Ubuntu 24.04.
 - Run the local stack, the browser and the scripts as a non-root user. Chromium does not start as root with its sandbox on. Do not use `--no-sandbox`.
 
-## Set up Linux or WSL2 Ubuntu
+## Prepare Linux or WSL2 Ubuntu
 
-Use any non-root user. The default user of a WSL2 distribution is enough. If you have none (for example in a container that starts as root), create one: `useradd -m -s /bin/bash rsdev`.
+1. Use a non-root user. The default user of a WSL2 distribution is correct. If you have none (for example in a container that starts as root), create one: `useradd -m -s /bin/bash rsdev`.
+2. As root or with `sudo`, install git and the system libraries that Chrome needs:
 
-As root or with `sudo`, install git and the system libraries that Chrome needs:
+   ```bash
+   apt-get update
+   apt-get install -y git curl unzip libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libcups2t64 libdrm2 \
+     libgbm1 libgtk-3-0t64 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 \
+     libxrandr2 libpango-1.0-0 libcairo2 libxshmfence1 fonts-liberation fonts-inter
+   ```
 
-```bash
-apt-get update
-apt-get install -y git curl unzip libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libcups2t64 libdrm2 \
-  libgbm1 libgtk-3-0t64 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 \
-  libxrandr2 libpango-1.0-0 libcairo2 libxshmfence1 fonts-liberation fonts-inter
-```
+   The package names with `t64` exist on Ubuntu 24.04 and later. On an older release, use the same names without `t64`.
+3. As your non-root user:
 
-The package names with `t64` exist on Ubuntu 24.04 and later. On an older release, use the same names without `t64`.
-
-As your non-root user:
-
-```bash
-curl -fsSL https://bun.sh/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v1.3.14
-export PATH="$HOME/.bun/bin:$PATH"
-git clone --recurse-submodules https://github.com/Giftedx/rs-sdk-discord-bot.git
-cd rs-sdk-discord-bot
-bun install
-```
+   ```bash
+   curl -fsSL https://bun.sh/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v1.3.14
+   export PATH="$HOME/.bun/bin:$PATH"
+   git clone --recurse-submodules https://github.com/Giftedx/rs-sdk-discord-bot.git
+   cd rs-sdk-discord-bot
+   bun install
+   ```
 
 Notes:
 
-- The first command saves the Bun installer to `/tmp/bun-install.sh` before it runs it, so you can read the file first. Nothing verifies its content.
+- The first command saves the Bun installer to `/tmp/bun-install.sh` before it runs it. You can read the file first. Nothing verifies its content.
 - `bun install` normally downloads Chrome for Testing to `~/.cache/puppeteer`. If `bun test` reports that no browser is found, run `bunx puppeteer browsers install chrome` once.
 - In WSL2, keep the clone in the Linux file system. `bun install` and the game engine are slow on `/mnt/<drive>`.
-- The scripts find the repository root from their own location, so the clone can be anywhere.
+- The clone can be in any directory. The scripts find the repository root from their own location.
 
 ## Checks before each commit
 
@@ -54,27 +52,25 @@ bun test
 
 ### Tests that launch Chromium
 
-The tests that launch Chromium (in `src/gamelink/game-tab.test.ts` and `src/gamelink/card-tab.test.ts`) run it headless with its sandbox on. The page that they load is a fixture in this repository. They contact no game server.
+The tests in `src/gamelink/game-tab.test.ts` and `src/gamelink/card-tab.test.ts` launch Chromium headless with its sandbox on. They load a fixture page from this repository. They contact no game server.
 
-On Ubuntu 23.10 and later, AppArmor restricts unprivileged user namespaces, and Chromium can stop with `No usable sandbox!`. This depends on the Chrome path and on your system. [deploy-server.md](deploy-server.md) explains the cause.
+On Ubuntu 23.10 and later, AppArmor restricts unprivileged user namespaces. Then Chromium can stop with `No usable sandbox!`. This depends on the Chrome path and on your system. [deploy-server.md](deploy-server.md) explains the cause. On WSL2 Ubuntu 24.04, Chromium started its sandbox without a change.
 
-If Chromium stops with `No usable sandbox!` on your development machine, you have two options:
+If Chromium stops with `No usable sandbox!` on your development machine, do one of these:
 
-1. Skip the tests that launch Chromium with `RS_SKIP_BROWSER_TESTS=1 bun test`. The command prints a line that says so, and the other tests run. The proxy proof, the measurement tool and the idle test cannot run on this machine then.
-2. Give your Chrome an AppArmor profile as the server bootstrap does. Install a root-owned Chrome copy at a path that matches `/opt/rs-chrome/*/chrome-linux64/chrome`, load the profile in `deploy/apparmor/rsbot-chrome-for-testing`, and set `RS_CHROME_PATH` to that Chrome. This project tested this option only on a server through `scripts/server-bootstrap.sh`, not on a desktop. Read "Residual risk" in [deploy-server.md](deploy-server.md) first.
+1. Skip the tests that launch Chromium with `RS_SKIP_BROWSER_TESTS=1 bun test`. The command prints a line that says so, and the other tests run. Then the proxy proof, the measurement tool and the idle test cannot run on this machine.
+2. Give your Chrome an AppArmor profile, as the server bootstrap does. Install a root-owned Chrome copy at a path that matches `/opt/rs-chrome/*/chrome-linux64/chrome`, load the profile in `deploy/apparmor/rsbot-chrome-for-testing`, and set `RS_CHROME_PATH` to that Chrome. This project tested this option only on a server through `scripts/server-bootstrap.sh`, not on a desktop. Read "Residual risk" in [deploy-server.md](deploy-server.md) first.
 
-On WSL2 Ubuntu 24.04, where this guide was tested, Chromium started its sandbox with neither option.
-
-Never add `--no-sandbox` to make a test pass. A test checks that the launch arguments have no such flag.
+Never add `--no-sandbox` to make a test pass. A test checks that the launch arguments do not have that flag.
 
 ### CI
 
 The CI workflow (`.github/workflows/ci.yml`) has two jobs:
 
-- Job `check` runs the type check and the tests with `RS_SKIP_BROWSER_TESTS=1`. GitHub's Ubuntu runners restrict user namespaces in the same way as Ubuntu 23.10, so this job skips the tests that launch Chromium.
-- Job `browser-tests` installs Chrome for Testing, sets `kernel.apparmor_restrict_unprivileged_userns` to 0 on the runner, and runs all tests. Chromium keeps its own sandbox. The runner is a throwaway machine. Do not change that sysctl on a server.
+- Job `check` runs the type check, `shellcheck scripts/*.sh` and the tests with `RS_SKIP_BROWSER_TESTS=1`. GitHub's Ubuntu runners restrict user namespaces as Ubuntu 23.10 does, so this job skips the tests that launch Chromium.
+- Job `browser-tests` installs Chrome for Testing, sets `kernel.apparmor_restrict_unprivileged_userns` to 0 on the runner, and runs all tests. Chromium keeps its own sandbox. The runner is a temporary machine. Do not change that sysctl on a server.
 
-Run the full `bun test` on your own machine before you change `src/gamelink/game-tab.ts`.
+Before you change `src/gamelink/game-tab.ts`, run the full `bun test` on your own machine.
 
 ## Repository layout
 
@@ -90,9 +86,9 @@ Run the full `bun test` on your own machine before you change `src/gamelink/game
 | `src/shared/` | The configuration loader, the sanitizer of Discord text, and the secret helpers of the scripts. |
 | `src/gamelink/` | The action policy, the proxy, the game tab and the re-login delay. |
 | `src/measure/` | The `/proc` reader of the measurement tool. |
-| `src/deploy/`, `src/scripts/` | Tests of the bootstrap script and of the script helpers. |
-| `src/testing/` | A fake gateway and a fixture page for the tests. |
-| `scripts/` | The local stack, the proxy proof, the idle test, the measurement tool and the server bootstrap. |
+| `src/deploy/`, `src/scripts/` | Tests of the server scripts and of the script helpers. |
+| `src/testing/` | A fake gateway, a fixture page and the test preload. |
+| `scripts/` | The local stack, the proxy proof, the idle test, the measurement tool, the server bootstrap and the other server scripts. |
 | `seed/` | The seed scripts that each guild gets at the start. |
 | `deploy/apparmor/` | The readable copy of the AppArmor profile. |
 | `deploy/systemd/` | The systemd units of the bot, gamelink, the firewalls, the backup, the revision check and the alerts. |
@@ -114,7 +110,7 @@ Run the full `bun test` on your own machine before you change `src/gamelink/game
 | `PROXY_PORT` | `7790` | 1 to 65535 | The loopback port of the proxy. |
 | `RS_CHROME_PATH` | the Chrome of puppeteer | an absolute path | The Chrome binary. If the file does not exist, the launch fails. |
 
-Variables of the scripts and the tests:
+The scripts and the tests also read these variables:
 
 | Variable | Meaning |
 |---|---|
@@ -125,26 +121,25 @@ Variables of the scripts and the tests:
 The scripts have two modes:
 
 - Mode `local` always uses `ws://localhost:7780` and `http://localhost:8888/bot`. It ignores `RS_GATEWAY_URL` and `RS_BOT_PAGE_URL`.
-- Mode `demo` uses the configuration as it is. For your own remote game server, set `RS_SERVER_HOST`, `RS_GATEWAY_URL` and `RS_BOT_PAGE_URL`, and use mode `demo` with `RS_ALLOW_DEMO=1`. The name `demo` here means "not the local stack".
+- Mode `demo` uses the configuration without changes. The name `demo` means "not the local stack". For your own remote game server, set `RS_SERVER_HOST`, `RS_GATEWAY_URL` and `RS_BOT_PAGE_URL`, and use mode `demo` with `RS_ALLOW_DEMO=1`.
 
 The scripts give the box stand-in these variables: `BOT_USERNAME`, `PASSWORD`, `GATEWAY_URL`, `SHOW_CHAT`, `AUTO_LAUNCH_BROWSER`, `TELEMETRY`, `PATH` and `HOME`.
 
-- The SDK code that the box stand-in runs reads `BOT_USERNAME`, `PASSWORD`, `GATEWAY_URL` and `SHOW_CHAT`.
+- The SDK code in the box stand-in reads `BOT_USERNAME`, `PASSWORD`, `GATEWAY_URL` and `SHOW_CHAT`.
 - `AUTO_LAUNCH_BROWSER` and `TELEMETRY` are `false` as a precaution for other rs-sdk code that reads them.
 - In the box stand-in, `PASSWORD` holds the boot token of the proxy, not the game password. `GATEWAY_URL` points at the proxy.
-- The scripts start the box stand-in with `--no-env-file`. Without that flag, Bun gives a child process the variables of a `.env` file in the working directory, even if the parent passes an explicit environment.
+- The scripts start the box stand-in with `--no-env-file`. Without that flag, Bun gives a child process the variables of a `.env` file in the working directory. It does this even if the parent passes an explicit environment.
 
 ## Local stack
 
 The local stack is an rs-sdk game server on your machine: the engine, the bundler of the web client, and the gateway. Ports 8888 and 7780 must be free. The proxy uses port 7790.
 
-> **Warning.** Use the local stack only on a development machine behind a firewall.
+> **Warning.** Use the local stack only on a development machine behind a firewall. It is not a server for a deployment.
 >
 > - By a reading of the rs-sdk source, the engine listens on port 8888 on all network interfaces. That port serves the game, the bot page and a relay to the gateway (`/gateway`).
-> - The local stack has its login server off, so the gateway accepts any password. Anyone who can reach port 8888 can log in as any account and can control a game tab that is connected.
-> - The password separation of the proxy and the action policy protect nothing against the gateway of the local stack. A process on the same machine can connect to `ws://localhost:7780` directly, without the proxy.
+> - The local stack has its login server off, so the gateway accepts any password. Anyone who can reach port 8888 can log in as any account and can control a connected game tab.
+> - The password separation of the proxy and the action policy do not protect against the gateway of the local stack. A process on the same machine can connect to `ws://localhost:7780` directly, without the proxy.
 > - If the machine has no firewall in front of it, block inbound TCP port 8888 before you start. With an active `ufw`: `sudo ufw deny 8888/tcp`.
-> - The local stack is not a server for a deployment.
 
 Run from the repository root, as your non-root user:
 
@@ -164,8 +159,8 @@ The script starts the three rs-sdk parts in the background. Each part writes a l
 Differences from the commands in `vendor/rs-sdk/README.md`:
 
 - `BUILD_VERIFY=false`: rs-sdk changes the game content, so the first cache pack fails the upstream checksum check (`.loc checksum mismatch!`). The rs-sdk `server/Dockerfile` and `server/PATCHES.md` set the same value.
-- `GATEWAY_HOSTNAME=127.0.0.1`: the gateway port 7780 listens on loopback only. This does not close port 8888, which relays to the gateway. See the warning.
-- The gateway starts after the bot page answers 200 and the bot client bundle exists, because the gateway imports engine source files that need the `bun install` of the engine.
+- `GATEWAY_HOSTNAME=127.0.0.1`: the gateway port 7780 listens on loopback only. This does not close port 8888, which relays to the gateway.
+- The gateway starts after the bot page answers 200 and the bot client bundle exists. The gateway imports engine source files that need the `bun install` of the engine.
 
 The first start packs the game cache. This takes about a minute on a fast desktop, and longer on a small machine. Later starts use the packed cache.
 
@@ -193,6 +188,8 @@ Scripts that you run:
 | `scripts/live-check.ts` | Live check of the served game client and of the gateway, in one session of less than 3 minutes. | Linux | `local` or `demo` | `live-check-<mode>-<date>.json` |
 | `scripts/seed-check.ts` | Runs each seed script on the local stack as a job, with a short limit. | Linux (WSL2 included), local stack only | none. Optional: `SEED_CHECK_MS`, `SEED_ONLY`, `SEED_DIR`. | One JSON line per script and a summary line, `seed-check-<name>.txt` |
 
+[running-the-bot.md](running-the-bot.md) describes `scripts/bot-smoke.ts`. [deploy-server.md](deploy-server.md) describes the other `scripts/server-*.sh` scripts.
+
 Support files:
 
 | File | Content |
@@ -218,7 +215,7 @@ bash scripts/dev-stack.sh stop
 
 1. It opens the bot page in headless Chromium and waits until the game tab is in game.
 2. It starts the proxy with a random boot token of 32 characters.
-3. It runs the template script (`scripts/proof-script.ts`) in a child process, the box stand-in. The environment that the script gives to the child holds the boot token, not the game password.
+3. It runs the template script (`scripts/proof-script.ts`) in a child process, the box stand-in. The environment of the child holds the boot token, not the game password.
 4. It writes the child output to `measurements/raw/proof-local-child.log`, and one frame to `measurements/raw/proof-local.png`.
 5. It prints one JSON line.
 
@@ -247,7 +244,7 @@ On the local stack, the template script finds a tree and chops it. The child log
 
 > **Warning.** Mode `demo` logs an automated account in to a remote game server. With the default configuration, that is the rs-sdk demo world, which someone else runs.
 
-You do not need mode `demo` for development. [measurements.md](measurements.md) has the results of one run of `measure.ts` and `idle-test.ts` on the demo world. Do not repeat them on the demo world. Use the local stack.
+You do not need mode `demo` for development. Use the local stack. [measurements.md](measurements.md) has the results of one run of `measure.ts` and `idle-test.ts` on the demo world. Do not repeat them on the demo world.
 
 Before you use mode `demo` on the demo world, ask the rs-sdk maintainer. See "Be a good guest on the demo world" in the [README](../README.md).
 
@@ -270,14 +267,14 @@ The scripts refuse mode `demo` in these cases:
 - The account name is `prooflocal`.
 - The password has fewer than 12 characters.
 
-Never type a real password on a command line, because it stays in the shell history. Load it from the account file in a subshell, so that the password does not stay in the environment of your shell session:
+Never type a real password on a command line, because it stays in the shell history. Load it from the account file in a subshell. Then the password does not stay in the environment of your shell session:
 
 ```bash
 ( set -a; . secrets/account.env; set +a; bun scripts/proxy-proof.ts demo )
 ```
 
-This command stops with a message, because `RS_ALLOW_DEMO` is not set. Put `RS_ALLOW_DEMO=1` before `bun` only after the person who runs the game server agreed, or if you run that server.
+This command stops with a message, because `RS_ALLOW_DEMO` is not set. Put `RS_ALLOW_DEMO=1` before `bun` only if the person who runs the game server agreed, or if you run that server.
 
 [deploy-server.md](deploy-server.md) shows how to create `secrets/account.env` on your server.
 
-After a killed run, remove directories named `/tmp/puppeteer_dev_chrome_profile-*`. A Chrome profile holds the game password.
+After a killed run, remove the directories named `/tmp/puppeteer_dev_chrome_profile-*`. A Chrome profile holds the game password.
