@@ -100,7 +100,8 @@ export function renderCard(v: CardView, secrets: string[], watchUrl?: string): C
     return r.length > n ? `${r.slice(0, n - 1)}…` : r;
   };
   const lines = [`**Status** ${CARD_MARKER}`];
-  if (v.running || v.goal) {
+  // The mode follows the work: the bot keeps a goal text also while it waits.
+  if (v.running) {
     const step = cap(v.step) || 'working';
     const goal = cap(v.goal);
     const script = cap(v.script, 60);

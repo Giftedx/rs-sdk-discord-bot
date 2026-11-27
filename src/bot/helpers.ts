@@ -294,14 +294,19 @@ export function createRateLimit(max: number, windowMs: number, now: () => number
 }
 
 // The "Last:" line of the status card: the newest event that is not an item gain, short.
-// "Instruction ended (finished): <text>" becomes "Finished: <text>".
-export function cardLastEvent(rows: { type: string; text: string }[], secrets: string[] = [], max = 90): string | null {
+// A finished request shows as "Finished: <request>", from the stored event data (its text holds the
+// whole summary).
+export function cardLastEvent(rows: { type: string; text: string; data?: unknown }[], secrets: string[] = [], max = 90): string | null {
   const r = rows.find(x => x.type !== 'item_gain' && x.type !== 'wake_skipped');
   if (!r) return null;
+  let raw = r.text;
+  const d = r.data as { instruction?: unknown; outcome?: unknown } | null | undefined;
+  if (r.type === 'instruction_done' && d && typeof d.instruction === 'string') {
+    const outcome = typeof d.outcome === 'string' ? d.outcome : '';
+    raw = `${/^(finished|done)\b/i.test(outcome) ? 'Finished' : 'Ended'}: ${d.instruction}`;
+  }
   // Hide the secrets first, then shorten: a cut through a secret would leave a part that no longer matches.
-  let t = sanitizeForDiscord(r.text, secrets, Number.MAX_SAFE_INTEGER).replace(/\s+/g, ' ').trim();
-  const done = /^Instruction ended \(([a-z_]+)\): (.*)$/i.exec(t);
-  if (done) t = `${done[1] === 'finished' ? 'Finished' : `Ended (${done[1]})`}: ${done[2]}`;
+  const t = sanitizeForDiscord(raw, secrets, Number.MAX_SAFE_INTEGER).replace(/\s+/g, ' ').trim();
   if (t.length <= max) return t;
   const cut = t.slice(0, max - 1);
   return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), max - 20))}…`;

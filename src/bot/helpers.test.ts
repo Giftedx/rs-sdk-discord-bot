@@ -235,7 +235,8 @@ describe('createRateLimit', () => {
 describe('cardLastEvent', () => {
   test('skips item gains, shortens a finished request, cuts long text at a word', () => {
     expect(cardLastEvent([{ type: 'item_gain', text: 'Got 1 x Logs.' }, { type: 'level_up', text: 'Woodcutting level 62 (was 61).' }])).toBe('Woodcutting level 62 (was 61).');
-    expect(cardLastEvent([{ type: 'instruction_done', text: 'Instruction ended (finished): chop trees' }])).toBe('Finished: chop trees');
+    expect(cardLastEvent([{ type: 'instruction_done', text: 'Instruction ended (finished: long summary (with brackets)): chop trees', data: { kind: 'instruction_done', instruction: 'chop trees', outcome: 'finished: long summary (with brackets)' } }])).toBe('Finished: chop trees');
+    expect(cardLastEvent([{ type: 'instruction_done', text: 'x', data: { instruction: 'fish', outcome: 'time_cap' } }])).toBe('Ended: fish');
     const long = cardLastEvent([{ type: 'death', text: 'word '.repeat(40) }])!;
     expect(long.length).toBeLessThanOrEqual(90);
     expect(long.endsWith('…')).toBe(true);
