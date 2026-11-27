@@ -30,8 +30,8 @@ describe('validateCardData', () => {
   test('rejects too many entries', () => {
     const counts = Array.from({ length: 9 }, (_, i) => ({ label: `c${i}`, value: i }));
     expect(() => validateCardData('daily_recap', { date: 'd', counts })).toThrow(/more than 8/);
-    const items = Array.from({ length: 9 }, (_, i) => ({ id: i, name: 'x', count: 1 }));
-    expect(() => validateCardData('death', { place: 'p', time: 't', items })).toThrow(/more than 8/);
+    const items = Array.from({ length: 29 }, (_, i) => ({ id: i, name: 'x', count: 1 }));
+    expect(() => validateCardData('death', { place: 'p', time: 't', items })).toThrow(/more than 28/);
   });
 
   test('clamps long text and replaces control characters', () => {
@@ -90,6 +90,13 @@ describe('cardIconIds', () => {
     const d = validateCardData('status', { hp: 1, maxHp: 1, goal: 'g', skills: [], items: [{ id: 5, name: 'a', count: 1 }, { id: 5, name: 'a', count: 2 }, { id: 7, name: 'b', count: 1 }] });
     expect(cardIconIds('status', d)).toEqual([5, 7]);
     expect(cardIconIds('level_up', validateCardData('level_up', SAMPLE_CARDS.level_up))).toEqual([]);
+  });
+  test('returns the item ids of the receipt rows', () => {
+    expect(cardIconIds('instruction_receipt', validateCardData('instruction_receipt', SAMPLE_CARDS.instruction_receipt))).toEqual([1521, 995]);
+  });
+  test('a death card takes a full inventory of 28 items', () => {
+    const items = Array.from({ length: 28 }, (_, i) => ({ id: i, name: `item ${i}`, count: 1 }));
+    expect(validateCardData('death', { place: 'p', time: 't', items }).items).toHaveLength(28);
   });
 });
 

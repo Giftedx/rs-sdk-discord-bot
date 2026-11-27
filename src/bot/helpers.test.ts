@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  buildReceipt, cardFor, retryBackoff, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
+  buildReceipt, cardFor, retryBackoff, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createItemIdBook, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
   scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
 } from './helpers';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
@@ -222,14 +222,25 @@ describe('cardFor', () => {
   });
   test('death carries the lost items and the killer guess', () => {
     expect(cardFor({ kind: 'death', lost: [{ name: 'Bronze axe', count: 1 }], killer: 'Goblin' }, state, null, at)?.data)
-      .toEqual({ place: '3222, 3218, level 0', time: '2026-11-27 10:15 UTC', items: [{ name: 'Bronze axe', count: 1 }], killer: 'Goblin' });
+      .toEqual({ place: 'Tile 3222, 3218', time: '2026-11-27 10:15 UTC', items: [{ name: 'Bronze axe', count: 1 }], killer: 'Goblin' });
   });
   test('recap carries the xp per skill', () => {
     const recap = { levelUps: 0, items: 0, deaths: 0, instructions: 1, spendUsd: null, xpBySkill: [{ skill: 'Attack', xp: 300 }] };
     expect(cardFor({ kind: 'recap', recap }, null, null, at)?.data).toMatchObject({ xp: [{ skill: 'Attack', xp: 300 }] });
   });
+  test('death and receipt items get the ids of the item book', () => {
+    const book = createItemIdBook();
+    book.learn([{ id: 1351, name: 'Bronze axe' }, { id: 995, name: 'Coins' }]);
+    expect(cardFor({ kind: 'death', lost: [{ name: 'Bronze axe', count: 1 }, { name: 'Rock', count: 2 }] }, state, null, at, book.get)?.data)
+      .toMatchObject({ items: [{ id: 1351, name: 'Bronze axe', count: 1 }, { name: 'Rock', count: 2 }] });
+    const r = { instruction: 'chop', summary: 'ok', turns: 3, costUsd: 0.1, inventory: [{ name: 'Coins', before: 5, after: 9 }] };
+    expect(cardFor(receiptEvent('chop', 'finished'), null, r, at, book.get)?.data).toMatchObject({ inventory: [{ id: 995, name: 'Coins', before: 5, after: 9 }] });
+  });
+  test('death names the floor above the ground', () => {
+    expect(cardFor({ kind: 'death' }, { ...state, plane: 1 }, null, at)?.data).toMatchObject({ place: 'Tile 3222, 3218, floor 1' });
+  });
   test('death names the tile and the time', () => {
-    expect(cardFor({ kind: 'death' }, state, null, at)).toEqual({ kind: 'death', data: { place: '3222, 3218, level 0', time: '2026-11-27 10:15 UTC' } });
+    expect(cardFor({ kind: 'death' }, state, null, at)).toEqual({ kind: 'death', data: { place: 'Tile 3222, 3218', time: '2026-11-27 10:15 UTC' } });
   });
   test('receipt only with a receipt', () => {
     const e = receiptEvent('chop', 'finished');
@@ -342,5 +353,19 @@ describe('gamelinkWaitReason', () => {
   test('keeps the message of other errors', () => {
     expect(gamelinkWaitReason(new Error('HTTP 503'), sock)).toBe('HTTP 503');
     expect(gamelinkWaitReason('odd', sock)).toBe('odd');
+  });
+});
+
+describe('createItemIdBook', () => {
+  test('keeps the newest id per name and drops the oldest name past the limit', () => {
+    const book = createItemIdBook(2);
+    book.learn([{ id: 1, name: 'a' }, { id: 2, name: 'b' }, { id: -1, name: 'bad' }]);
+    expect(book.get('a')).toBe(1);
+    expect(book.get('bad')).toBeUndefined();
+    book.learn([{ id: 3, name: 'c' }]);
+    expect(book.get('a')).toBeUndefined();
+    expect(book.size()).toBe(2);
+    book.learn([{ id: 4, name: 'b' }]);
+    expect(book.get('b')).toBe(4);
   });
 });

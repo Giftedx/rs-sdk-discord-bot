@@ -19,7 +19,7 @@ As root or with `sudo`, install git and the system libraries that Chrome needs:
 apt-get update
 apt-get install -y git curl unzip libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libcups2t64 libdrm2 \
   libgbm1 libgtk-3-0t64 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 \
-  libxrandr2 libpango-1.0-0 libcairo2 libxshmfence1 fonts-liberation
+  libxrandr2 libpango-1.0-0 libcairo2 libxshmfence1 fonts-liberation fonts-inter
 ```
 
 The package names with `t64` exist on Ubuntu 24.04 and later. On an older release, use the same names without `t64`.

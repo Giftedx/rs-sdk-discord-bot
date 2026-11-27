@@ -33,7 +33,7 @@ import { formatWorldState } from '../../vendor/rs-sdk/sdk/formatter';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
 import type { BotConfig, GuildConfig } from './config';
 import {
-  ADMIT_TEXT, buildReceipt, cardFor, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
+  ADMIT_TEXT, buildReceipt, cardFor, createItemIdBook, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
   retryBackoff, scriptFromProgress, tabLine, wakeContextText, type Receipt, type createKeyedLock,
 } from './helpers';
 
@@ -128,6 +128,8 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   let goal: string | null = null;
   let step: string | null = null;
   let prevEvents: EventState | null = null;
+  // Item ids by name, for the item icons of the death and receipt cards.
+  const itemIds = createItemIdBook();
   let lastReceipt: Receipt | null = null;
   let lastSnapshotAt = 0;
   let stopping = false;
@@ -159,7 +161,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   const frame = (): Promise<Uint8Array | null> => link.frame();
 
   async function draw(subject: CardSubject): Promise<Uint8Array | null> {
-    const req = cardFor(subject, prevEvents, lastReceipt, new Date());
+    const req = cardFor(subject, prevEvents, lastReceipt, new Date(), itemIds.get);
     if (!req) return null;
     return link.drawCard(req.kind, req.data as never);
   }
@@ -484,6 +486,8 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       }
       const es = inGame && state ? eventState(state) : null;
       if (es && state) {
+        itemIds.learn(state.inventory);
+        if (state.equipment) itemIds.learn(state.equipment);
         for (const e of enrichDeaths(diffStates(prevEvents, es), es, guessKiller(state))) emit(e);
         prevEvents = es;
       }

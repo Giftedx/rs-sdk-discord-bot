@@ -22,7 +22,7 @@ export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
     costUsd: 0.37,
     durationMs: 4_320_000,
     skills: [{ name: 'Woodcutting', before: 30, after: 31, xp: 4_100 }],
-    inventory: [{ name: 'Oak logs', before: 0, after: 27 }, { name: 'Coins', before: 120, after: 120 }],
+    inventory: [{ id: 1521, name: 'Oak logs', before: 0, after: 27 }, { id: 995, name: 'Coins', before: 120, after: 95 }],
   },
   daily_recap: {
     date: '2026-11-27',

@@ -84,6 +84,8 @@ CHROME_LIBS=(
   "libcairo2"
   "libxshmfence1"
   "fonts-liberation"
+  # The font of the drawn cards (src/cards/templates.ts). Open licence (OFL).
+  "fonts-inter"
 )
 
 pick_package() {

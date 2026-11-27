@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Browser } from 'puppeteer';
 import { SAMPLE_CARDS } from '../cards/samples';
-import { CARD_DEVICE_SCALE, CARD_KINDS, CARD_SIZES, CardDataError } from '../cards/templates';
-import { allowCardRequest, type CardTab, openCardTab } from './card-tab';
+import { CARD_DEVICE_SCALE, CARD_KINDS, CARD_MIN_HEIGHT, CARD_SIZES, CardDataError } from '../cards/templates';
+import { allowCardRequest, cardHeight, type CardTab, openCardTab } from './card-tab';
 import { launchBrowser } from './game-tab';
 
 const T = 60_000;
@@ -62,17 +62,20 @@ afterAll(async () => {
 }, T);
 
 describe('card tab', () => {
-  browserTest('draws each card at its fixed size', async () => {
+  browserTest('draws each card at its width and at most its largest height', async () => {
     if (PNG_DIR) mkdirSync(PNG_DIR, { recursive: true });
     for (const kind of CARD_KINDS) {
       const png = await tab!.draw(kind, SAMPLE_CARDS[kind] as never);
       expect(png[0]).toBe(0x89);
       const { width, height } = CARD_SIZES[kind];
-      expect(pngSize(png)).toEqual({ width: width * CARD_DEVICE_SCALE, height: height * CARD_DEVICE_SCALE });
+      const size = pngSize(png);
+      expect(size.width).toBe(width * CARD_DEVICE_SCALE);
+      expect(size.height).toBeGreaterThanOrEqual(CARD_MIN_HEIGHT * CARD_DEVICE_SCALE);
+      expect(size.height).toBeLessThanOrEqual(height * CARD_DEVICE_SCALE);
       if (PNG_DIR) writeFileSync(join(PNG_DIR, `${kind}.png`), png);
     }
     if (!LIVE_ICON_HOST) {
-      expect(seen.filter(p => p.startsWith('/sprite/item/')).sort()).toEqual(['/sprite/item/1351.png', '/sprite/item/1519.png', '/sprite/item/590.png', '/sprite/item/995.png']);
+      expect(seen.filter(p => p.startsWith('/sprite/item/')).sort()).toEqual(['/sprite/item/1351.png', '/sprite/item/1519.png', '/sprite/item/1521.png', '/sprite/item/590.png', '/sprite/item/995.png']);
     }
   }, T);
 
@@ -107,4 +110,14 @@ describe('card tab', () => {
     // The tab still draws after a rejected card.
     expect((await tab!.draw('level_up', SAMPLE_CARDS.level_up)).length).toBeGreaterThan(100);
   }, T);
+});
+
+describe('cardHeight', () => {
+  test('keeps the content height between the minimum and the largest height', () => {
+    expect(cardHeight(250.2, 400)).toBe(251);
+    expect(cardHeight(10, 400)).toBe(CARD_MIN_HEIGHT);
+    expect(cardHeight(900, 400)).toBe(400);
+    expect(cardHeight('x', 400)).toBe(400);
+    expect(cardHeight(Number.NaN, 400)).toBe(400);
+  });
 });

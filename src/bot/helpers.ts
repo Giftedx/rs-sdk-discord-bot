@@ -224,7 +224,35 @@ export function takeRevisionFlag(path: string, fs: { read(p: string): string; re
 export type CardRequest = { [K in CardKind]: { kind: K; data: CardDataMap[K] } }[CardKind];
 
 // The card for a post, or null when the subject has no card.
-export function cardFor(subject: CardSubject, state: EventState | null, receipt: Receipt | null, at: Date): CardRequest | null {
+/** Item ids by name, learned from the game states. The event states keep names only, and a card
+ *  needs the id to show the item icon. At most max names; the oldest goes first. */
+export function createItemIdBook(max = 2_000) {
+  const ids = new Map<string, number>();
+  return {
+    learn(items: readonly { id: number; name: string }[]): void {
+      for (const it of items) {
+        if (typeof it.name !== 'string' || !Number.isInteger(it.id) || it.id < 0 || it.id > 999_999) continue;
+        if (ids.get(it.name) === it.id) continue;
+        ids.delete(it.name);
+        ids.set(it.name, it.id);
+        if (ids.size > max) ids.delete(ids.keys().next().value as string);
+      }
+    },
+    get: (name: string): number | undefined => ids.get(name),
+    size: () => ids.size,
+  };
+}
+
+const withId = <T extends { name: string }>(list: T[], idOf?: (name: string) => number | undefined): (T & { id?: number })[] =>
+  list.map(it => {
+    const id = idOf?.(it.name);
+    return id === undefined ? it : { ...it, id };
+  });
+
+// The place of a death: the tile, and the floor when it is not the ground floor.
+const placeText = (s: EventState) => `Tile ${s.x}, ${s.z}${s.plane > 0 ? `, floor ${s.plane}` : ''}`;
+
+export function cardFor(subject: CardSubject, state: EventState | null, receipt: Receipt | null, at: Date, idOf?: (name: string) => number | undefined): CardRequest | null {
   switch (subject.kind) {
     case 'level_up':
       return {
@@ -238,13 +266,14 @@ export function cardFor(subject: CardSubject, state: EventState | null, receipt:
       return {
         kind: 'death',
         data: {
-          place: state ? `${state.x}, ${state.z}, level ${state.plane}` : 'unknown', time: `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
-          ...(subject.lost && subject.lost.length > 0 ? { items: subject.lost.slice(0, 12) } : {}),
+          place: state ? placeText(state) : 'Unknown place', time: `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+          ...(subject.lost && subject.lost.length > 0 ? { items: withId(subject.lost.slice(0, 28), idOf) } : {}),
           ...(subject.killer ? { killer: subject.killer } : {}),
         },
       };
     case 'instruction_done':
-      return receipt ? { kind: 'instruction_receipt', data: receipt } : null;
+      if (!receipt) return null;
+      return { kind: 'instruction_receipt', data: receipt.inventory ? { ...receipt, inventory: withId(receipt.inventory, idOf) } : receipt };
     case 'recap': {
       const r = subject.recap;
       return {

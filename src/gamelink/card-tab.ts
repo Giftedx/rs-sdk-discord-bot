@@ -1,7 +1,9 @@
 import type { Browser, HTTPRequest, Page } from 'puppeteer';
 import { IconCache, type IconCacheOptions } from '../cards/icons';
+import { loadSkillSheets, SKILL_CELL, SKILL_CELLS, SKILL_SHEET_COLUMNS, type SkillSheets } from '../cards/skill-icons';
 import {
   CARD_DEVICE_SCALE,
+  CARD_MIN_HEIGHT,
   CARD_PAGE_HTML,
   CARD_SIZES,
   type CardDataMap,
@@ -14,6 +16,8 @@ import {
 
 export interface CardTabOptions extends IconCacheOptions {
   drawTimeoutMs?: number;
+  /** The skill icon sheets. Default: read from the vendor submodule. */
+  skillSheets?: SkillSheets;
 }
 
 export interface CardTab {
@@ -25,6 +29,12 @@ export interface CardTab {
 // IconCache in this process, so every request that is not about: or data: is aborted.
 export function allowCardRequest(url: string): boolean {
   return url.startsWith('data:') || url === 'about:blank';
+}
+
+/** The picture height for a content height from the page: a whole number from CARD_MIN_HEIGHT to max. */
+export function cardHeight(content: unknown, max: number): number {
+  const h = typeof content === 'number' && Number.isFinite(content) ? Math.ceil(content) : max;
+  return Math.max(CARD_MIN_HEIGHT, Math.min(max, h));
 }
 
 export async function openCardTab(browser: Browser, opts: CardTabOptions = {}): Promise<CardTab> {
@@ -44,6 +54,11 @@ export async function openCardTab(browser: Browser, opts: CardTabOptions = {}): 
     await page.setContent(CARD_PAGE_HTML, { waitUntil: 'load' });
     const ready = await page.evaluate(() => typeof (window as unknown as { renderCard?: unknown }).renderCard === 'function');
     if (!ready) throw new Error('card page script did not load');
+    const sheets = opts.skillSheets ?? loadSkillSheets();
+    await page.evaluate(
+      (s, c, z, k) => (window as unknown as { loadSkillIcons(s: unknown, c: unknown, z: number, k: number): Promise<number> }).loadSkillIcons(s, c, z, k),
+      sheets as Record<string, string>, SKILL_CELLS as unknown as Record<string, unknown>, SKILL_CELL, SKILL_SHEET_COLUMNS,
+    );
   } catch (err) {
     await page.close().catch(() => {});
     throw err;
@@ -57,14 +72,16 @@ export async function openCardTab(browser: Browser, opts: CardTabOptions = {}): 
     if (!isCardKind(kind)) throw new CardDataError(`unknown card kind: ${String(kind)}`);
     const data = validateCardData(kind, raw);
     const iconMap = await icons.getMany(cardIconIds(kind, data));
-    const { width, height } = CARD_SIZES[kind];
-    await page.setViewport({ width, height, deviceScaleFactor: CARD_DEVICE_SCALE });
-    await page.evaluate(
-      (k, d, i) => (window as unknown as { renderCard(k: string, d: unknown, i: unknown): Promise<boolean> }).renderCard(k, d, i),
+    const { width, height: maxHeight } = CARD_SIZES[kind];
+    await page.setViewport({ width, height: maxHeight, deviceScaleFactor: CARD_DEVICE_SCALE });
+    const content = await page.evaluate(
+      (k, d, i) => (window as unknown as { renderCard(k: string, d: unknown, i: unknown): Promise<number> }).renderCard(k, d, i),
       kind,
       data as unknown as Record<string, unknown>,
       iconMap,
     );
+    // The picture is as high as the card content, between the minimum and the largest height.
+    const height = cardHeight(content, maxHeight);
     const png = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width, height }, omitBackground: false });
     return new Uint8Array(png);
   }
