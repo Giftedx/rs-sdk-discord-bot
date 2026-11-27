@@ -2,6 +2,7 @@
 // last bank and exchange that the bot saw. Plain functions from the game state to card data.
 import type { BankCard, CardItem, EquipmentCard, EquipSlot, GeCard, GeOffer, InventoryCard, NearbyCard, PrayerCard, ShopCard, ShopItemCard, SkillsCard, TradeCard } from '../cards/templates';
 import { PRAYER_LEVELS, PRAYER_NAMES } from '../../vendor/rs-sdk/sdk/types';
+import { isRealSkill } from '../events/diff';
 
 export type InfoKind = 'equipment' | 'inventory' | 'bank' | 'skills' | 'ge' | 'shop' | 'prayer' | 'nearby' | 'trade';
 
@@ -86,7 +87,7 @@ export function inventoryData(s: InfoState): InventoryCard {
 }
 
 export function skillsData(s: InfoState): SkillsCard {
-  const out: SkillsCard = { skills: s.skills.slice(0, 24).map(k => ({ name: k.name, level: Math.max(0, k.level), base: Math.max(1, k.baseLevel) })) };
+  const out: SkillsCard = { skills: s.skills.filter(k => isRealSkill(k.name)).slice(0, 24).map(k => ({ name: k.name, level: Math.max(0, k.level), base: Math.max(1, k.baseLevel) })) };
   if (s.player && s.player.combatLevel >= 3) out.combatLevel = s.player.combatLevel;
   return out;
 }

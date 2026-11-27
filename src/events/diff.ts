@@ -28,11 +28,15 @@ export const TOTAL_LEVEL_STEP = 25;
 // A respawn moves the player far. A walk between two snapshots does not.
 export const DEATH_JUMP_TILES = 30;
 
+// The 2004 game has two unused skill slots, "Stat18" and "Stat19" (server engine/data/symbols/stat.sym).
+// The game state lists them, but they are not skills: no card or total counts them.
+export const isRealSkill = (name: string): boolean => !/^stat\d+$/i.test(name.trim());
+
 export function compactState(s: BotWorldState): CompactState | null {
   if (!s.inGame || !s.player) return null;
   const skills: CompactState['skills'] = {};
   // baseLevel is the real level; level can be boosted or drained.
-  for (const k of s.skills) skills[k.name] = { level: k.baseLevel, xp: k.experience };
+  for (const k of s.skills) if (isRealSkill(k.name)) skills[k.name] = { level: k.baseLevel, xp: k.experience };
   const inventory: Record<string, number> = {};
   for (const it of s.inventory) inventory[it.name] = (inventory[it.name] ?? 0) + it.count;
   const equipment: Record<string, number> = {};

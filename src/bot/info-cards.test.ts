@@ -71,6 +71,11 @@ describe('card data from the state', () => {
     expect(() => validateCardData('skills', sk)).not.toThrow();
   });
 
+  test('the skills card leaves out the unused slots Stat18 and Stat19', () => {
+    const skills = [{ name: 'Attack', level: 56, baseLevel: 56 }, { name: 'Stat18', level: 1, baseLevel: 1 }, { name: 'Stat19', level: 1, baseLevel: 1 }, { name: 'Runecraft', level: 1, baseLevel: 1 }];
+    expect(skillsData(state({ skills })).skills.map(k => k.name)).toEqual(['Attack', 'Runecraft']);
+  });
+
   test('the bank and the exchange are kept only while their window is open', () => {
     expect(bankSeen(state({ bank: { isOpen: false, items: [{ id: 1, name: 'Logs', count: 3 }] } }))).toBeNull();
     const items = Array.from({ length: 95 }, (_, i) => ({ id: i, name: `Item ${i}`, count: i + 1 }));

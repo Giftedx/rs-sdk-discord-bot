@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
-import { compactState, diffStates, eventText, guessKiller, lostItems, type CompactState } from './diff';
+import { compactState, diffStates, eventText, guessKiller, isRealSkill, lostItems, totalLevel, type CompactState } from './diff';
 
 function snap(over: Partial<CompactState> = {}): CompactState {
   return {
@@ -77,6 +77,24 @@ describe('diffStates', () => {
 describe('compactState', () => {
   test('null when not in game', () => {
     expect(compactState({ inGame: false, player: null } as unknown as BotWorldState)).toBeNull();
+  });
+
+  test('leaves out the unused skill slots, so the total level is right', () => {
+    const s = {
+      inGame: true,
+      player: { hp: 7, maxHp: 10, worldX: 3222, worldZ: 3218, level: 0, combat: { inCombat: false } },
+      skills: [
+        { name: 'Attack', level: 56, baseLevel: 56, experience: 1 },
+        { name: 'Stat18', level: 1, baseLevel: 1, experience: 0 },
+        { name: 'Stat19', level: 1, baseLevel: 1, experience: 0 },
+      ],
+      inventory: [],
+    } as unknown as BotWorldState;
+    const c = compactState(s)!;
+    expect(Object.keys(c.skills)).toEqual(['Attack']);
+    expect(totalLevel(c)).toBe(56);
+    expect(isRealSkill('Stat18')).toBe(false);
+    expect(isRealSkill('Runecraft')).toBe(true);
   });
 
   test('maps the SDK fields', () => {
