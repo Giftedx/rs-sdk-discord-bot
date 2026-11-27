@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
+import { readWieldRules, wieldNote, type WieldRules } from './wield';
 
 export const SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 export const MAX_SCRIPT_CHARS = 40_000;
@@ -193,7 +194,7 @@ export function wikiBodyText(text: string): string {
 }
 
 // Heading words of a skill page that name no topic.
-const GENERIC_HEADING = new Set(['note', 'training', 'tip', 'special']);
+const GENERIC_HEADING = new Set(['note', 'training', 'tip', 'special', 'level', 'requirement', 'type']);
 /**
  * The topic words of the "##" and "###" headings of a skill page, such as "Axes" and "Trees" on
  * the Woodcutting page. A search for "axe" then finds the page with the axe table. A word of the
@@ -294,7 +295,7 @@ export type WikiIndex = ReturnType<typeof createWikiIndex>;
  * resolves with the number of pages with body lines when the body index is complete; until
  * then a search uses the titles only.
  */
-export interface KnowledgePack { learnings: KnowledgeChunk[]; wiki: WikiIndex; bodyReady?: Promise<number>; }
+export interface KnowledgePack { learnings: KnowledgeChunk[]; wiki: WikiIndex; bodyReady?: Promise<number>; wield?: WieldRules; }
 
 /**
  * Reads the item and shop pages in parallel and adds their body lines to the index. Also reads
@@ -341,7 +342,10 @@ export function createKnowledgePack(rootDir: string): KnowledgePack {
   // The body index loads in the background: a synchronous read of 1700 small files is slow on some disks.
   const bodyReady = loadWikiBodies(wiki, pages).catch(() => 0);
   const learnings = [...loadKnowledge(ownKnowledgeFiles(rootDir), rootDir), ...loadKnowledge(knowledgeFiles(rootDir), base)];
-  return { learnings, wiki, bodyReady };
+  // About 170 ms: the wield checks from the server scripts, shown on the wiki item pages.
+  let wield: WieldRules = {};
+  try { wield = readWieldRules(base).rules; } catch { /* no server scripts: the wiki pages stay as they are */ }
+  return { learnings, wiki, bodyReady, wield };
 }
 
 const isPack = (k: KnowledgeChunk[] | KnowledgePack): k is KnowledgePack => !Array.isArray(k);
@@ -351,12 +355,37 @@ export function searchKnowledge(knowledge: KnowledgeChunk[] | KnowledgePack, que
   const terms = queryTerms(query);
   if (terms.length === 0) return 'Give some search words.';
   const chunks = isPack(knowledge) ? knowledge.learnings : knowledge;
-  const wiki = isPack(knowledge) ? knowledge.wiki.search(query, Math.min(3, limit)) : [];
+  const wield = isPack(knowledge) ? knowledge.wield ?? {} : {};
+  const wiki = (isPack(knowledge) ? knowledge.wiki.search(query, Math.min(3, limit)) : []).map(r => {
+    const rule = wield[r.source];
+    if (!rule) return r;
+    // The note goes after the title line, so that the character limit never cuts it.
+    const cut = r.text.indexOf('\n');
+    const note = wieldNote(rule, r.text);
+    // A checkout on Windows can have CRLF line ends: keep the title line without its "\r".
+    return { ...r, text: cut < 0 ? `${r.text}\n\n${note}` : `${r.text.slice(0, cut).replace(/\r$/, '')}\n\n${note}\n${r.text.slice(cut + 1)}` };
+  });
+  // A term counts as a whole word, or its plural: "ore" finds "ores" but not "before" or "store".
+  // A term of 4 or more letters also counts at the start of a word: "walk" finds "walking".
+  const stemmed = terms.map(stem);
+  const counts = chunks.map(c => {
+    const words = c.text.toLowerCase().split(/[^a-z0-9]+/);
+    return stemmed.map(t => words.filter(w => stem(w) === t || (t.length >= 4 && w.startsWith(t))).length);
+  });
+  // A rare term counts more than a common one: "runite" more than "ore" in "where is runite ore".
+  const weight = stemmed.map((_, k) => Math.log(1 + chunks.length / Math.max(1, counts.filter(n => n[k]! > 0).length)));
+  // Repeats of one term add less and less (BM25 with k1 = 1.2): 11 times "ore" is not 11 times one "ore".
+  // A term in the file name ("walk" in walking.md) counts as two more mentions, as a page title does.
   const scored = chunks
-    .map(c => {
-      const lower = c.text.toLowerCase();
+    .map((c, i) => {
+      const fileWords = textWords(basename(c.source, '.md'));
       let score = 0;
-      for (const t of terms) { let i = lower.indexOf(t); while (i !== -1) { score++; i = lower.indexOf(t, i + t.length); } }
+      counts[i]!.forEach((n, k) => {
+        const t = stemmed[k]!;
+        if (n === 0) return;
+        const inName = fileWords.some(w => w === t || (t.length >= 4 && w.startsWith(t))) ? 2 : 0;
+        score += ((n + inName) * 2.2 / (n + inName + 1.2)) * weight[k]!;
+      });
       return { c, score };
     })
     .filter(s => s.score > 0)

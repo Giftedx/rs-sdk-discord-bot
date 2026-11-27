@@ -95,6 +95,28 @@ describe('wiki knowledge', () => {
     expect(pack.wiki.search('pickaxe')[0]!.source).toBe('wiki/skills/mining.md');
     expect(pack.wiki.search('bronze axe')[0]!.source).toBe('wiki/items/bronze-axe.md');
     expect(searchKnowledge(pack, 'which axe can I use')).toContain('[knowledge/woodcutting-axes.md]');
+    const firstLearning = (q: string) => /^\[((?:learnings|knowledge)\/[^\]]+)\]$/m.exec(searchKnowledge(pack, q))?.[1];
+    expect(firstLearning('where is runite ore')).toBe('knowledge/mining-and-smithing.md');
+    expect(firstLearning('harralander herblore level')).toBe('knowledge/crafting-fletching-firemaking-herblore.md');
+    expect(firstLearning('what defence for rune platebody')).toBe('knowledge/armour-and-weapon-levels.md');
+    expect(firstLearning('walk to a far location')).toBe('learnings/walking.md');
+    expect(firstLearning('how to open the bank')).toBe('learnings/banking.md');
+    // The wield check from the server code is at the top of the item page.
+    expect(searchKnowledge(pack, 'rune axe')).toContain('[wiki/items/rune-axe.md]\n# Rune axe\n\n> Server code: to wield or wear this item needs Attack 40.');
+  });
+
+  test('learnings: whole words, rare words count more, repeats add less, the file name counts', () => {
+    const chunks = [
+      { source: 'learnings/banking.md', text: '## Depositing\nDeposit the ore. More ore, ore, ore, ore, ore, ore, ore before you store the ore.' },
+      { source: 'knowledge/mining.md', text: '## Where the ores are\nRunite: only 5 rocks. No runite in Al Kharid.' },
+      { source: 'learnings/walking.md', text: '## Long walks\nWalk in steps.' },
+      { source: 'learnings/herbs.md', text: '## Farming\nThere is no Farming skill. Herbs cannot be farmed. A location.' },
+    ];
+    const first = (q: string) => /^\[([^\]]+)\]/.exec(searchKnowledge(chunks, q))![1];
+    expect(first('where is runite ore')).toBe('knowledge/mining.md');
+    expect(first('walk to a far location')).toBe('learnings/walking.md');
+    // "ore" is not in "before", "more" or "store"; "far" is not in "farming".
+    expect(searchKnowledge(chunks, 'far')).toBe('No match.');
   });
 
   test('a page in knowledge/ is a learning, with its path from the repository root', () => {
