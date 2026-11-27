@@ -27,15 +27,16 @@ const KINDS: readonly MessageKind[] = ['instruction', 'question', 'stop', 'none'
 const MAX_LINE = 300;
 
 export function addresseePrompt(input: AddresseeInput): string {
-  const line = (l: ChannelLine) => `${l.isBot ? `${input.botName} (the bot)` : l.author}: ${l.text.replace(/\s+/g, ' ').slice(0, MAX_LINE)}`;
+  // Each line is one JSON object, so a message cannot pose as a new line or as a rule.
+  const line = (l: ChannelLine) => JSON.stringify({ from: l.isBot ? `${input.botName} (the bot)` : l.author, text: l.text.replace(/\s+/g, ' ').slice(0, MAX_LINE) });
   return [
     `You sort messages in a Discord channel. In this channel, people direct an AI bot named "${input.botName}" that plays a shared game account. People also talk to each other in the channel, often about the bot, and leave notes for each other.`,
     '',
-    'Recent lines, oldest first:',
+    'Recent lines, oldest first, one JSON object each:',
     ...(input.history.length ? input.history.map(line) : ['(none)']),
     '',
-    'New message:',
-    `${input.author}: ${input.text.replace(/\s+/g, ' ').slice(0, 1_000)}`,
+    'New message, as one JSON object:',
+    JSON.stringify({ from: input.author, text: input.text.replace(/\s+/g, ' ').slice(0, 1_000) }),
     '',
     input.direct
       ? 'The new message mentions the bot or replies to it, so it is for the bot.'

@@ -34,7 +34,7 @@ import { compactState as wakeState, type WakeScheduler } from '../orchestrator/w
 import { formatWorldState } from '../../vendor/rs-sdk/sdk/formatter';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
 import type { BotConfig, GuildConfig } from './config';
-import { ADMIT_TEXT, cardFor, cardView, createAdmission, jobSignal, receiptEvent, type Receipt, type createKeyedLock } from './helpers';
+import { ADMIT_TEXT, cardFor, cardView, createAdmission, createRateLimit, jobSignal, receiptEvent, type Receipt, type createKeyedLock } from './helpers';
 
 export interface Shared {
   cfg: BotConfig;
@@ -285,6 +285,9 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   }
 
   // One call to the small model. It counts in the spend like every other call.
+  // Each user can make the small model sort at most 10 messages a minute.
+  const classifyLimit = createRateLimit(10, 60_000);
+
   async function small(prompt: string, maxTokens = 2_000): Promise<string> {
     const r = await sh.anthropic.messages.create({
       model: cfg.smallModel,
@@ -395,10 +398,15 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
         if (direct) await reply('My monthly spend cap is reached, so I cannot take new requests until it resets.');
         return;
       }
+      // The role check comes before any model call, so a member without the role costs nothing.
+      if (!allowed(message.member)) {
+        if (direct) await reply('You do not have the role that can talk to me.');
+        return;
+      }
+      if (!classifyLimit(message.author.id)) return;
       const author = message.member?.displayName ?? message.author.username;
       const addr = await classifyMessage({ botName, history, author, text, direct }, small);
       if (!addr.toBot) return;
-      if (!allowed(message.member)) { await reply('You do not have the role that can talk to me.'); return; }
       if (addr.kind === 'stop') {
         if (!current) { await reply('I am not doing anything right now.'); return; }
         current.abort.abort();

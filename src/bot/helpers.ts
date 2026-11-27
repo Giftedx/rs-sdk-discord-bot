@@ -150,3 +150,16 @@ export function mentionsBot(userIds: Iterable<string>, roleIds: Iterable<string>
 export function stripMentions(content: string): string {
   return content.replace(/<@[!&]?\d+>/g, '').trim();
 }
+
+// At most `max` events per key in a sliding window.
+export function createRateLimit(max: number, windowMs: number, now: () => number = Date.now) {
+  const seen = new Map<string, number[]>();
+  return (key: string): boolean => {
+    const t = now();
+    const list = (seen.get(key) ?? []).filter(x => x > t - windowMs);
+    if (list.length >= max) { seen.set(key, list); return false; }
+    list.push(t);
+    seen.set(key, list);
+    return true;
+  };
+}

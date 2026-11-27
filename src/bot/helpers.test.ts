@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { cardFor, cardView, createAdmission, createKeyedLock, jobSignal, mentionsBot, receiptEvent, stripMentions } from './helpers';
+import { cardFor, cardView, createAdmission, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptEvent, stripMentions } from './helpers';
 
 const state = { hp: 5, maxHp: 10, x: 3222, z: 3218, plane: 0, skills: { Woodcutting: { level: 10, xp: 1200 } }, inventory: {}, inCombat: false };
 
@@ -123,5 +123,15 @@ describe('mentions', () => {
   test('stripMentions removes user and role mentions', () => {
     expect(stripMentions('<@&123> help')).toBe('help');
     expect(stripMentions('<@!12> <@34> chop trees')).toBe('chop trees');
+  });
+});
+
+describe('createRateLimit', () => {
+  test('allows max per window, per key', () => {
+    let t = 0;
+    const allow = createRateLimit(2, 60_000, () => t);
+    expect([allow('a'), allow('a'), allow('a'), allow('b')]).toEqual([true, true, false, true]);
+    t = 61_000;
+    expect(allow('a')).toBe(true);
   });
 });
