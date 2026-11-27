@@ -105,6 +105,14 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE instructions ADD COLUMN rank INTEGER;
    ALTER TABLE instructions ADD COLUMN message_id TEXT;
    CREATE INDEX instructions_message ON instructions (message_id);`,
+  // The last bank and exchange the bot saw. They are only in the state while their window is open.
+  `CREATE TABLE seen (
+     guild TEXT NOT NULL,
+     key TEXT NOT NULL,
+     time INTEGER NOT NULL,
+     json TEXT NOT NULL,
+     PRIMARY KEY (guild, key)
+   );`,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -228,6 +236,15 @@ export function openDb(path: string, now: () => number = Date.now) {
         ? db.query('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit)
         : db.query('SELECT * FROM events WHERE guild = ? ORDER BY id DESC LIMIT ?').all(guild, limit)) as Raw[];
       return rows.map(r => ({ id: r.id as number, guild: (r.guild as string | null) ?? null, type: r.type as string, text: r.text as string, data: parseJson(r.data), time: r.time as number }));
+    },
+
+    // The last thing of a kind that the bot saw, such as the bank. One row per guild and key.
+    setSeen(guild: string, key: string, value: unknown, time = now()): void {
+      db.query('INSERT INTO seen (guild, key, time, json) VALUES (?, ?, ?, ?) ON CONFLICT (guild, key) DO UPDATE SET time = excluded.time, json = excluded.json').run(guild, key, time, JSON.stringify(value));
+    },
+    getSeen<T = unknown>(guild: string, key: string): { time: number; value: T } | null {
+      const r = db.query('SELECT time, json FROM seen WHERE guild = ? AND key = ?').get(guild, key) as Raw | null;
+      return r ? { time: r.time as number, value: parseJson(r.json) as T } : null;
     },
 
     // Snapshots.

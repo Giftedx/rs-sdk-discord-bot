@@ -50,6 +50,48 @@ export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
       { id: 590, name: 'Tinderbox', count: 1 },
     ],
   },
+  equipment: {
+    combatLevel: 21,
+    style: 'Accurate (Chop)',
+    worn: [
+      { slot: 'head', id: 1139, name: 'Bronze med helm', count: 1 },
+      { slot: 'weapon', id: 1353, name: 'Steel axe', count: 1 },
+      { slot: 'body', id: 1117, name: 'Bronze platebody', count: 1 },
+      { slot: 'shield', id: 1171, name: 'Wooden shield', count: 1 },
+      { slot: 'legs', id: 1075, name: 'Bronze platelegs', count: 1 },
+      { slot: 'ammo', id: 882, name: 'Bronze arrow', count: 150 },
+    ],
+  },
+  inventory: {
+    items: [
+      { slot: 0, id: 1351, name: 'Bronze axe', count: 1 },
+      { slot: 1, id: 590, name: 'Tinderbox', count: 1 },
+      { slot: 2, id: 995, name: 'Coins', count: 1_250 },
+      { slot: 4, id: 1521, name: 'Oak logs', count: 1 },
+      { slot: 5, id: 1521, name: 'Oak logs', count: 1 },
+      { slot: 27, id: 315, name: 'Shrimps', count: 1 },
+    ],
+  },
+  bank: {
+    seen: '2 hours ago',
+    total: 94,
+    items: Array.from({ length: 80 }, (_, i) => ({ id: 1500 + i, name: `Item ${i + 1}`, count: (i * 37) % 500 + 1 })),
+  },
+  skills: {
+    combatLevel: 21,
+    skills: SKILLS.map((name, i) => {
+      const base = 1 + ((i * 7) % 45);
+      return { name, base, level: i === 3 ? base - 4 : i === 1 ? base + 3 : base };
+    }),
+  },
+  ge: {
+    seen: '10 minutes ago',
+    offers: [
+      { id: 1521, name: 'Oak logs', side: 'sell', quantity: 200, price: 22, filled: 140, state: 'open' },
+      { id: 1353, name: 'Steel axe', side: 'buy', quantity: 1, price: 210, filled: 1, state: 'completed' },
+      { id: 317, name: 'Raw shrimps', side: 'buy', quantity: 500, price: 6, filled: 120, state: 'cancelled' },
+    ],
+  },
   xp_chart: {
     title: 'Last 24 hours, UTC',
     labels: Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0')),

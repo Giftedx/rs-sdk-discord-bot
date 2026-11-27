@@ -47,6 +47,18 @@ describe('orchestrator db', () => {
     d.close();
   });
 
+  test('keeps one seen value per guild and key, and replaces it', () => {
+    const d = openDb(tmpFile());
+    expect(d.getSeen('g1', 'bank')).toBeNull();
+    d.setSeen('g1', 'bank', { items: [1] }, 100);
+    d.setSeen('g1', 'bank', { items: [2] }, 200);
+    d.setSeen('g2', 'bank', { items: [3] }, 300);
+    expect(d.getSeen('g1', 'bank')).toEqual({ time: 200, value: { items: [2] } });
+    expect(d.getSeen('g2', 'bank')?.value).toEqual({ items: [3] });
+    expect(d.getSeen('g1', 'ge')).toBeNull();
+    d.close();
+  });
+
   test('migrates a new file to the current schema version, and opens it again', () => {
     const file = tmpFile();
     const a = openDb(file);

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Browser } from 'puppeteer';
 import { SAMPLE_CARDS } from '../cards/samples';
-import { CARD_DEVICE_SCALE, CARD_KINDS, CARD_MIN_HEIGHT, CARD_SIZES, CardDataError } from '../cards/templates';
+import { CARD_DEVICE_SCALE, CARD_KINDS, CARD_MIN_HEIGHT, CARD_SIZES, CardDataError, cardIconIds, validateCardData } from '../cards/templates';
 import { allowCardRequest, cardHeight, type CardTab, openCardTab } from './card-tab';
 import { launchBrowser } from './game-tab';
 
@@ -75,7 +75,8 @@ describe('card tab', () => {
       if (PNG_DIR) writeFileSync(join(PNG_DIR, `${kind}.png`), png);
     }
     if (!LIVE_ICON_HOST) {
-      expect(seen.filter(p => p.startsWith('/sprite/item/')).sort()).toEqual(['/sprite/item/1351.png', '/sprite/item/1519.png', '/sprite/item/1521.png', '/sprite/item/590.png', '/sprite/item/995.png']);
+      const want = new Set(CARD_KINDS.flatMap(k => cardIconIds(k, validateCardData(k, SAMPLE_CARDS[k]))));
+      expect(seen.filter(p => p.startsWith('/sprite/item/')).sort()).toEqual([...want].map(id => `/sprite/item/${id}.png`).sort());
     }
   }, T);
 

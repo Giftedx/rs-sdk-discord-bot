@@ -2,9 +2,57 @@
 // window.renderCard(kind, data, icons) for each card. The page script builds the DOM with
 // createElement and textContent only, because item names and player names are untrusted.
 
-export type CardKind = 'level_up' | 'death' | 'instruction_receipt' | 'daily_recap' | 'status' | 'xp_chart';
+export type CardKind = 'level_up' | 'death' | 'instruction_receipt' | 'daily_recap' | 'status' | 'xp_chart' | 'equipment' | 'inventory' | 'bank' | 'skills' | 'ge';
 
-export const CARD_KINDS: readonly CardKind[] = ['level_up', 'death', 'instruction_receipt', 'daily_recap', 'status', 'xp_chart'];
+export const CARD_KINDS: readonly CardKind[] = ['level_up', 'death', 'instruction_receipt', 'daily_recap', 'status', 'xp_chart', 'equipment', 'inventory', 'bank', 'skills', 'ge'];
+
+/** The wear slots of the 2004 equipment screen. */
+export type EquipSlot = 'head' | 'cape' | 'neck' | 'ammo' | 'weapon' | 'body' | 'shield' | 'legs' | 'hands' | 'feet' | 'ring';
+export const EQUIP_SLOTS: readonly EquipSlot[] = ['head', 'cape', 'neck', 'ammo', 'weapon', 'body', 'shield', 'legs', 'hands', 'feet', 'ring'];
+
+export interface EquipmentCard {
+  /** One entry per worn item. A slot that is not in the list is empty. */
+  worn: (CardItem & { slot: EquipSlot })[];
+  combatLevel?: number;
+  /** The attack style, for example "Accurate (Chop)". */
+  style?: string;
+}
+
+export interface InventoryCard {
+  /** slot: the place in the 4 by 7 grid, 0 to 27. */
+  items: (CardItem & { slot: number })[];
+}
+
+export interface BankCard {
+  /** When the bot last saw the bank, preformatted, for example "2 hours ago". */
+  seen: string;
+  /** The first items of the bank, in bank order. */
+  items: CardItem[];
+  /** The number of different items in the bank. Can be more than items.length. */
+  total: number;
+}
+
+export interface SkillsCard {
+  /** level: the current level (boosted or drained). base: the real level. */
+  skills: { name: string; level: number; base: number }[];
+  combatLevel?: number;
+}
+
+export interface GeOffer {
+  id?: number;
+  name: string;
+  side: 'buy' | 'sell';
+  quantity: number;
+  price: number;
+  filled: number;
+  state: 'open' | 'completed' | 'cancelled';
+}
+
+export interface GeCard {
+  /** When the bot last saw the exchange, preformatted. */
+  seen: string;
+  offers: GeOffer[];
+}
 
 export interface CardItem {
   /** The item id, for the icon. Without it the card shows the name. */
@@ -94,6 +142,11 @@ export interface CardDataMap {
   daily_recap: DailyRecapCard;
   status: StatusCard;
   xp_chart: XpChartCard;
+  equipment: EquipmentCard;
+  inventory: InventoryCard;
+  bank: BankCard;
+  skills: SkillsCard;
+  ge: GeCard;
 }
 
 /** The width of each card and its largest height. The picture is as high as its content. */
@@ -105,6 +158,11 @@ export const CARD_SIZES: Readonly<Record<CardKind, { width: number; height: numb
   daily_recap: { width: 600, height: 560 },
   status: { width: 720, height: 600 },
   xp_chart: { width: 600, height: 400 },
+  equipment: { width: 560, height: 360 },
+  inventory: { width: 236, height: 420 },
+  bank: { width: 560, height: 520 },
+  skills: { width: 560, height: 400 },
+  ge: { width: 560, height: 520 },
 };
 
 /** The smallest height of a card picture. */
@@ -141,6 +199,9 @@ const LIMITS = {
   chartPoints: 25,
   chartSeries: 4,
   chartLabel: 8,
+  bankItems: 80,
+  geOffers: 8,
+  style: 40,
 };
 
 export const MAX_LEVEL = 99;
@@ -316,6 +377,73 @@ export function validateCardData<K extends CardKind>(kind: K, data: unknown): Ca
       out = { title: str(o, 'title', LIMITS.date, w), labels, series } satisfies XpChartCard;
       break;
     }
+    case 'equipment': {
+      const seen = new Set<string>();
+      const worn = (rows(o, 'worn', EQUIP_SLOTS.length, w, (k, kw) => {
+        const slot = k.slot;
+        if (typeof slot !== 'string' || !(EQUIP_SLOTS as readonly string[]).includes(slot)) throw new CardDataError(`${kw}.slot: not a wear slot`);
+        if (seen.has(slot)) throw new CardDataError(`${kw}.slot: ${slot} twice`);
+        seen.add(slot);
+        const it: CardItem & { slot: EquipSlot } = { slot: slot as EquipSlot, name: str(k, 'name', LIMITS.name, kw), count: num(k, 'count', kw, 1, 2_147_483_647) };
+        if (k.id !== undefined) it.id = num(k, 'id', kw, 0, 999_999);
+        return it;
+      }) ?? []);
+      const e: EquipmentCard = { worn };
+      const cl = optNum(o, 'combatLevel', w, 3, 200);
+      if (cl !== undefined) e.combatLevel = cl;
+      const style = optStr(o, 'style', LIMITS.style, w);
+      if (style) e.style = style;
+      out = e;
+      break;
+    }
+    case 'inventory': {
+      const used = new Set<number>();
+      const list = rows(o, 'items', 28, w, (k, kw) => {
+        const slot = num(k, 'slot', kw, 0, 27);
+        if (used.has(slot)) throw new CardDataError(`${kw}.slot: ${slot} twice`);
+        used.add(slot);
+        const it: CardItem & { slot: number } = { slot, name: str(k, 'name', LIMITS.name, kw), count: num(k, 'count', kw, 1, 2_147_483_647) };
+        if (k.id !== undefined) it.id = num(k, 'id', kw, 0, 999_999);
+        return it;
+      }) ?? [];
+      out = { items: list } satisfies InventoryCard;
+      break;
+    }
+    case 'bank': {
+      const list = items(o, LIMITS.bankItems, w) ?? [];
+      const total = num(o, 'total', w, 0, 10_000);
+      if (total < list.length) throw new CardDataError(`${w}.total: less than the items`);
+      out = { seen: str(o, 'seen', LIMITS.time, w), items: list, total } satisfies BankCard;
+      break;
+    }
+    case 'skills': {
+      const skills = arr(o, 'skills', LIMITS.skills, w, false)!.map((e, i) => {
+        const kw = `${w}.skills[${i}]`;
+        const k = obj(e, kw);
+        return { name: str(k, 'name', LIMITS.name, kw), level: num(k, 'level', kw, 0, 255), base: num(k, 'base', kw, 1, 126) };
+      });
+      const s: SkillsCard = { skills };
+      const cl = optNum(o, 'combatLevel', w, 3, 200);
+      if (cl !== undefined) s.combatLevel = cl;
+      out = s;
+      break;
+    }
+    case 'ge': {
+      const offers = arr(o, 'offers', LIMITS.geOffers, w, false)!.map((e, i) => {
+        const kw = `${w}.offers[${i}]`;
+        const k = obj(e, kw);
+        const side = k.side;
+        if (side !== 'buy' && side !== 'sell') throw new CardDataError(`${kw}.side: not buy or sell`);
+        const state = k.state;
+        if (state !== 'open' && state !== 'completed' && state !== 'cancelled') throw new CardDataError(`${kw}.state: not open, completed or cancelled`);
+        const quantity = num(k, 'quantity', kw, 1, 2_147_483_647);
+        const of: GeOffer = { name: str(k, 'name', LIMITS.name, kw), side, quantity, price: num(k, 'price', kw, 0, 2_147_483_647), filled: num(k, 'filled', kw, 0, quantity), state };
+        if (k.id !== undefined) of.id = num(k, 'id', kw, 0, 999_999);
+        return of;
+      });
+      out = { seen: str(o, 'seen', LIMITS.time, w), offers } satisfies GeCard;
+      break;
+    }
     default:
       throw new CardDataError(`unknown card kind: ${String(kind)}`);
   }
@@ -329,8 +457,10 @@ export function isCardKind(v: unknown): v is CardKind {
 // The item ids whose icons the card shows, without duplicates.
 export function cardIconIds(kind: CardKind, data: CardDataMap[CardKind]): number[] {
   let list: { id?: number }[] = [];
-  if (kind === 'death' || kind === 'status') list = (data as DeathCard | StatusCard).items ?? [];
+  if (kind === 'death' || kind === 'status' || kind === 'inventory' || kind === 'bank') list = (data as DeathCard | StatusCard | InventoryCard | BankCard).items ?? [];
   else if (kind === 'instruction_receipt') list = (data as InstructionReceiptCard).inventory ?? [];
+  else if (kind === 'equipment') list = (data as EquipmentCard).worn;
+  else if (kind === 'ge') list = (data as GeCard).offers;
   return [...new Set(list.flatMap(i => (i.id === undefined ? [] : [i.id])))];
 }
 
@@ -398,6 +528,8 @@ border:2px solid #000;box-shadow:inset 0 0 0 2px #6e6352,inset 0 0 0 4px #221d17
 .skt{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px 0 4px;background:#2e2820;border:1px solid #1a1611;min-width:0}
 .skt .nm{flex:1;min-width:0;font-size:12.5px;color:#ff981f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .skt .lv{font-size:14px;color:#ffff00}
+.doll{display:grid;grid-template-columns:repeat(3,44px);grid-template-rows:repeat(5,38px);gap:4px 10px}
+.ghost{font-size:9.5px;color:#6e6352;text-shadow:none}
 .legend{display:flex;flex-wrap:wrap;gap:4px 14px;padding:0 4px;font-size:13px}
 .legend span{display:inline-flex;align-items:center;gap:6px;color:#fff;white-space:nowrap}
 .dot{display:inline-block;width:10px;height:10px;border:1px solid #000}
@@ -628,6 +760,124 @@ export const CARD_PAGE_SCRIPT = `
       cols.appendChild(pi);
       c.appendChild(cols);
     }
+  };
+
+  // The places of the wear slots on the 2004 equipment screen: column and row, from 1.
+  var EQUIP_POS = {
+    head: [2, 1], cape: [1, 2], neck: [2, 2], ammo: [3, 2], weapon: [1, 3], body: [2, 3],
+    shield: [3, 3], legs: [2, 4], hands: [1, 5], feet: [2, 5], ring: [3, 5]
+  };
+  var EQUIP_ORDER = ['head', 'cape', 'neck', 'ammo', 'weapon', 'body', 'shield', 'legs', 'hands', 'feet', 'ring'];
+  function cap(s){ return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  R.equipment = function(c, d, icons){
+    var right = [];
+    if (d.combatLevel) right.push('Combat level ' + d.combatLevel);
+    head(c, 'Worn equipment', right.join(DOT));
+    var by = {};
+    d.worn.forEach(function(it){ by[it.slot] = it; });
+    var cols = el('div','cols');
+    var doll = css(well(), 'flex:none');
+    var g = el('div','doll');
+    EQUIP_ORDER.forEach(function(s){
+      var it = by[s];
+      var cell = it ? slot(it, icons) : el('div','slot empty');
+      if (!it) cell.appendChild(el('div','ghost',cap(s)));
+      cell.style.gridColumn = String(EQUIP_POS[s][0]); cell.style.gridRow = String(EQUIP_POS[s][1]);
+      g.appendChild(cell);
+    });
+    doll.appendChild(g);
+    cols.appendChild(doll);
+    var list = well(null);
+    var rs = el('div','rows');
+    var worn = EQUIP_ORDER.filter(function(s){ return by[s]; });
+    worn.forEach(function(s){
+      var it = by[s];
+      var r = el('div','r');
+      r.appendChild(css(el('span','',cap(s)), 'color:#ff981f;width:58px;flex:none'));
+      r.appendChild(el('span','nm',it.name));
+      if (it.count > 1) r.appendChild(css(el('span','d',fmt(it.count)), 'color:#ffff00'));
+      rs.appendChild(r);
+    });
+    if (!worn.length) rs.appendChild(el('div','more','Nothing is worn.'));
+    list.appendChild(rs);
+    if (d.style) list.appendChild(css(el('div','label'), 'margin-top:4px')).appendChild(el('span','','Style: ' + d.style));
+    cols.appendChild(list);
+    c.appendChild(cols);
+  };
+
+  R.inventory = function(c, d, icons){
+    head(c, 'Inventory', d.items.length + ' / 28');
+    var cells = [];
+    d.items.forEach(function(it){ cells[it.slot] = it; });
+    var p = well();
+    var g = el('div','items tight');
+    g.style.gridTemplateColumns = 'repeat(4,44px)';
+    g.style.justifyContent = 'center';
+    for (var i = 0; i < 28; i++) g.appendChild(cells[i] ? slot(cells[i], icons) : el('div','slot empty'));
+    p.appendChild(g);
+    c.appendChild(p);
+  };
+
+  R.bank = function(c, d, icons){
+    head(c, 'Bank', 'Seen ' + d.seen);
+    var p = well(fmt(d.total) + (d.total === 1 ? ' item' : ' items'));
+    if (d.items.length) p.appendChild(slots(d.items, icons, 10, 0));
+    else p.appendChild(el('div','more','The bank was empty.'));
+    more(p, d.total - d.items.length);
+    c.appendChild(p);
+  };
+
+  R.skills = function(c, d){
+    var total = d.skills.reduce(function(a, s){ return a + s.base; }, 0);
+    head(c, 'Skills', d.combatLevel ? 'Combat level ' + d.combatLevel : null);
+    var p = well();
+    var g = el('div','sk');
+    d.skills.forEach(function(s){
+      var t = el('div','skt');
+      t.appendChild(badge(s.name, 22));
+      t.appendChild(el('span','nm',s.name));
+      var lv = el('span','lv');
+      var cur = el('span','',s.level);
+      if (s.level > s.base) cur.className = 'up'; else if (s.level < s.base) cur.className = 'down';
+      lv.appendChild(cur); lv.appendChild(document.createTextNode('/' + s.base));
+      t.appendChild(lv);
+      g.appendChild(t);
+    });
+    p.appendChild(g);
+    c.appendChild(p);
+    var foot = el('div','label');
+    css(foot, 'padding:0 4px;font-size:15px');
+    foot.appendChild(el('span','','Total level'));
+    foot.appendChild(el('span','v',fmt(total)));
+    c.appendChild(foot);
+  };
+
+  R.ge = function(c, d, icons){
+    head(c, 'Grand Exchange', 'Seen ' + d.seen);
+    if (!d.offers.length) { var e = well(); e.appendChild(el('div','more','No offers.')); c.appendChild(e); return; }
+    d.offers.forEach(function(o){
+      var p = css(well(), 'flex-direction:row;align-items:center;gap:10px');
+      var src = iconSrc(icons, o.id);
+      var ic = el('div','slot');
+      if (src) ic.appendChild(img(src, o.name)); else ic.appendChild(el('div','nm',o.name));
+      p.appendChild(ic);
+      var mid = css(el('div'), 'flex:1;min-width:0;display:flex;flex-direction:column;gap:5px');
+      var top = el('div','label');
+      top.appendChild(css(el('span','',(o.side === 'buy' ? 'Buy ' : 'Sell ') + o.name), 'color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+      top.appendChild(el('span','v',fmt(o.price) + ' gp each'));
+      mid.appendChild(top);
+      var fill = o.state === 'cancelled' ? '#b40000' : o.state === 'completed' ? '#00b400' : '#ff981f';
+      var row = css(el('div'), 'display:flex;align-items:center;gap:10px');
+      row.appendChild(bar(o.filled / o.quantity * 100, fill, 'thin'));
+      row.appendChild(css(el('span','',fmt(o.filled) + ' / ' + fmt(o.quantity)), 'font-size:13px;color:#fff;white-space:nowrap'));
+      mid.appendChild(row);
+      p.appendChild(mid);
+      var st = el('span','', o.state === 'open' ? 'Open' : cap(o.state));
+      st.style.cssText = 'font-size:13px;min-width:74px;text-align:right;color:' + (o.state === 'cancelled' ? '#ff3a2a' : o.state === 'completed' ? '#00ff00' : '#ffff00');
+      p.appendChild(st);
+      c.appendChild(p);
+    });
   };
 
   var LINE = ['#ffff00','#00ff00','#ff981f','#5fb0ff'];

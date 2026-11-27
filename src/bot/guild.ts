@@ -34,8 +34,9 @@ import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
 import type { BotConfig, GuildConfig } from './config';
 import {
   ADMIT_TEXT, buildReceipt, endedOf, RECEIPT_SUMMARY_MAX, cardFor, createItemIdBook, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
-  retryBackoff, scriptFromProgress, tabLine, wakeContextText, type Receipt, type createKeyedLock,
+  retryBackoff, scriptFromProgress, tabLine, wakeContextText, type CardRequest, type Receipt, type createKeyedLock,
 } from './helpers';
+import { bankData, bankSeen, bankText, equipmentData, geData, geSeen, geText, inventoryData, pickInfoCard, skillsData, type BankSeen, type GeSeen, type InfoKind, type InfoState } from './info-cards';
 
 export interface Shared {
   cfg: BotConfig;
@@ -391,7 +392,39 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
 
   // A question gets a short answer at once, from the status, the game state and a search of the
   // knowledge pack, with no job.
-  async function answerQuestion(author: string, text: string, history: ChannelLine[]): Promise<string> {
+  // Keeps the bank and the exchange while their window is open. It writes only on a change, because
+  // a state comes several times a second.
+  const lastSeenJson: Record<'bank' | 'ge', string> = { bank: '', ge: '' };
+  function rememberSeen(s: InfoState): void {
+    const parts: ['bank' | 'ge', BankSeen | GeSeen | null][] = [['bank', bankSeen(s)], ['ge', geSeen(s)]];
+    for (const [key, value] of parts) {
+      if (!value) continue;
+      const json = JSON.stringify(value);
+      if (json === lastSeenJson[key]) continue;
+      lastSeenJson[key] = json;
+      try { db.setSeen(g.name, key, value); } catch (err) { log(`${key} not saved: ${errText(err)}`); }
+    }
+  }
+
+  // The card for a question about the account, and the facts behind it for the answer. Null when
+  // the question asks for no card, or the bot has no data for it (no fresh state, bank never seen).
+  function infoCard(kind: InfoKind): { req: CardRequest; facts: string } | null {
+    const now = Date.now();
+    if (kind === 'bank' || kind === 'ge') {
+      if (kind === 'bank') {
+        const seen = db.getSeen<BankSeen>(g.name, 'bank');
+        return seen ? { req: { kind: 'bank', data: bankData(seen.value, now - seen.time) }, facts: bankText(seen.value, now - seen.time) } : null;
+      }
+      const seen = db.getSeen<GeSeen>(g.name, 'ge');
+      return seen ? { req: { kind: 'ge', data: geData(seen.value, now - seen.time) }, facts: geText(seen.value, now - seen.time) } : null;
+    }
+    const s = freshState() as unknown as InfoState | null;
+    if (!s) return null;
+    const req: CardRequest = kind === 'equipment' ? { kind, data: equipmentData(s) } : kind === 'inventory' ? { kind, data: inventoryData(s) } : { kind, data: skillsData(s) };
+    return { req, facts: `${kind} now: ${JSON.stringify(req.data)}` };
+  }
+
+  async function answerQuestion(author: string, text: string, history: ChannelLine[], extra = ''): Promise<string> {
     let knowledge = '';
     try { knowledge = searchKnowledge(sh.knowledge, text); } catch (err) { log(`knowledge search failed: ${errText(err)}`); }
     const prompt = [
@@ -402,6 +435,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       '',
       'Facts:',
       statusText().replace(/\*\*|```/g, ''),
+      ...(extra ? ['', 'A picture with these facts goes with your answer, so keep the answer short:', extra] : []),
       '',
       'Game knowledge (search results for the question):',
       knowledge && knowledge !== 'No match.' && knowledge !== 'Give some search words.' ? knowledge : '(nothing found)',
@@ -511,6 +545,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       if (es && state) {
         itemIds.learn(state.inventory);
         if (state.equipment) itemIds.learn(state.equipment);
+        rememberSeen(state as unknown as InfoState);
         for (const e of enrichDeaths(diffStates(prevEvents, es), es, guessKiller(state))) emit(e);
         prevEvents = es;
       }
@@ -542,7 +577,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     // loadHistory reads the lines before the message from Discord. It runs only after the cheap
     // checks, so a member without the role or a fast sender costs no Discord request.
     async onMessage(message: Message, text: string, direct: boolean, loadHistory: () => Promise<ChannelLine[]>, botName: string): Promise<void> {
-      const reply = (content: string) => message.reply({ content: clean(content), allowedMentions: { parse: [], repliedUser: false } }).catch(() => {});
+      const reply = (content: string, files: AttachmentBuilder[] = []) => message.reply({ content: clean(content), files, allowedMentions: { parse: [], repliedUser: false } }).catch(() => {});
       if (budget.overCap()) {
         if (direct) await reply('My monthly spend cap is reached, so I cannot take new requests until it resets.');
         return;
@@ -572,7 +607,13 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       }
       if (addr.kind === 'question') {
         if ('sendTyping' in message.channel) await message.channel.sendTyping().catch(() => {});
-        await reply(await answerQuestion(author, text, history));
+        const kind = cfg.cards ? pickInfoCard(text) : null;
+        const info = kind ? infoCard(kind) : null;
+        const [answer, png] = await Promise.all([
+          answerQuestion(author, text, history, info?.facts.slice(0, 6_000) ?? ''),
+          info ? link.drawCard(info.req.kind, info.req.data as never).catch(err => { log(`${info.req.kind} card not drawn: ${errText(err)}`); return null; }) : Promise.resolve(null),
+        ]);
+        await reply(answer, png ? [new AttachmentBuilder(Buffer.from(png), { name: `${info!.req.kind}.png` })] : []);
         return;
       }
       const ok = admit(message.author.id, text, db.countWaiting(g.name));
