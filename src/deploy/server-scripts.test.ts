@@ -150,7 +150,7 @@ test.skipIf(!bash)('restore test opens the database of the newest backup and lea
     const tar = (name: string, parts: string) => run(['-c', `tar -czf bk/${name} -C stage ${parts}`], {}, dir);
     expect(tar('rs-discord-bot-20260101T000000Z.tar.gz', 'secrets').code).toBe(0);
     expect(tar('rs-discord-bot-20260102T000000Z.tar.gz', 'secrets data').code).toBe(0);
-    const env = { PATH: `${join(p('bin'))}${delimiter}${process.env.PATH ?? ''}`, BACKUP_DIR: 'bk', TMPDIR: 't', BUN: fwd(process.execPath) };
+    const env = { PATH: `${join(p('bin'))}${delimiter}${process.env.PATH ?? ''}`, BACKUP_DIR: 'bk', TMPDIR: 't', BUN: fwd(process.execPath), GAMELINK_ETC: 'no-gamelink-etc' };
     const r = run([script('server-restore-test.sh')], env, dir);
     expect(r.out).toContain('rs-discord-bot-20260102T000000Z.tar.gz');
     expect(r.out).toContain('integrity_check ok, 1 tables');
