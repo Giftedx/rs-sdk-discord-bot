@@ -48,6 +48,8 @@ test('drops a malformed action', () => {
 test('refuses a click on the logout button; other components pass', () => {
   const p = createActionPolicy();
   expect(p.check({ type: 'clickComponent', componentId: 2458 }, on)).toEqual({ allow: false, reason: 'logout_component' });
-  expect(p.check({ type: 'clickComponentWithOption', componentId: '2458', optionIndex: 1 }, on)).toEqual({ allow: false, reason: 'logout_component' });
+  expect(p.check({ type: 'clickComponentWithOption', componentId: 2458, optionIndex: 1 }, on)).toEqual({ allow: false, reason: 'logout_component' });
+  // Only a plain whole number passes, so the check and the client see the same component.
+  for (const odd of ['2458', 2458.5, -1, 70000, null, undefined]) expect(p.check({ type: 'clickComponent', componentId: odd }, on)).toEqual({ allow: false, reason: 'malformed' });
   expect(p.check({ type: 'clickComponent', componentId: 2459 }, on).allow).toBe(true);
 });

@@ -85,8 +85,9 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       // At the end of a job, wait until the gateway answered every action of the job, so the
       // next job does not start while the account still acts. Server log only.
       setJobActive: async active => {
-        if (!active && !(await link.waitIdle(WAIT_IDLE_CAP_MS))) log(`job ended with ${link.actionsInFlight()} actions in flight`);
+        // Close the gate first, so that no new action passes; then let the sent ones finish.
         await link.setJobActive(active);
+        if (!active && !(await link.waitIdle(WAIT_IDLE_CAP_MS))) log(`job ended with ${link.actionsInFlight()} actions in flight`);
       },
     },
     boxUser: g.boxUser, ...(g.boxUser ? { bunPath: cfg.boxBunPath } : {}),

@@ -41,7 +41,11 @@ export function createActionPolicy(opts: { chatPerMinute?: number } = {}): Actio
       if (!ctx.jobActive) return deny('no_job');
       if (BLOCKED_ACTION_TYPES.has(type)) return deny('blocked_type');
       if (!ALLOWED_ACTION_TYPES.has(type)) return deny('unknown_type');
-      if (COMPONENT_TYPES.has(type) && Number(componentId) === LOGOUT_COMPONENT) return deny('logout_component');
+      if (COMPONENT_TYPES.has(type)) {
+        // A plain whole number only: the check and the client must see the same component.
+        if (typeof componentId !== 'number' || !Number.isInteger(componentId) || componentId < 0 || componentId > 0xffff) return deny('malformed');
+        if (componentId === LOGOUT_COMPONENT) return deny('logout_component');
+      }
       if (!CHAT_TYPES.has(type)) return { allow: true };
 
       if (typeof message !== 'string') return deny('malformed');
