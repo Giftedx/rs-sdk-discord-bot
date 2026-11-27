@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
-import { readWieldRules, wieldNote, type WieldRules } from './wield';
+import { meleeWeaponPages, readWieldRules, wieldNote, type WieldRules } from './wield';
 
 export const SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 export const MAX_SCRIPT_CHARS = 40_000;
@@ -342,9 +342,14 @@ export function createKnowledgePack(rootDir: string): KnowledgePack {
   // The body index loads in the background: a synchronous read of 1700 small files is slow on some disks.
   const bodyReady = loadWikiBodies(wiki, pages).catch(() => 0);
   const learnings = [...loadKnowledge(ownKnowledgeFiles(rootDir), rootDir), ...loadKnowledge(knowledgeFiles(rootDir), base)];
-  // About 170 ms: the wield checks from the server scripts, shown on the wiki item pages.
+  // About 170 ms: the wield checks from the server scripts, shown on the wiki item pages, and the
+  // best melee weapon tables made from the item configs.
   let wield: WieldRules = {};
-  try { wield = readWieldRules(base).rules; } catch { /* no server scripts: the wiki pages stay as they are */ }
+  try {
+    const r = readWieldRules(base);
+    wield = r.rules;
+    if (r.objs.size > 0) learnings.push(...meleeWeaponPages(r.objs, r.bySym));
+  } catch { /* no server scripts: the wiki pages stay as they are */ }
   return { learnings, wiki, bodyReady, wield };
 }
 

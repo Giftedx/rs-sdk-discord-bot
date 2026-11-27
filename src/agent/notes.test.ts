@@ -101,6 +101,10 @@ describe('wiki knowledge', () => {
     expect(firstLearning('what defence for rune platebody')).toBe('knowledge/armour-and-weapon-levels.md');
     expect(firstLearning('walk to a far location')).toBe('learnings/walking.md');
     expect(firstLearning('how to open the bank')).toBe('learnings/banking.md');
+    // The weapon tables made from the item configs.
+    expect(firstLearning('whats the best melee weapon for stab')).toBe('knowledge/best-melee-weapon-stab.md');
+    expect(firstLearning('best crush weapon')).toBe('knowledge/best-melee-weapon-crush.md');
+    expect(searchKnowledge(pack, 'best slash weapon')).toContain('- Attack 40 to 59: Rune 2h sword (+69 slash, +70 strength, speed 7; needs Attack 40).');
     // The wield check from the server code is at the top of the item page.
     expect(searchKnowledge(pack, 'rune axe')).toContain('[wiki/items/rune-axe.md]\n# Rune axe\n\n> Server code: to wield or wear this item needs Attack 40.');
   });

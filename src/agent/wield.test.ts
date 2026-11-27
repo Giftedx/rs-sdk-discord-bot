@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readWieldRules, wieldNote, wieldRule } from './wield';
+import { meleeWeaponPages, readWieldRules, wieldNote, wieldRule } from './wield';
 
 describe('wield rules', () => {
   test('wieldRule names the skills, the levels and the quest', () => {
@@ -43,6 +43,24 @@ describe('wield rules', () => {
     expect(wieldNote('Attack 40', '# Rune axe\n| Level Requirement | 41 |')).toContain('not the wield level. The server does not check that number');
     expect(wieldNote('Attack 40', '# Rune pickaxe\n| Level Requirement | 41 |')).toContain('is the Mining level to mine with it');
     expect(wieldNote('Ranged 40', '# Yew longbow\n| Level Requirement | 40 |')).toBe('> Server code: to wield or wear this item needs Ranged 40.');
+  });
+
+  test('meleeWeaponPages: the best weapon per Attack level, a free one too, and no fake items', () => {
+    const o = (name: string, members: boolean, stab: number, str: number, file = '/s/melee/swords.obj') =>
+      ({ name, wearpos: 'righthand', category: 'weapon_stab', members: members ? 'yes' : undefined, params: { stabattack: String(stab), strengthbonus: String(str) }, file });
+    const objs = new Map([
+      ['iron_sword', o('Iron sword', false, 6, 5)],
+      ['rune_sword', o('Rune sword', false, 30, 30)],
+      ['rune_halberd', o('Rune halberd', true, 48, 68)],
+      ['poisoned_dagger_p', o('Poisoned dagger(p)', true, 255, 255)],
+      ['pickaxe_handle', o('Pickaxe handle', false, 50, 0, '/s/macro events/configs/antimacro.obj')],
+    ]);
+    const rules = new Map([['rune_sword', 'Attack 40'], ['rune_halberd', 'Attack 40 and Strength 20']]);
+    const stab = meleeWeaponPages(objs, rules).find(p => p.source === 'knowledge/best-melee-weapon-stab.md')!;
+    expect(stab.text).toContain('- Attack 1 to 39: Iron sword (+6 stab, +5 strength, speed 4; no level needed).');
+    expect(stab.text).toContain('- Attack 40 or more: Rune halberd (+48 stab, +68 strength, speed 4; members, needs Attack 40 and Strength 20). Free: Rune sword');
+    expect(stab.text).not.toContain('Poisoned');
+    expect(stab.text).not.toContain('Pickaxe handle');
   });
 
   const sdk = join(import.meta.dir, '..', '..', 'vendor', 'rs-sdk');
