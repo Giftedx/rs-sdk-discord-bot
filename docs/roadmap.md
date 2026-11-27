@@ -16,7 +16,4 @@ No milestone has a date.
 
 ## Known gaps
 
-The code of milestone 1 has known limits. [security.md](security.md) lists each one under "Known gaps in the current code", with the milestone that must close it. The largest:
-
-- `inGame()` reads `sceneState === 2`, but no test on a live page has confirmed that signal.
-- The security helpers are in `scripts/`, not in `src/`.
+The items of milestone 1 that this list named are closed: `inGame()` waits for `sceneState === 2`, which a live page on the demo world confirmed, and the security helpers are in `src/shared/script-secrets.ts`. [security.md](security.md) lists the limits that remain, under "Known gaps in the current code".

@@ -119,7 +119,7 @@ Game tab (`src/gamelink/game-tab.ts`), milestone 2:
 Scripts (`scripts/`), milestone 2:
 
 - `makeRedact` does not replace the URL-encoded form of a password, and it does not replace a password below 4 characters. The bootstrap makes passwords from `A-Za-z0-9`, which have no different encoded form.
-- The security helpers `boxChildCommand`, `boxChildEnv`, `makeRedact` and `newBootToken` are in `scripts/run-helpers.ts`. They have tests and are in the type check, but later code in `src/` cannot import them from there cleanly.
+- The security helpers `boxChildCommand`, `boxChildEnv`, `makeRedact` and `newBootToken` are in `src/shared/script-secrets.ts`, and `scripts/run-helpers.ts` re-exports them.
 - `scripts/proxy-proof.ts` exits with code 0 when no action was sent. Its field `passwordInChildEnv` reports on the environment that the script built, not on the running child.
 - `scripts/measure.ts` calls `keepAlive()` every 60 s in every mode, mode `demo` included.
 - The measurement scripts set no profile directory for Chromium, and they do not write the commit and the Chrome path into their result files. The bot and `scripts/bot-smoke.ts` use the tmpfs profile.
