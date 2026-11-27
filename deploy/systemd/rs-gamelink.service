@@ -37,12 +37,30 @@ RestartSec=30
 # Gamelink logs every account out of the game on SIGTERM; give it time.
 TimeoutStopSec=40
 KillMode=mixed
-# Gamelink starts no job and uses no sudo. Chromium sandboxes itself with user namespaces.
+# Gamelink starts no job and uses no sudo, so it can have NoNewPrivileges=yes and every limit
+# below. Chromium sandboxes itself with user and pid namespaces and its own seccomp filter, so
+# there is no RestrictNamespaces= and no SystemCallFilter=. No MemoryDenyWriteExecute=: Bun and
+# V8 need memory that is both writable and executable for their JIT compilers.
 NoNewPrivileges=yes
+CapabilityBoundingSet=
 PrivateTmp=yes
-ProtectSystem=full
+# /dev/shm (the browser profile) stays writable, as does the RuntimeDirectory.
+PrivateDevices=yes
+ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/rsgame/.cache
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 MemoryMax=2560M
 
 [Install]

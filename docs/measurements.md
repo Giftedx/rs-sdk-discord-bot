@@ -179,5 +179,4 @@ A killed run can leave a directory `/tmp/puppeteer_dev_chrome_profile-*` that ho
 - The Discord rate limit for an edit that replaces a picture.
 - The time from a login to a loaded map (`sceneState === 2`).
 - The CPU load on a 2-core server.
-- Chromium with its sandbox under a systemd unit with hardening options. The sandbox check ran from a login shell only.
 - The re-login test in its current form, with the wait before the reload.
