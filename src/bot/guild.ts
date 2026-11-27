@@ -38,7 +38,7 @@ import {
   retryBackoff, scriptFromProgress, tabLine, wakeContextText, type CardRequest, type Receipt, type createKeyedLock,
 } from './helpers';
 import {
-  bankData, bankSeen, bankText, equipmentData, geData, geSeen, geText, inventoryData, nearbyData, pickInfoCard, prayerData, shopData, shopSeen, skillsData, tradeData, tradeSeen,
+  bankData, bankSeen, bankText, equipmentData, geData, geSeen, geText, inventoryData, nearbyData, pickInfoCard, prayerData, shopData, shopSeen, showCardKind, skillsData, tradeData, tradeSeen,
   type BankSeen, type GeSeen, type InfoKind, type InfoState, type ShopSeen, type TradeSeen,
 } from './info-cards';
 
@@ -350,6 +350,15 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
       const png = receiptPng && view ? null : shot;
       if (png) files.push(new AttachmentBuilder(Buffer.from(png), { name: 'frame.png' }));
+      // A show request ("show bank") also gets the card that it asks for, drawn from the state that
+      // the instruction just saw.
+      const showKind = cfg.cards && wake === 'instruction' && ended === 'done' ? showCardKind(row.text) : null;
+      const shown = showKind ? infoCard(showKind) : null;
+      if (showKind && !shown) log(`${showKind} card: no data to draw`);
+      if (shown) {
+        const card = await link.drawCard(shown.req.kind, shown.req.data as never).catch(err => { log(`${shown.req.kind} card not drawn: ${errText(err)}`); return null; });
+        if (card) files.push(new AttachmentBuilder(Buffer.from(card), { name: `${shown.req.kind}.png` }));
+      }
       frames.stop();
       const b = budget.status();
       const period = `$${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)} spent this period`;

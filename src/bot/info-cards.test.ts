@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { CardDataError, validateCardData } from '../cards/templates';
 import {
-  ago, bankData, bankSeen, bankText, equipmentData, geData, geSeen, inventoryData, nearbyData, pickInfoCard, prayerData, shopData, shopSeen, skillsData, tradeData, tradeSeen, type InfoState,
+  ago, bankData, bankSeen, bankText, equipmentData, geData, geSeen, inventoryData, nearbyData, pickInfoCard, prayerData, shopData, shopSeen, showCardKind, skillsData, tradeData, tradeSeen, type InfoState,
 } from './info-cards';
 
 const state = (over: Partial<InfoState> = {}): InfoState => ({
@@ -10,6 +10,24 @@ const state = (over: Partial<InfoState> = {}): InfoState => ({
   inventory: [{ slot: 0, id: 1351, name: 'Bronze axe', count: 1 }, { slot: 27, id: 995, name: 'Coins', count: 120 }],
   equipment: [{ slot: 3, id: 1353, name: 'Steel axe', count: 1 }, { slot: 13, id: 882, name: 'Bronze arrow', count: 150 }, { slot: 6, id: 1, name: 'Arms', count: 1 }],
   ...over,
+});
+
+describe('showCardKind', () => {
+  test('a show request gets its card', () => {
+    expect(showCardKind('show bank')).toBe('bank');
+    expect(showCardKind('Show me the bank')).toBe('bank');
+    expect(showCardKind('check your inventory')).toBe('inventory');
+    expect(showCardKind("what's in the bank")).toBe('bank');
+    expect(showCardKind('please show your stats')).toBe('skills');
+    expect(showCardKind('open the bank')).toBe('bank');
+  });
+
+  test('other instructions get no card', () => {
+    expect(showCardKind('buy a weapon')).toBeNull();
+    expect(showCardKind('go to the bank and deposit everything')).toBeNull();
+    expect(showCardKind('train your skills')).toBeNull();
+    expect(showCardKind('show me where you are')).toBeNull();
+  });
 });
 
 describe('pickInfoCard', () => {

@@ -24,6 +24,17 @@ export function pickInfoCard(question: string): InfoKind | null {
   return null;
 }
 
+// An instruction that asks to show something: "show bank", "check your inventory", "what's in the bank".
+const SHOW = /^\s*(please\s+)?(show|display|check|see|view|look at|open|list|post|what'?s in|what is in)\b/i;
+
+/**
+ * The card that an instruction asks to see, or null. Only a show request counts: "show bank" gets
+ * the bank card on its Done post, but "buy a weapon" does not get the equipment card.
+ */
+export function showCardKind(instruction: string): InfoKind | null {
+  return SHOW.test(instruction) ? pickInfoCard(instruction) : null;
+}
+
 /** The parts of the game state that the cards read. */
 export interface InfoState {
   player: { combatLevel: number } | null;
