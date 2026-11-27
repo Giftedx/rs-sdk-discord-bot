@@ -18,6 +18,7 @@ mkdir -p "$RAW"
 # group ID. Stop signals the whole group, which includes the children of `bun run`.
 start_part() {
   local name="$1" dir="$2" cmd="$3"
+  # shellcheck disable=SC2016  # the inner bash expands $1 and $2
   setsid bash -c 'cd "$1" && eval "$2"' _ "$dir" "$cmd" >"$RAW/dev-stack-$name.log" 2>&1 </dev/null &
   echo "$name $!" >>"$PIDS"
   echo "started $name (pid $!), log $RAW/dev-stack-$name.log"
@@ -98,6 +99,7 @@ case "${1:-start}" in
     # The gateway imports engine source files, so it starts after the engine's
     # `bun install` is complete and the bot page answers.
     wait_for "$BOT_PAGE_URL" http_ok
+    # shellcheck disable=SC2016  # wait_for expands $SERVER
     wait_for "webclient bundle" '[ -s "$SERVER/webclient/out/bot/client.js" ]'
     start_part gateway "$SERVER/gateway" "GATEWAY_HOSTNAME=127.0.0.1 bun run gateway"
     wait_for "ws://localhost:$GATEWAY_PORT" ws_ok

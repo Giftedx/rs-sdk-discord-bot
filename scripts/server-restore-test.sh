@@ -85,5 +85,5 @@ else
 fi
 
 say "extracted size: $(du -sb "$tmp" | cut -f1) bytes; the temporary directory is removed"
-[ "$fail" -eq 0 ] && say "restore test passed" || say "restore test FAILED"
+if [ "$fail" -eq 0 ]; then say "restore test passed"; else say "restore test FAILED"; fi
 exit "$fail"

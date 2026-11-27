@@ -294,6 +294,7 @@ install_chrome() {
   sysctl kernel.apparmor_restrict_unprivileged_userns
 
   echo "== cache directory and environment of $APP_USER"
+  # shellcheck disable=SC2016  # $HOME is the home of the app user
   as_app 'mkdir -p "$HOME/.cache" && chmod 700 "$HOME/.cache" && stat -c "%A %U %n" "$HOME/.cache"'
   as_app "rm -rf \$HOME/.cache/puppeteer && test ! -e \$HOME/.cache/puppeteer && echo 'no puppeteer cache in the home of $APP_USER'"
   as_app "printf 'RS_CHROME_PATH=%s\n' '$dest_bin' > $SERVER_ENV && chmod 640 $SERVER_ENV && cat $SERVER_ENV"
