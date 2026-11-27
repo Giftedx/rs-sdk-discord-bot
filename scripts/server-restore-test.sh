@@ -32,7 +32,10 @@ fi
 say "archive $archive ($(stat -c %s "$archive") bytes)"
 
 # The archive holds secrets/, data/ and, in split mode, rs-gamelink-etc/; refuse absolute paths and "..".
-if tar -tzf "$archive" | grep -qE '(^/|(^|/)\.\.(/|$))'; then
+# Read the whole listing first. With pipefail, "tar | grep -q" can end with 141 (SIGPIPE) on a
+# match, and then the check passes.
+listing="$(tar -tzf "$archive")" || die "cannot list $archive"
+if grep -qE '(^/|(^|/)\.\.(/|$))' <<<"$listing"; then
   die "the archive holds an absolute path or '..'; not extracted"
 fi
 

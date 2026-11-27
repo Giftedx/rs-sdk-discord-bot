@@ -162,3 +162,25 @@ test.skipIf(!bash)('restore test opens the database of the newest backup and lea
     expect(old.out).toContain('FAILED data/bot.sqlite is not in the archive');
   });
 });
+
+test.skipIf(!bash)('restore test refuses a ".." path that comes before a long listing', () => {
+  withDir((p, dir) => {
+    mkdirSync(p('bin'));
+    stub(p, 'id', '[ "$1" = -u ] && echo 0; exit 0');
+    mkdirSync(p('stage/secrets'), { recursive: true });
+    mkdirSync(p('stage/data'));
+    writeFileSync(p('stage/evil'), 'x\n');
+    // More names than a pipe buffer holds, so tar still writes after grep -q stops reading.
+    const long = 'n'.repeat(60);
+    for (let i = 0; i < 3_000; i++) writeFileSync(join(dir, 'stage', 'data', `${long}${i}`), '');
+    mkdirSync(p('bk'));
+    mkdirSync(p('t'));
+    // -P keeps "secrets/../evil" as it is. The ".." entry is first in the archive.
+    expect(run(['-c', 'tar -czPf bk/rs-discord-bot-20260103T000000Z.tar.gz -C stage secrets/../evil data'], {}, dir).code).toBe(0);
+    const env = { PATH: `${join(p('bin'))}${delimiter}${process.env.PATH ?? ''}`, BACKUP_DIR: 'bk', TMPDIR: 't', BUN: fwd(process.execPath), GAMELINK_ETC: 'no-gamelink-etc' };
+    const r = run([script('server-restore-test.sh')], env, dir);
+    expect(r.out).toContain("the archive holds an absolute path or '..'; not extracted");
+    expect(r.code).toBe(1);
+    expect(run(['-c', 'ls -A t'], {}, dir).out.trim()).toBe('');
+  });
+});
