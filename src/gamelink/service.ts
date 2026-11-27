@@ -1,17 +1,19 @@
 // The local interface of the gamelink process: HTTP and JSON on a Unix socket (docs/design.md 5.2).
 // Every request must carry `authorization: Bearer <token>`. The token comes from a file that only
 // the gamelink user and the bot user can read. Routes, per guild name:
-//   GET  /guilds/:name/status         tab, proxy, in game, frames, proxy port, boot token
+//   GET  /guilds/:name/status         tab, tab reason, proxy, in game, frames, actions in flight, proxy port, boot token
 //   GET  /guilds/:name/state          newest raw state and its age in ms
 //   GET  /guilds/:name/frame          PNG: newest fresh frame or a new capture (?stored=1: stored only)
 //   POST /guilds/:name/frames/start   POST /guilds/:name/frames/stop
 //   POST /guilds/:name/job            {"active": boolean}: the job flag of the proxy
 //   POST /guilds/:name/card           {"kind", "data"}: PNG of a drawn card
+//   POST /guilds/:name/idle           {"timeoutMs": number}: {"idle": boolean} when no action is in flight (max 30 s)
 //   POST /guilds/:name/logout
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, rmSync } from 'node:fs';
 import { CardDataError, isCardKind, type CardDataMap, type CardKind } from '../cards/templates';
 import type { GameLink, GuildLink } from './link';
+import { WAIT_IDLE_CAP_MS } from './proxy';
 
 export interface ServiceOptions {
   link: GameLink;
@@ -31,6 +33,8 @@ export interface StatusBody {
   proxyPort: number;
   bootToken: string;
   tab: ReturnType<GuildLink['tabStatus']>;
+  tabReason: string | null;
+  actionsInFlight: number;
   proxy: ReturnType<GuildLink['proxyStatus']>;
   inGame: boolean;
   framesActive: boolean;
@@ -56,6 +60,8 @@ export function statusBody(g: GuildLink): StatusBody {
     proxyPort: g.proxyPort,
     bootToken: g.bootToken,
     tab,
+    tabReason: g.tabReason(),
+    actionsInFlight: g.actionsInFlight(),
     proxy: g.proxyStatus(),
     inGame: tab === 'in_game',
     framesActive: g.framesActive(),
@@ -112,6 +118,12 @@ async function route(link: GameLink, req: Request, log: (line: string) => void):
         log(`[${g.name}] card not drawn: ${errText(err)}`);
         return json({ error: 'card not drawn' }, 500);
       }
+    }
+    case 'POST idle': {
+      const body = await readJson(req) as { timeoutMs?: unknown } | undefined;
+      const ms = body?.timeoutMs;
+      if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return json({ error: 'timeoutMs must be a number of 0 or more' }, 400);
+      return json({ idle: await g.waitIdle(Math.min(ms, WAIT_IDLE_CAP_MS)) });
     }
     case 'POST logout':
       return json({ ok: await g.logout() });

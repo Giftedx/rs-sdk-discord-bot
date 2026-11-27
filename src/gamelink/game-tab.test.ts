@@ -181,6 +181,24 @@ describe('game tab', () => {
     expect(await t.inGame()).toBe(false);
   }, T);
 
+  browserTest('loginMessage joins loginMes1 and loginMes2; null without a client', async () => {
+    const t = await tab();
+    expect(await t.loginMessage()).toBe('Enter your username & password.');
+    const found = await gamePage();
+    await found.evaluate(() => { const gc = (window as any).gameClient; gc.loginMes1 = 'Invalid username or password.'; gc.loginMes2 = 7; });
+    expect(await t.loginMessage()).toBe('Invalid username or password.');
+    await found.evaluate(() => { delete (window as any).gameClient; });
+    expect(await t.loginMessage()).toBeNull();
+  }, T);
+
+  browserTest('deferLogin opens the tab without the login URL; reload logs in', async () => {
+    const t = await openGameTab({ browser, botPageUrl: `${base}/bot`, account: 'abc124', password: PASSWORD, fps: 15, deferLogin: true });
+    tabs.push(t);
+    expect((await browser.pages()).some(p => p.url().includes('bot=abc124'))).toBe(false);
+    await t.reload();
+    expect((await browser.pages()).some(p => p.url().includes('bot=abc124'))).toBe(true);
+  }, T);
+
   browserTest('keepAlive raises gameClient.idleTimer', async () => {
     const t = await tab();
     await t.keepAlive();

@@ -5,6 +5,14 @@ import { errText, type Handle, type Logger, type Timers } from './types';
 export const CARD_MARKER = '[status card]';
 export const STATUS_ID = 'status';
 export const CARD_INTERVAL_MS = 15_000;
+export const XP_RATE_WINDOW_MS = 15 * 60_000;
+const MIN_RATE_SPAN_MS = 60_000;
+
+/** One stored snapshot of the skills. */
+export interface SkillSample {
+  time: number;
+  skills: Record<string, { level: number; xp: number }>;
+}
 
 export interface CardView {
   goal: string;
@@ -17,12 +25,21 @@ export interface CardView {
   note?: string;
   /** A PNG frame from the game tab. */
   frame?: Uint8Array;
+  /** Used inventory slots. The game has 28. */
+  inventory?: { used: number; max: number };
+  /** Skill snapshots; the card uses the last 15 minutes for the current skill and its XP per hour. */
+  xpSamples?: SkillSample[];
+  /** The text of the last event. */
+  lastEvent?: string;
+  /** The name of the running script. */
+  script?: string;
 }
 
 export interface CardMessage {
   content: string;
   frame?: Uint8Array;
-  buttons: { id: string; label: string; danger?: boolean }[];
+  /** A button with url is a link button and sends no interaction. */
+  buttons: { id: string; label: string; danger?: boolean; url?: string }[];
 }
 
 /** The part of a Discord channel the card needs. fetchPinned returns only the messages of this bot. */
@@ -40,25 +57,60 @@ export interface StatusCardOptions {
   timers: Timers;
   log: Logger;
   intervalMs?: number;
+  /** The "Watch live" link. Empty or not https hides the button. */
+  watchUrl?: string;
 }
 
-export function renderCard(v: CardView, secrets: string[]): CardMessage {
+export const WATCH_ID = 'watch';
+
+/** Fills {account} in a link template. Returns undefined for an empty or non-https template. */
+export function watchLiveUrl(template: string | undefined, account: string): string | undefined {
+  if (!template) return undefined;
+  const url = template.replaceAll('{account}', encodeURIComponent(account));
+  try {
+    return new URL(url).protocol === 'https:' ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The skill with the most XP gained in the last 15 minutes of samples, and its XP per hour. */
+export function currentSkill(samples: SkillSample[], windowMs = XP_RATE_WINDOW_MS): { name: string; level: number; xpPerHour: number } | null {
+  if (samples.length < 2) return null;
+  const sorted = [...samples].sort((a, b) => a.time - b.time);
+  const last = sorted.at(-1)!;
+  const first = sorted.find((s) => s.time >= last.time - windowMs)!;
+  const span = last.time - first.time;
+  if (span < MIN_RATE_SPAN_MS) return null;
+  let best: { name: string; level: number; gain: number } | null = null;
+  for (const [name, k] of Object.entries(last.skills)) {
+    const gain = k.xp - (first.skills[name]?.xp ?? k.xp);
+    if (gain > 0 && (!best || gain > best.gain)) best = { name, level: k.level, gain };
+  }
+  return best ? { name: best.name, level: best.level, xpPerHour: Math.round((best.gain * 3_600_000) / span) } : null;
+}
+
+export function renderCard(v: CardView, secrets: string[], watchUrl?: string): CardMessage {
   const hp = v.hp ? `${v.hp.hp}/${v.hp.maxHp}` : 'unknown';
   const lines = [
     `**Status** ${CARD_MARKER}`,
     `Goal: ${v.goal || 'none'}`,
-    `Step: ${v.step || (v.running ? 'working' : 'waiting')}`,
-    `HP: ${hp}`,
-    `Queue: ${v.queueLength}`,
-    `Budget this month: $${v.spend.usedUsd.toFixed(2)} of $${v.spend.capUsd.toFixed(2)}`,
+    `Step: ${v.step || (v.running ? 'working' : 'waiting')}${v.script ? ` (script ${v.script})` : ''}`,
   ];
+  const stats = [`HP: ${hp}`];
+  if (v.inventory) stats.push(`Inv: ${v.inventory.used}/${v.inventory.max}`);
+  const skill = v.xpSamples ? currentSkill(v.xpSamples) : null;
+  if (skill) stats.push(`${skill.name} ${skill.level} (+${skill.xpPerHour.toLocaleString('en-US')} xp/h)`);
+  lines.push(stats.join('   '));
+  if (v.lastEvent) lines.push(`Last: ${v.lastEvent}`);
+  lines.push(`Queue: ${v.queueLength}`, `Budget this month: $${v.spend.usedUsd.toFixed(2)} of $${v.spend.capUsd.toFixed(2)}`);
   if (v.note) lines.push(`Note: ${v.note}`);
+  const buttons: CardMessage['buttons'] = [{ id: STATUS_ID, label: 'Status' }];
+  if (watchUrl) buttons.push({ id: WATCH_ID, label: 'Watch live', url: watchUrl });
   return {
     content: sanitizeForDiscord(lines.join('\n'), secrets),
     frame: v.frame,
-    buttons: [
-      { id: STATUS_ID, label: 'Status' },
-    ],
+    buttons,
   };
 }
 
@@ -129,7 +181,7 @@ export class StatusCard {
   private async write(): Promise<void> {
     let msg: CardMessage;
     try {
-      msg = renderCard(await this.o.view(), this.o.secrets);
+      msg = renderCard(await this.o.view(), this.o.secrets, this.o.watchUrl);
     } catch (err) {
       this.warnOnce('view', `status card: cannot build the view: ${errText(err)}`);
       return;

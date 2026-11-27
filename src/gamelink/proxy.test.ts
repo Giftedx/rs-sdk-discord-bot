@@ -409,3 +409,80 @@ test('sendLimited drops state above the box buffer limit and still sends other m
   const full = { send: () => 0, getBufferedAmount: () => 0 };
   expect(sendLimited(full, 'x', false)).toBe(false);
 });
+
+test('counts actions in flight until their result; waitIdle resolves when the last result comes', async () => {
+  const { gw, proxy } = await setup();
+  const box = await connectBox(proxy.port);
+  proxy.setJobActive(true);
+  expect(proxy.actionsInFlight()).toBe(0);
+  expect(await proxy.waitIdle(1_000)).toBe(true);
+  box.ws.send(JSON.stringify(action('walkTo', 'a1')));
+  box.ws.send(JSON.stringify(action('walkTo', 'a2')));
+  box.ws.send(JSON.stringify(action('interactPlayer', 'a3')));   // blocked: never in flight
+  await waitFor(() => gw.received.length >= 3);
+  await Bun.sleep(20);
+  expect(proxy.actionsInFlight()).toBe(2);
+  const idle = proxy.waitIdle(5_000);
+  gw.send({ type: 'sdk_action_result', actionId: 'a1', result: { success: true, message: 'ok' } });
+  await waitFor(() => proxy.actionsInFlight() === 1);
+  gw.send({ type: 'sdk_action_result', actionId: 'a2', result: { success: true, message: 'ok' } });
+  expect(await idle).toBe(true);
+  expect(proxy.actionsInFlight()).toBe(0);
+});
+
+test('an sdk_error with the actionId ends that action in flight', async () => {
+  const { gw, proxy } = await setup();
+  const box = await connectBox(proxy.port);
+  proxy.setJobActive(true);
+  box.ws.send(JSON.stringify(action('walkTo', 'e1')));
+  await waitFor(() => gw.received.length >= 2);
+  await Bun.sleep(20);
+  expect(proxy.actionsInFlight()).toBe(1);
+  gw.send({ type: 'sdk_error', actionId: 'e1', error: 'Bot not connected' });
+  await waitFor(() => proxy.actionsInFlight() === 0);
+  gw.send({ type: 'sdk_error', error: 'no id' });   // no actionId: changes nothing, does not throw
+  await Bun.sleep(20);
+  expect(proxy.actionsInFlight()).toBe(0);
+});
+
+test('waitIdle gives false after its timeout, caps it at 30 s, and an upstream drop clears the count', async () => {
+  const delays: number[] = [];
+  const pending: (() => void)[] = [];
+  const timers: ProxyTimers = {
+    setTimeout: (fn, ms) => { delays.push(ms); pending.push(fn); return pending.length; },
+    clearTimeout: () => {},
+  };
+  const gw = await startFakeGateway();
+  cleanups.push(() => gw.stop());
+  const proxy = await startProxy({ upstreamUrl: gw.url, account: 'abc123', password: 'real-pw', bootToken: 'tok', listenPort: 0, policy: createActionPolicy(), timers, reconnectDelayMs: () => 20 });
+  cleanups.push(() => proxy.stop());
+  await waitFor(() => proxy.upstreamConnected());
+  const box = await connectBox(proxy.port);
+  proxy.setJobActive(true);
+  box.ws.send(JSON.stringify(action('walkTo', 'b1')));
+  await waitFor(() => proxy.actionsInFlight() === 1);
+  const n = delays.length;
+  const idle = proxy.waitIdle(120_000);
+  expect(delays[n]).toBe(30_000);
+  pending[n]!();
+  expect(await idle).toBe(false);
+  const idle2 = proxy.waitIdle(10_000);
+  gw.dropConnection();
+  expect(await idle2).toBe(true);
+  expect(proxy.actionsInFlight()).toBe(0);
+});
+
+test('an action with no result stops counting after inFlightMaxAgeMs', async () => {
+  let t = 0;
+  const gw = await startFakeGateway();
+  cleanups.push(() => gw.stop());
+  const proxy = await startProxy({ upstreamUrl: gw.url, account: 'abc123', password: 'real-pw', bootToken: 'tok', listenPort: 0, policy: createActionPolicy(), now: () => t, inFlightMaxAgeMs: 1_000 });
+  cleanups.push(() => proxy.stop());
+  await waitFor(() => proxy.upstreamConnected());
+  const box = await connectBox(proxy.port);
+  proxy.setJobActive(true);
+  box.ws.send(JSON.stringify(action('walkTo', 'c1')));
+  await waitFor(() => proxy.actionsInFlight() === 1);
+  t = 1_001;
+  expect(proxy.actionsInFlight()).toBe(0);
+});

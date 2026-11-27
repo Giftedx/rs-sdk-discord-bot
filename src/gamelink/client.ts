@@ -4,7 +4,7 @@
 import type { CardDataMap, CardKind } from '../cards/templates';
 import type { StoredFrame } from './frame-store';
 import type { GameLink, GuildLink } from './link';
-import type { ProxyStatus } from './proxy';
+import { WAIT_IDLE_CAP_MS, type ProxyStatus } from './proxy';
 import type { StatusBody } from './service';
 import type { TabStatus } from './supervisor';
 
@@ -26,13 +26,13 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 function requester(opts: ClientOptions) {
   const timeoutMs = opts.requestTimeoutMs ?? 15_000;
-  return async (method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> => {
+  return async (method: 'GET' | 'POST', path: string, body?: unknown, timeoutOverrideMs?: number): Promise<Response> => {
     const res = await fetch(`http://gamelink${path}`, {
       method,
       unix: opts.socketPath,
       headers: { authorization: `Bearer ${opts.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(timeoutOverrideMs ?? timeoutMs),
     } as RequestInit);
     if (res.status === 401) throw new GameLinkError('gamelink refused the token');
     if (res.status >= 400) {
@@ -99,6 +99,19 @@ async function connectGuild(opts: ClientOptions, name: string, account: string):
     get proxyPort() { return status.proxyPort; },
     get bootToken() { return status.bootToken; },
     tabStatus: (): TabStatus => (stale() ? 'out_of_game' : status.tab),
+    tabReason: () => (stale() ? 'gamelink does not answer' : status.tabReason ?? null),
+    // From the cache: a stale status counts as idle, since no answer of gamelink can come.
+    actionsInFlight: () => (stale() ? 0 : status.actionsInFlight ?? 0),
+    async waitIdle(timeoutMs) {
+      const ms = Math.min(Math.max(0, timeoutMs), WAIT_IDLE_CAP_MS);
+      try {
+        const r = await (await req('POST', `${base}/idle`, { timeoutMs: ms }, ms + 5_000)).json() as { idle?: unknown };
+        return r.idle === true;
+      } catch (err) {
+        log(`idle wait failed: ${errText(err)}`);
+        return false;
+      }
+    },
     proxyStatus: (): ProxyStatus => (stale() ? { connected: false, lastError: 'gamelink does not answer', reconnects: status.proxy.reconnects } : status.proxy),
     state: () => state,
     latestFrame: () => stored,

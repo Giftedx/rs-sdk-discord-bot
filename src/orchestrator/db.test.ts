@@ -101,3 +101,22 @@ describe('orchestrator db', () => {
     expect(db.dueTimers('g1', 600).map(t => t.note)).toEqual(['later']);
   });
 });
+
+describe('orchestrator db: since queries', () => {
+  test('snapshotsSince and eventsSince return the rows of one guild from a time, oldest first', () => {
+    let t = 1_000;
+    const db = openDb(tmpFile(), () => t);
+    db.addSnapshot('g1', { skills: { Attack: { level: 1, xp: 0 } } }, 500);
+    db.addSnapshot('g1', { skills: { Attack: { level: 2, xp: 90 } } }, 1_500);
+    db.addSnapshot('g1', { skills: { Attack: { level: 3, xp: 200 } } }, 2_500);
+    db.addSnapshot('g2', { skills: {} }, 2_000);
+    expect(db.snapshotsSince<{ skills: Record<string, { xp: number }> }>('g1', 1_000).map(s => [s.time, s.state.skills.Attack!.xp])).toEqual([[1_500, 90], [2_500, 200]]);
+    db.addEvent('g1', 'death', 'old');
+    t = 3_000;
+    db.addEvent('g1', 'level_up', 'new', { kind: 'level_up', skill: 'Attack', from: 1, level: 2 });
+    db.addEvent('g2', 'death', 'other guild');
+    expect(db.eventsSince('g1', 2_000)).toEqual([{ time: 3_000, type: 'level_up', data: { kind: 'level_up', skill: 'Attack', from: 1, level: 2 } }]);
+    expect(db.eventsSince('g1', 0).map(e => e.data)).toEqual([null, { kind: 'level_up', skill: 'Attack', from: 1, level: 2 }]);
+    db.close();
+  });
+});

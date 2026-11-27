@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import puppeteer, { type Browser, type LaunchOptions, type Page } from 'puppeteer';
 import { parseChromePath } from '../shared/config';
+import { LOGOUT_COMPONENT } from './policy';
 
 export const CHROMIUM_ARGS: readonly string[] = [
   '--mute-audio',
@@ -28,11 +29,15 @@ export interface GameTabOptions {
   account: string;
   password: string;
   fps: number;
+  // Open the page without a login. The first reload() logs in (the supervisor start delay).
+  deferLogin?: boolean;
 }
 
 export interface GameTab {
   selfCheck(): Promise<void>;
   inGame(): Promise<boolean>;
+  // The login message of the client (loginMes1 and loginMes2 of Client.ts), or null.
+  loginMessage(): Promise<string | null>;
   frame(mode: FrameMode): Promise<Uint8Array>;
   keepAlive(): Promise<void>;
   reload(): Promise<void>;
@@ -43,7 +48,6 @@ export interface GameTab {
 
 // The logout button of the client. The click sets logoutTimer first: 250 is the value that the
 // client itself sets before its idle logout.
-const LOGOUT_COMPONENT = 2458;
 const LOGOUT_TIMER = 250;
 
 const CANVAS_WIDTH = 765;
@@ -162,7 +166,7 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
       }
     });
     await page.goto('about:blank');
-    await gotoRedacted(page, opts.botPageUrl, url);
+    if (!opts.deferLogin) await gotoRedacted(page, opts.botPageUrl, url);
   } catch (err) {
     await page.close().catch(() => {});
     throw err;
@@ -195,6 +199,16 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
         const gc = (window as unknown as { gameClient?: { ingame?: unknown; sceneState?: unknown } }).gameClient;
         return gc?.ingame === true && gc.sceneState === 2;
       });
+    },
+
+    async loginMessage() {
+      const text = await page.evaluate(() => {
+        const gc = (window as unknown as { gameClient?: { loginMes1?: unknown; loginMes2?: unknown } }).gameClient;
+        if (!gc) return null;
+        const part = (v: unknown) => (typeof v === 'string' ? v.slice(0, 200) : '');
+        return `${part(gc.loginMes1)} ${part(gc.loginMes2)}`.trim();
+      }).catch(() => null);
+      return text ? text : null;
     },
 
     async frame(mode) {

@@ -208,6 +208,16 @@ export function openDb(path: string, now: () => number = Date.now) {
         : db.query('SELECT time, json FROM snapshots WHERE guild IS ? ORDER BY id DESC LIMIT 1').get(guild)) as Raw | null;
       return r ? { time: r.time as number, state: parseJson(r.json) as T } : null;
     },
+    // Oldest first. For the XP per hour of the status card and the XP of the daily recap.
+    snapshotsSince<T = unknown>(guild: string | null, since: number, limit = 5_000): { time: number; state: T }[] {
+      const rows = db.query('SELECT time, json FROM snapshots WHERE guild IS ? AND time >= ? ORDER BY time ASC, id ASC LIMIT ?').all(guild, since, limit) as Raw[];
+      return rows.map(r => ({ time: r.time as number, state: parseJson(r.json) as T }));
+    },
+    // Oldest first. For the daily recap after a restart.
+    eventsSince(guild: string | null, since: number, limit = 10_000): { time: number; type: string; data: unknown }[] {
+      const rows = db.query('SELECT time, type, data FROM events WHERE guild IS ? AND time >= ? ORDER BY id ASC LIMIT ?').all(guild, since, limit) as Raw[];
+      return rows.map(r => ({ time: r.time as number, type: r.type as string, data: parseJson(r.data) }));
+    },
     pruneSnapshots(before: number): number {
       return db.query('DELETE FROM snapshots WHERE time < ?').run(before).changes;
     },

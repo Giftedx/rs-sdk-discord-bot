@@ -42,6 +42,7 @@ A player in the game can try to direct the AI through game chat. The planned pro
   - The policy refuses `interactPlayer` and `spellOnPlayer`. In the pinned client, these are the actions for a direct attack on a player and a direct trade with a player.
   - The policy passes only the action types on an allow list. The list holds the types of the pinned rs-sdk client. A test compares the list with the client source.
   - The policy refuses a `say` or `privateMessage` text that starts with `::`, because the client sends such a text as a command.
+  - The policy refuses `clickComponent` and `clickComponentWithOption` on component 2458, the logout button (`LOGOUT_COMPONENT` in `src/gamelink/policy.ts`). A job cannot log the account out.
   - The policy limits `say` and `privateMessage` to 6 messages per minute.
 - The proxy forwards the same parsed object that the policy checked.
 - When the connection to the gateway closes, the proxy connects again after 11 to 16 s.
@@ -94,7 +95,8 @@ Each item is a plain limit of the code today. Each heading names the milestone o
 Proxy (`src/gamelink/proxy.ts`), milestone 2:
 
 - Closed: the proxy closes a gateway socket that sends no `sdk_connected` within 10 s (`upstreamHandshakeTimeoutMs`), or no message for 60 s after the handshake (`staleMs`), and connects again after the normal delay. Tests check both with a fake gateway, not with a live gateway.
-- Closed: after a refused login of the proxy, the delay doubles from the normal delay up to 5 minutes, and a successful connect resets it. `status()` of the proxy handle reports `connected`, `lastError` and `reconnects`. The bot does not show `status()` yet.
+- Closed: after a refused login of the proxy, the delay doubles from the normal delay up to 5 minutes, and a successful connect resets it. `status()` of the proxy handle reports `connected`, `lastError` and `reconnects`. The status text of the bot shows `connected` and `lastError`.
+- The proxy counts the actions in flight, from the forward of `sdk_action` to the `sdk_action_result` with the same `actionId`. At the end of a job the bot waits up to 30 s for zero. Not checked on a live gateway: that the result carries the same `actionId`.
 - The proxy has a `log` option, with one line for each gateway event. The log line holds the error text of the gateway, with the password removed, and never the raw message. The bot (`src/bot/guild.ts`) does not pass the option yet, so no line goes to the log of the bot.
 - Closed: when more than 4 MB waits to go to the box, the proxy drops state messages for the box, and still sends other messages. At 8 MB, Bun closes the box socket. A test checks the drop with a socket that stops reading.
 - The proxy forwards the whole action message of the box, not only the fields that the gateway reads.
@@ -105,13 +107,14 @@ Proxy (`src/gamelink/proxy.ts`), milestone 2:
 
 Configuration (`src/shared/config.ts`), milestone 2:
 
-- `RS_GATEWAY_URL` and `RS_BOT_PAGE_URL` accept any host and any scheme. A wrong value sends the game password to a different host, or over `ws://` or `http://` with no encryption.
+- Closed: `RS_GATEWAY_URL` must be `wss://` and `RS_BOT_PAGE_URL` `https://`, with the host of `RS_SERVER_HOST` (`checkGameUrls`). Only when both hosts are `localhost` or `127.0.0.1` are `ws://` and `http://` allowed. A non-empty `RS_PASSWORD` must match `^[A-Za-z0-9]{1,20}$`; the error names only the variable.
 
 Game tab (`src/gamelink/game-tab.ts`), milestone 2:
 
 - Closed in the code: `inGame()` is true only when `gameClient.ingame === true` and `gameClient.sceneState === 2`. The fixture page has the field, but no test on a live page has confirmed that `sceneState` is 2 when the map is ready. See [measurements.md](measurements.md).
 - Closed: the browser environment is now an allow list (`BROWSER_ENV_ALLOW` in `src/gamelink/game-tab.ts`), and the four secret names stay out of it.
 - `close()` does not log the account out. The bot calls `logout()` before `close()` when it stops.
+- The game tab opens with no login; the first login comes 20 to 30 s later, at least 15 s after the login of the tab before. Failed logins back off (the re-login delay times 1, 2, 4, 8, 16 at most). A login message "Invalid username or password" or "account has been disabled" stops all logins of that tab until gamelink restarts (`login_refused`), so a wrong password cannot lock the account by retries. The message comes from `loginMes1`/`loginMes2` of the client; this has not been read on a live page.
 - The crash reporter is off (`--disable-crash-reporter`, `--disable-breakpad`). This was checked only by a clean start, not by a search for crash dumps.
 - The bot puts the browser profile in a new directory under `/dev/shm` (mode 700) and removes it when the browser closes, so no profile with the password stays on disk. Without `/dev/shm` the profile goes to the temp directory, and the bot logs a warning.
 - The request interception turns the browser cache off, so each reload downloads the client again.
@@ -134,7 +137,7 @@ Bot (`src/bot/`, `src/agent/`, `src/box/`):
 - Guilds that share a box user run their jobs one at a time, because the runner kills every process of the box user after a job. The jobs of one guild can see the processes of another guild that has the same box user only between these jobs.
 - All text from the AI and the game goes through `sanitizeForDiscord` with no pings before Discord: the status card, the goal, the adventure log, the `post` lines of the AI, the posts and the instruction messages. Drawn cards put untrusted text into their page with `textContent` only, and the card page loads nothing from the network (CSP `default-src 'none'; img-src data:` and request interception).
 - The queue, the spend, the events, the snapshots and the timers are in `DATA_DIR/bot.sqlite`, which the box user must not read. Keep `DATA_DIR` at mode 755 with the database at 600, or keep the box user out of `DATA_DIR` except for the job folders.
-- A timer or a trigger starts the AI with no human author. The daily allowance (the cap divided by the days of the period) and a limit of 6 wakes per hour and guild bound the spend of these wakes.
+- A timer or a trigger starts the AI with no human author. The daily allowance (the cap that is left, divided by the days left in the period) and a limit of 6 wakes per hour and guild bound the spend of these wakes.
 - The bot gives the AI the text of a Discord instruction and the output of each job. Game chat is in that output. A hostile instruction or chat text can make the AI act badly inside the action policy, or spend API credit up to the limits.
 - The bot reads every message of its channel and sends it, with the 8 messages before it, to the small model (`SMALL_MODEL`) to decide if it is for the bot. A message written to look like it talks to the bot can start a request. The small model has no tools; its answer only picks the kind of message.
 - The spend record is an estimate from token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
@@ -156,6 +159,8 @@ Bootstrap (`scripts/server-bootstrap.sh`), milestone 7:
 - The bootstrap installs no firewall. `scripts/server-firewall.sh` and `deploy/systemd/rsbox-egress.service` add the box egress rules, but they have not run on a server yet.
 - `scripts/server-backup.sh` with its timer backs up the SQLite files. The restore has not been tested.
 - The Chromium sandbox ran from a login shell only, not under a systemd unit with hardening options.
+- The split-mode bot unit `rs-discord-bot.service` has `ProtectSystem=strict`, `ProtectProc=invisible`, `ProcSubset=pid`, and `InaccessiblePaths=` for `/opt/rs-chrome` and the account file. It cannot set `RestrictNamespaces=`, `PrivateDevices=`, `LockPersonality=`, `SystemCallFilter=` or `RestrictSUIDSGID=`: for a unit with `User=`, each of them sets `NoNewPrivileges=yes`, and then `sudo` cannot start the jobs as the box user. So the box user can still make user namespaces. One-process mode uses `rs-discord-bot-single.service` with the older limits.
+- The revision check (`rs-revision-check.service`) restarts `rs-gamelink` through a root `ExecStartPost=+` when the script wrote `data/revision-restart`. The script itself runs as `rsbot`. Not tested on a host.
 
 Continuous integration:
 

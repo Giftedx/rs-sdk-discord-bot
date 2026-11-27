@@ -34,13 +34,14 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 | `DISCORD_ALLOW_EVERYONE` | | | `1` lets every member of the channel give and stop instructions. |
 | `ALERT_CHANNEL_ID` | | unset | A private channel for the operator. When a unit fails, `rs-alert@.service` posts one warning there, at most once per unit per hour. Never the player channel: the script refuses `DISCORD_CHANNEL_ID`. Unset: no Discord warning, only the journal. |
 | `ANTHROPIC_API_KEY` | yes | | The API key. |
-| `AI_MODEL` | | `claude-opus-5-5` | The model ID. `claude-sonnet-5-5` costs half as much per token. |
+| `AI_MODEL` | | `claude-sonnet-5-5` | The model ID of the main loop. |
 | `AI_EFFORT` | | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher effort costs more. |
 | `AI_MAX_TURNS` | | `25` | Model calls per instruction. |
 | `AI_MAX_INSTRUCTION_USD` | | `2` | Spend limit per instruction, in USD. |
-| `AI_MONTHLY_CAP_USD` | | `30` | At this spend in one period (UTC), the bot takes no new instructions. The cap is for all guilds together. |
-| `SPEND_RESET_DAY` | | `1` | Day of the month (1 to 28) when the spend period starts. The daily allowance for timer and trigger wakes is the cap divided by the days of the period. |
-| `ESCALATION_MODEL` | | unset | A model ID. When set, the AI gets the `escalate` tool and can move the rest of one instruction to this model, once. |
+| `AI_MAX_INSTRUCTION_MIN` | | `120` | Wall-clock limit of one instruction, in minutes (1 to 1440). The loop checks it before each turn and stops with "This instruction used its time limit". Job timeouts are cut to the time that is left. |
+| `AI_MONTHLY_CAP_USD` | | `30` | At this spend in one period (UTC), the bot takes no new instructions. The cap is for all guilds together, and each guild gets an equal share (cap / guilds). At 80% of the share or of the cap, the bot runs the main loop on `SMALL_MODEL` with no escalation. |
+| `SPEND_RESET_DAY` | | `1` | Day of the month (1 to 28) when the spend period starts. The daily allowance for timer and trigger wakes is the cap that is left, divided by the days left in the period (today included), so unused spend carries over. |
+| `ESCALATION_MODEL` | | `claude-opus-5-5` | The AI gets the `escalate` tool and can move the rest of one instruction to this model, once. A trigger wake (low HP, death) starts on this model. `none` turns escalation off. |
 | `SMALL_MODEL` | | `claude-haiku-5-5` | The model that decides if a channel message talks to the bot, and answers short questions. |
 | `DISCORD_READ_ALL` | | `1` | `0` makes the bot answer only messages that mention it or reply to it. |
 | `WATCHDOG_MINUTES` | | `5` | The watchdog stops a job that changes no XP, position or inventory for this time. |
@@ -142,7 +143,23 @@ Prepare the server with [deploy-server.md](deploy-server.md) first, and make the
 1. Write `secrets/bot.env` with `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID`, `ANTHROPIC_API_KEY`, `BOX_USER=rsbox`, and `RS_ALLOW_DEMO=1` if the game server is the demo world. Set its mode to 600.
 2. Make the data directory: `mkdir -p data && chmod 755 data`.
 
-As the admin user. The unit file has `Requires=rs-gamelink.service` for split mode. To run the bot in one process, remove that line from the copy in `/etc/systemd/system/` before `daemon-reload`.
+As the admin user. There are two bot units. Install only one of them:
+
+- `rs-discord-bot.service`: split mode. It has `Wants=rs-gamelink.service`: the bot keeps running while gamelink restarts. Its limits: `ProtectSystem=strict`, `ProtectProc=invisible`, `ProcSubset=pid`, no access to `/opt/rs-chrome` and to the account file. It cannot open a browser.
+- `rs-discord-bot-single.service`: one process, with the browser in the bot. It has the older, looser limits and `Conflicts=rs-discord-bot.service rs-gamelink.service`. Use its own name in the commands below.
+
+After a change to a unit file, copy it again and run `sudo systemctl daemon-reload`. Run `sudo systemd-analyze verify /etc/systemd/system/rs-discord-bot*.service` once: `ProtectProc` and `ProcSubset` need systemd 247 or later.
+
+One-process mode:
+
+```bash
+sudo cp /opt/rs-discord-bot/deploy/systemd/rs-discord-bot-single.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rs-discord-bot-single
+journalctl -u rs-discord-bot-single -f
+```
+
+Split mode (see "Split mode" for gamelink first):
 
 ```bash
 sudo cp /opt/rs-discord-bot/deploy/systemd/rs-discord-bot.service /etc/systemd/system/
@@ -286,10 +303,12 @@ Setup, as root on the server. Do "The box user" first: it installs `/usr/local/b
 
 How the two units work together:
 
-- `rs-discord-bot.service` has `Requires=rs-gamelink.service`. A stop of gamelink also stops the bot. Gamelink logs every account out of the game on SIGTERM.
+- `rs-discord-bot.service` has `Wants=rs-gamelink.service`. A stop of gamelink does not stop the bot: the bot waits and reconnects when gamelink is back. Gamelink logs every account out of the game on SIGTERM.
 - A restart of the bot does not log the account out. Gamelink keeps the game session.
 - After each job, the bot turns the job flag of the proxy off through the socket. It tries three times. If all three fail, the log shows `job flag not turned off`.
-- To go back to one process: stop both units, move `account.env` back to `secrets/` (owner `rsbot`, mode 600), remove the `GAMELINK_*` lines from `secrets/bot.env`, remove the `Requires=` line from `/etc/systemd/system/rs-discord-bot.service`, run `systemctl daemon-reload`, and start `rs-discord-bot`.
+- To go back to one process: stop both units, move `account.env` back to `secrets/` (owner `rsbot`, mode 600), remove the `GAMELINK_*` lines from `secrets/bot.env`, disable `rs-discord-bot` and `rs-gamelink`, install and start `rs-discord-bot-single.service`.
+- At the end of each job, the bot waits up to 30 s until the gateway has answered every action of the job (`POST /guilds/:name/idle`). If actions are still in flight, the log shows `job ended with N actions in flight`.
+- Gamelink opens each game tab with no login, and the first login comes 20 to 30 s later, at least 15 s after the tab before. A failed login waits longer each time: the re-login delay times 1, 2, 4, 8, then 16 at most. "Invalid username or password" or "account has been disabled" sets the tab to `login_refused`: gamelink stops all logins until it restarts, and the bot logs one `ALERT game login refused` line. The status card and the status text show the login message of the server.
 
 ## Deploy scripts
 
@@ -299,7 +318,7 @@ These files are in `scripts/` and `deploy/systemd/`. They run as root on the ser
 |---|---|---|
 | Box egress firewall | `sudo BOX_USERS=rsbox scripts/server-firewall.sh apply 7790`, then install and enable `rsbox-egress.service` | Each box user can reach only `127.0.0.1` on the proxy ports. IPv6 is closed for them. Modes: `apply [PORTS]`, `egress [PORTS]`, `status`, `undo [--ufw]`. PORTS is one port, a range or a list (`7790`, `7790-7795`, `7790,7792`). With `GUILDS_FILE`, list every box user in `BOX_USERS` and give the range `PROXY_PORT` to `PROXY_PORT` + guilds - 1. Edit `BOX_USERS` and `PROXY_PORTS` in `rsbox-egress.service` to match. |
 | Backup | install `rs-backup.service` and `rs-backup.timer`, then `systemctl enable --now rs-backup.timer` | Backs up the SQLite files under `data/` with `sqlite3 .backup` (install `sqlite3`). Env: `APP_DIR`, `BACKUP_DIR` (default `/var/backups/rs-discord-bot`), `KEEP` (default 14). The script header has the restore steps. |
-| Revision check | install `rs-revision-check.service` and `.timer`, enable the timer | Logs `REVISION CHANGED` when the bot page of the game server changes: `journalctl -u rs-revision-check`. |
+| Revision check | install `rs-revision-check.service` and `.timer`, enable the timer | Logs `REVISION CHANGED` when the bot page of the game server changes: `journalctl -u rs-revision-check`. It then writes `data/revision-changed`, restarts `rs-gamelink` (split mode only, through `try-restart`), and runs `server-alert.sh --revision`, which posts to `ALERT_CHANNEL_ID` at most once an hour. The bot reads `data/revision-changed`, logs `game revision changed` once, deletes the file and draws the status cards again. |
 | Job limits | `rs-discord-bot.service` has `Delegate=yes` | The bot makes one cgroup for all jobs and sets `JOB_MEMORY_MB`, `JOB_PIDS` and `JOB_CPU_PERCENT`. Without delegation it logs one line and runs jobs with no limits. |
 
 ## 6. Smoke test without Discord
@@ -318,5 +337,5 @@ The last line of stdout is JSON. Each value under `checks` must be `true`.
 
 - Without `BOX_USER`, AI-written code can read the secrets of the bot. With `BOX_USER`, the job limits need `Delegate=yes`, and the network limit needs the firewall script. [security.md](security.md) lists the gaps.
 - The status card, adventure log, posts and the Discord adapters have unit tests only. They have not run against a real Discord server yet.
-- The wake rate limit, the trigger state, the recap history and the hourly post count are in memory. A restart resets them.
+- The wake rate limit, the trigger state and the hourly post count are in memory. A restart resets them. The daily recap reads the events table, so it survives a restart.
 - All guilds use one game server.

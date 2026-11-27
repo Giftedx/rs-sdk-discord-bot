@@ -5,7 +5,7 @@
 #                                      Then the egress rules of the box users (see below).
 #   server-firewall.sh egress [PORTS]  Only the egress rules. deploy/systemd/rsbox-egress.service
 #                                     runs this at boot, because iptables rules do not persist.
-#   server-firewall.sh status         Show ufw and the egress rules.
+#   server-firewall.sh status         Show ufw, the egress rules and the failed SSH logins of 24 h.
 #   server-firewall.sh undo [--ufw]   Remove the egress rules. With --ufw, also disable ufw.
 #
 # PORTS: one port, a range or a list, such as 7790, 7790-7795 or 7790,7792. Default 7790.
@@ -130,6 +130,16 @@ show_status() {
       echo "chain $chain: not present"
     fi
   done
+  show_ssh_failures
+}
+
+# Optional: the count of failed SSH logins in the last 24 hours. Password login is off, so
+# fail2ban adds little; this count only shows how much the port is tried.
+show_ssh_failures() {
+  command -v journalctl >/dev/null || { echo "--- ssh: journalctl not found"; return 0; }
+  local n
+  n="$(journalctl -q -u ssh -u sshd --since '24 hours ago' -o cat 2>/dev/null     | grep -cE 'Failed (password|publickey)|Invalid user|Connection closed by authenticating user|maximum authentication attempts' || true)"
+  echo "--- ssh: ${n:-0} failed logins in the last 24 hours"
 }
 
 mode="${1:-}"

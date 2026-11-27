@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { loadConfig, ConfigError, parseChromePath } from './config';
+import { loadConfig, ConfigError, parseChromePath, checkGameUrls } from './config';
 
 const base = { RS_ACCOUNT: 'abc123', RS_PASSWORD: 'pw' };
 
@@ -43,4 +43,36 @@ test('rejects an empty password and never puts it in the error text', () => {
   try { loadConfig({ ...base, RS_PASSWORD: 'sekret', RS_FPS: '1' }); } catch (e) { err = e; }
   expect(err).toBeInstanceOf(ConfigError);
   expect(String(err)).not.toContain('sekret');
+});
+test('the game URLs must be wss:// and https:// on RS_SERVER_HOST', () => {
+  const host = { ...base, RS_SERVER_HOST: 'game.example.org' };
+  expect(loadConfig({ ...host, RS_GATEWAY_URL: 'wss://game.example.org/gateway', RS_BOT_PAGE_URL: 'https://game.example.org/bot' }).gatewayUrl)
+    .toBe('wss://game.example.org/gateway');
+  for (const bad of [
+    { RS_GATEWAY_URL: 'ws://game.example.org/gateway' },
+    { RS_GATEWAY_URL: 'wss://other.example.org/gateway' },
+    { RS_GATEWAY_URL: 'https://game.example.org/gateway' },
+    { RS_GATEWAY_URL: 'not a url' },
+    { RS_BOT_PAGE_URL: 'http://game.example.org/bot' },
+    { RS_BOT_PAGE_URL: 'https://game.example.org.evil.example/bot' },
+    // One local URL is not the local stack: both must be local.
+    { RS_GATEWAY_URL: 'ws://localhost:7780' },
+  ]) expect(() => loadConfig({ ...host, ...bad })).toThrow(ConfigError);
+});
+test('the local stack may use ws:// and http:// when both URLs are local', () => {
+  const c = loadConfig({ ...base, RS_GATEWAY_URL: 'ws://localhost:7780', RS_BOT_PAGE_URL: 'http://127.0.0.1:8888/bot' });
+  expect(c.botPageUrl).toBe('http://127.0.0.1:8888/bot');
+  expect(() => checkGameUrls('x', 'http://localhost:7780', 'http://localhost:8888/bot')).toThrow(ConfigError);
+  expect(() => checkGameUrls('x', 'ws://localhost:7780', 'ftp://localhost/bot')).toThrow(ConfigError);
+});
+test('the password must be 1 to 20 of A-Za-z0-9, and the error names the variable only', () => {
+  expect(loadConfig({ ...base, RS_PASSWORD: 'Ab9'.repeat(6) }).account.password).toBe('Ab9'.repeat(6));
+  for (const bad of ['pass word', 'pass-word', 'pässword', 'a"b']) {
+    let err: unknown;
+    try { loadConfig({ ...base, RS_PASSWORD: bad }); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect(String(err)).toContain('RS_PASSWORD');
+    expect(String(err)).not.toContain(bad);
+  }
+  expect(loadConfig({ ...base, RS_PASSWORD: '' }, { requirePassword: false }).account.password).toBe('');
 });

@@ -2,6 +2,10 @@ import type { FrameMode } from './game-tab';
 
 export interface FrameSource {
   frame(mode: FrameMode): Promise<Uint8Array>;
+  // When present: a frame is dropped if the tab is not in the game after the capture.
+  inGame?(): Promise<boolean>;
+  // When present: checkRig() runs it once; a failure turns frames off for this tab.
+  selfCheck?(): Promise<void>;
 }
 
 export interface StoredFrame {
@@ -30,8 +34,12 @@ export interface FrameStore {
   latest(): StoredFrame | null;
   // Oldest first.
   all(): StoredFrame[];
-  // One capture. False when it was skipped (inactive, a capture runs) or it failed.
+  // One capture. False when it was skipped (inactive, a capture runs, tab out of the game) or it failed.
   tick(): Promise<boolean>;
+  // Runs selfCheck of the source the first time only. False when the rig check failed: then
+  // frames stay off for this tab. Call it after the first login.
+  checkRig(): Promise<boolean>;
+  readonly disabled: boolean;
 }
 
 const defaultTimers: FrameTimers = {
@@ -50,6 +58,8 @@ export function createFrameStore(opts: FrameStoreOptions): FrameStore {
   let busy = false;
   // A capture that ends after stop() belongs to an old run and is not stored.
   let run = 0;
+  let rig: Promise<boolean> | null = null;
+  let disabled = false;
 
   async function tick(): Promise<boolean> {
     if (handle === null || busy) return false;
@@ -58,6 +68,14 @@ export function createFrameStore(opts: FrameStoreOptions): FrameStore {
     try {
       const png = await opts.source.frame('view');
       if (myRun !== run || handle === null) return false;
+      if (opts.source.inGame) {
+        const ready = await opts.source.inGame().catch(() => false);
+        if (!ready) {
+          log('frame store: frame dropped: the tab left the game during the capture');
+          return false;
+        }
+        if (myRun !== run || handle === null) return false;
+      }
       frames.push({ at: now(), png });
       if (frames.length > keep) frames.splice(0, frames.length - keep);
       return true;
@@ -71,7 +89,7 @@ export function createFrameStore(opts: FrameStoreOptions): FrameStore {
 
   return {
     start() {
-      if (handle !== null) return;
+      if (handle !== null || disabled) return;
       run++;
       handle = timers.setInterval(() => void tick(), intervalMs);
       void tick();
@@ -84,6 +102,20 @@ export function createFrameStore(opts: FrameStoreOptions): FrameStore {
     },
     get active() {
       return handle !== null;
+    },
+    get disabled() {
+      return disabled;
+    },
+    checkRig() {
+      if (rig) return rig;
+      const check = opts.source.selfCheck;
+      rig = !check ? Promise.resolve(true) : check.call(opts.source).then(() => true, (err: unknown) => {
+        disabled = true;
+        if (handle !== null) { timers.clearInterval(handle); handle = null; run++; }
+        log(`FRAMES OFF for this tab: the rig check failed: ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      });
+      return rig;
     },
     latest: () => frames.at(-1) ?? null,
     all: () => [...frames],

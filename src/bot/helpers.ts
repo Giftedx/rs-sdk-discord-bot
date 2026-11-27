@@ -1,8 +1,8 @@
 // Small pure parts of the bot wiring, kept here so that they have unit tests.
-import type { CardDataMap, CardKind } from '../cards/templates';
-import type { CompactState as EventState, GameEvent } from '../events/diff';
+import type { CardDataMap, CardKind, ReceiptItem, ReceiptSkill } from '../cards/templates';
+import { lostItems, totalLevel, type CompactState as EventState, type GameEvent } from '../events/diff';
 import type { CardSubject } from '../discord/posts';
-import type { CardView } from '../discord/status-card';
+import type { CardView, SkillSample } from '../discord/status-card';
 import { MAX_INSTRUCTION_CHARS } from './queue';
 
 // A lock per key. Guilds that share a box user share one key, because the job runner kills
@@ -68,11 +68,22 @@ export interface ViewInput {
   spend: { usedUsd: number; capUsd: number };
   budgetNote: string | null;
   tabStatus: string;
+  /** Why the tab is out of the game, for example the login message of the server. */
+  tabReason?: string | null;
   frame: Uint8Array | null;
+  inventory?: { used: number; max: number } | null;
+  xpSamples?: SkillSample[];
+  lastEvent?: string | null;
+  script?: string | null;
+}
+
+/** The status of the game tab in one line, with the reason when the tab is out of the game. */
+export function tabLine(status: string, reason: string | null | undefined): string {
+  return status !== 'in_game' && reason ? `${status} (${reason.slice(0, 200)})` : status;
 }
 
 export function cardView(v: ViewInput): CardView {
-  const note = v.tabStatus !== 'in_game' ? `game tab: ${v.tabStatus}` : v.budgetNote ?? undefined;
+  const note = v.tabStatus !== 'in_game' ? `game tab: ${tabLine(v.tabStatus, v.tabReason)}` : v.budgetNote ?? undefined;
   return {
     goal: v.goal ?? v.running ?? 'Waiting for an instruction.',
     step: v.running ? v.step ?? 'Starting.' : 'Idle.',
@@ -82,10 +93,116 @@ export function cardView(v: ViewInput): CardView {
     running: v.running !== null,
     ...(note ? { note } : {}),
     ...(v.frame ? { frame: v.frame } : {}),
+    ...(v.inventory ? { inventory: v.inventory } : {}),
+    ...(v.xpSamples && v.xpSamples.length > 1 ? { xpSamples: v.xpSamples } : {}),
+    ...(v.lastEvent ? { lastEvent: v.lastEvent } : {}),
+    ...(v.running && v.script ? { script: v.script } : {}),
   };
 }
 
-export interface Receipt { instruction: string; summary: string; turns: number; costUsd: number }
+export interface Receipt {
+  instruction: string;
+  summary: string;
+  turns: number;
+  costUsd: number;
+  durationMs?: number;
+  skills?: ReceiptSkill[];
+  inventory?: ReceiptItem[];
+}
+
+const RECEIPT_ROWS = 12;
+
+/** The skills and items that changed between the start and the end of an instruction. */
+export function receiptChanges(before: EventState | null, after: EventState | null): { skills: ReceiptSkill[]; inventory: ReceiptItem[] } {
+  if (!before || !after) return { skills: [], inventory: [] };
+  const skills: ReceiptSkill[] = [];
+  for (const [name, a] of Object.entries(after.skills)) {
+    const b = before.skills[name];
+    if (b && a.xp > b.xp) skills.push({ name, before: b.level, after: a.level, xp: a.xp - b.xp });
+  }
+  const inventory: ReceiptItem[] = [];
+  for (const name of new Set([...Object.keys(before.inventory), ...Object.keys(after.inventory)])) {
+    const b = before.inventory[name] ?? 0;
+    const a = after.inventory[name] ?? 0;
+    if (a !== b) inventory.push({ name, before: b, after: a });
+  }
+  return {
+    skills: skills.sort((x, y) => y.xp - x.xp).slice(0, RECEIPT_ROWS),
+    inventory: inventory.sort((x, y) => Math.abs(y.after - y.before) - Math.abs(x.after - x.before) || x.name.localeCompare(y.name)).slice(0, RECEIPT_ROWS),
+  };
+}
+
+type DeathEvent = Extract<GameEvent, { kind: 'death' }>;
+
+/**
+ * Adds the lost items and a guess of the killer to death events. At hp 0 the items can still be in
+ * the inventory, so a death at hp 0 waits for the respawn (at most holdMs), and the inventory after
+ * the respawn is compared with the last inventory while alive.
+ */
+export function createDeathEnricher(opts: { holdMs?: number; now?: () => number } = {}) {
+  const holdMs = opts.holdMs ?? 60_000;
+  const now = opts.now ?? Date.now;
+  let alive: { inventory: Record<string, number>; killer?: string } | null = null;
+  let pending: { e: DeathEvent; at: number; before: Record<string, number> | null } | null = null;
+  const withLost = (e: DeathEvent, before: Record<string, number> | null, after: EventState | null): DeathEvent => {
+    const lost = before && after ? lostItems(before, after.inventory) : [];
+    return lost.length > 0 ? { ...e, lost } : e;
+  };
+  return (events: GameEvent[], s: EventState, killerNow: string | undefined): GameEvent[] => {
+    const out: GameEvent[] = [];
+    for (const e of events) {
+      if (e.kind !== 'death') { out.push(e); continue; }
+      const killer = killerNow ?? alive?.killer;
+      const base: DeathEvent = killer ? { ...e, killer } : { ...e };
+      const before = alive?.inventory ?? null;
+      if (s.hp > 0) out.push(withLost(base, before, s));
+      else pending = { e: base, at: now(), before };
+    }
+    if (pending && s.hp > 0) { out.push(withLost(pending.e, pending.before, s)); pending = null; }
+    else if (pending && now() - pending.at >= holdMs) { out.push(pending.e); pending = null; }
+    if (s.hp > 0 && !pending) {
+      const killer = killerNow ?? (s.inCombat ? alive?.killer : undefined);
+      alive = killer ? { inventory: s.inventory, killer } : { inventory: s.inventory };
+    }
+    return out;
+  };
+}
+
+/** The script name from a progress line of the loop, or null for new code and other lines. */
+export function scriptFromProgress(line: string): string | null | undefined {
+  const m = /^Running saved script `([^`]{1,100})`\.$/.exec(line);
+  if (m) return m[1]!;
+  return line === 'Running new code.' ? null : undefined;
+}
+
+/** The short context that goes before each wake of the AI. */
+export function wakeContextText(v: {
+  goal: string | null;
+  queue: string[];
+  tab: string;
+  hp: { hp: number; maxHp: number } | null;
+  position: { x: number; z: number; plane: number } | null;
+  inventoryUsed: number | null;
+  routineOnly: boolean;
+}): string {
+  return [
+    `Goal: ${v.goal ?? 'none set'}.`,
+    `Queue: ${v.queue.length === 0 ? 'empty' : `${v.queue.length} waiting, next: ${v.queue[0]!.slice(0, 200)}`}.`,
+    `Game tab: ${v.tab}.`,
+    v.hp ? `HP ${v.hp.hp}/${v.hp.maxHp}.` : 'No fresh game state.',
+    ...(v.position ? [`Position ${v.position.x}, ${v.position.z}, level ${v.position.plane}.`] : []),
+    ...(v.inventoryUsed !== null ? [`Inventory ${v.inventoryUsed}/28.`] : []),
+    ...(v.routineOnly ? ['The budget is low: do only routine work, keep it short.'] : []),
+  ].join(' ');
+}
+
+/** Reads and removes the flag file of the revision check. Null when there is no flag. */
+export function takeRevisionFlag(path: string, fs: { read(p: string): string; remove(p: string): void }): string | null {
+  let text: string;
+  try { text = fs.read(path); } catch { return null; }
+  try { fs.remove(path); } catch { /* the next tick tries again; the line is the same */ }
+  return text.trim().split('\n')[0]!.slice(0, 300);
+}
 
 export type CardRequest = { [K in CardKind]: { kind: K; data: CardDataMap[K] } }[CardKind];
 
@@ -93,11 +210,21 @@ export type CardRequest = { [K in CardKind]: { kind: K; data: CardDataMap[K] } }
 export function cardFor(subject: CardSubject, state: EventState | null, receipt: Receipt | null, at: Date): CardRequest | null {
   switch (subject.kind) {
     case 'level_up':
-      return { kind: 'level_up', data: { skill: subject.skill, level: subject.level, xp: state?.skills[subject.skill]?.xp ?? 0 } };
+      return {
+        kind: 'level_up',
+        data: {
+          skill: subject.skill, level: subject.level, xp: state?.skills[subject.skill]?.xp ?? 0, from: subject.from,
+          ...(state && Object.keys(state.skills).length > 0 ? { totalLevel: totalLevel(state) } : {}),
+        },
+      };
     case 'death':
       return {
         kind: 'death',
-        data: { place: state ? `${state.x}, ${state.z}, level ${state.plane}` : 'unknown', time: `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC` },
+        data: {
+          place: state ? `${state.x}, ${state.z}, level ${state.plane}` : 'unknown', time: `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+          ...(subject.lost && subject.lost.length > 0 ? { items: subject.lost.slice(0, 12) } : {}),
+          ...(subject.killer ? { killer: subject.killer } : {}),
+        },
       };
     case 'instruction_done':
       return receipt ? { kind: 'instruction_receipt', data: receipt } : null;
@@ -113,6 +240,7 @@ export function cardFor(subject: CardSubject, state: EventState | null, receipt:
             { label: 'Deaths', value: r.deaths },
             { label: 'Instructions', value: r.instructions },
           ],
+          ...(r.xpBySkill && r.xpBySkill.length > 0 ? { xp: r.xpBySkill.slice(0, 12) } : {}),
         },
       };
     }

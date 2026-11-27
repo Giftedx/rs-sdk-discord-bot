@@ -25,7 +25,7 @@ The bot, built and tested:
 - Drawn cards from a second browser tab (`src/cards/`, `src/gamelink/card-tab.ts`).
 - A smoke test on the local stack (`scripts/bot-smoke.ts`), a check of the seed scripts (`scripts/seed-check.ts`), and systemd units and server scripts for the bot, the box firewall, the backup and the revision check (`deploy/systemd/`, `scripts/server-*.sh`).
 
-Not yet run against a real Discord server: the status card, the adventure log, the posts and the multi-guild wiring. Not yet run on a server: the firewall, the backup, the revision check and the cgroup limits.
+Not yet run against a real Discord server: the multi-guild wiring. Built in the latest round and not yet run live: the wiki search, diary and personality of the AI, the time limit per instruction, the budget share per guild with the small-model mode at 80%, the deferred and backed-off game login, the wait for actions in flight after each job, the new status card lines and post cards, and the tighter bot unit. [docs/roadmap.md](docs/roadmap.md) has the details.
 
 The base, built and tested:
 

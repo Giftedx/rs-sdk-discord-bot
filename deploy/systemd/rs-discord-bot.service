@@ -6,6 +6,8 @@
 # Split mode (docs/running-the-bot.md, "Split mode"): rs-gamelink.service runs the game parts,
 # secrets/account.env is moved to /etc/rs-gamelink, and secrets/bot.env sets GAMELINK_SOCKET and
 # GAMELINK_TOKEN_FILE. Then this unit holds no game password and opens no browser.
+# This unit is for split mode. For one-process mode (no rs-gamelink unit, the browser in this
+# process), use rs-discord-bot-single.service instead; install only one of the two.
 # Wants=, not Requires=: the bot stays up while gamelink restarts (the client reconnects and
 # reads the new boot token), and the unit also runs alone, with no rs-gamelink unit installed.
 [Unit]
@@ -32,9 +34,25 @@ KillMode=mixed
 Delegate=yes
 # No NoNewPrivileges=yes: the job runner uses sudo to run each job as the box user.
 PrivateTmp=yes
-ProtectSystem=full
+# Box limits for split mode. The jobs are children of this unit (sudo -u rsbox), so each limit
+# below also binds every job.
+# No RestrictSUIDSGID=, RestrictNamespaces=, PrivateDevices=, LockPersonality= or
+# SystemCallFilter=: for a unit with User=, each of them sets NoNewPrivileges=yes
+# (systemd.exec(5)), and then sudo cannot run the jobs as the box user.
+# These limits break one-process mode, so rs-discord-bot-single.service does not set them:
+#   InaccessiblePaths=      Chromium runs from /opt/rs-chrome (RS_CHROME_PATH).
+#   ProcSubset=pid          Chromium reads /proc files that are not per process.
+# Only the bot and the jobs see /proc; other users' processes are hidden.
+ProtectProc=invisible
+ProcSubset=pid
+# The "-" prefix: no error when the path does not exist (a server with no split setup).
+InaccessiblePaths=-/opt/rs-chrome -/etc/rs-gamelink/account.env
+# All of the file system is read-only, except the paths below (and /dev, /proc, /sys).
+# /sys stays writable for the job cgroups of Delegate=yes. /run/sudo: sudo can keep its
+# time stamps there.
+ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/rs-discord-bot/data /home/rsbot/.cache
+ReadWritePaths=/opt/rs-discord-bot/data /home/rsbot/.cache -/run/sudo
 MemoryMax=3G
 
 [Install]

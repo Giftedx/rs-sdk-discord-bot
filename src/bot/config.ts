@@ -40,6 +40,8 @@ export interface BotConfig {
   effort: Effort;
   maxTurns: number;
   maxInstructionUsd: number;
+  // The wall-clock limit of one instruction (AI_MAX_INSTRUCTION_MIN).
+  maxInstructionMs: number;
   monthlyCapUsd: number;
   spendResetDay: number;
   watchdogMs: number;
@@ -219,9 +221,11 @@ export function loadBotConfig(
   if (discordToken === '') throw new ConfigError('DISCORD_TOKEN must be set');
   const effort = (env.AI_EFFORT || 'medium') as Effort;
   if (!EFFORTS.includes(effort)) throw new ConfigError(`AI_EFFORT must be one of ${EFFORTS.join(', ')}`);
-  const model = env.AI_MODEL || 'claude-opus-5-5';
+  const model = env.AI_MODEL || 'claude-sonnet-5-5';
   if (!/^[a-z0-9.-]+$/.test(model)) throw new ConfigError('AI_MODEL must be a model ID');
-  const escalationModel = env.ESCALATION_MODEL || null;
+  // ESCALATION_MODEL=none turns escalation off.
+  const escRaw = env.ESCALATION_MODEL || 'claude-opus-5-5';
+  const escalationModel = escRaw === 'none' ? null : escRaw;
   const smallModel = env.SMALL_MODEL || 'claude-haiku-5-5';
   if (!/^[a-z0-9.-]+$/.test(smallModel)) throw new ConfigError('SMALL_MODEL must be a model ID');
   if (escalationModel !== null && !/^[a-z0-9.-]+$/.test(escalationModel)) throw new ConfigError('ESCALATION_MODEL must be a model ID');
@@ -271,6 +275,7 @@ export function loadBotConfig(
     effort,
     maxTurns: num(env, 'AI_MAX_TURNS', 25, 1, 200),
     maxInstructionUsd: num(env, 'AI_MAX_INSTRUCTION_USD', 2, 0.01, 100),
+    maxInstructionMs: num(env, 'AI_MAX_INSTRUCTION_MIN', 120, 1, 1_440) * 60_000,
     monthlyCapUsd: num(env, 'AI_MONTHLY_CAP_USD', 30, 0, 10_000),
     spendResetDay: int(env, 'SPEND_RESET_DAY', 1, 1, 28),
     watchdogMs: num(env, 'WATCHDOG_MINUTES', 5, 1, 120) * 60_000,

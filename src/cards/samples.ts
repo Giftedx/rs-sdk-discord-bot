@@ -4,10 +4,11 @@ import type { CardDataMap, CardKind } from './templates';
 const SKILLS = ['Attack', 'Defence', 'Strength', 'Hitpoints', 'Ranged', 'Prayer', 'Magic', 'Cooking', 'Woodcutting', 'Fletching', 'Fishing', 'Firemaking', 'Crafting', 'Smithing', 'Mining', 'Herblore', 'Agility', 'Thieving', 'Runecraft'];
 
 export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
-  level_up: { skill: 'Woodcutting', level: 31, xp: 14_833 },
+  level_up: { skill: 'Woodcutting', level: 31, xp: 14_833, from: 30, totalLevel: 214 },
   death: {
     place: 'Lumbridge swamp, south of the church',
     time: '2026-11-27 14:05 UTC',
+    killer: 'Giant rat',
     items: [
       { id: 1351, name: 'Bronze axe', count: 1 },
       { id: 995, name: 'Coins', count: 1_250 },
@@ -19,6 +20,9 @@ export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
     summary: 'Walked to the oak trees west of Draynor bank. Chopped 27 oak logs in four trips, banked each load, and stopped at the bank with an empty inventory. No combat on the way.',
     turns: 14,
     costUsd: 0.37,
+    durationMs: 4_320_000,
+    skills: [{ name: 'Woodcutting', before: 30, after: 31, xp: 4_100 }],
+    inventory: [{ name: 'Oak logs', before: 0, after: 27 }, { name: 'Coins', before: 120, after: 120 }],
   },
   daily_recap: {
     date: '2026-11-27',
@@ -30,6 +34,7 @@ export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
       { label: 'wakes', value: 41 },
       { label: 'turns', value: 212 },
     ],
+    xp: [{ skill: 'Woodcutting', xp: 41_200 }, { skill: 'Firemaking', xp: 7_010 }],
   },
   status: {
     hp: 7,

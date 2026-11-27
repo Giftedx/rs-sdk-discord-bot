@@ -18,10 +18,12 @@ const NO_PINGS = { parse: [] as [] };
 function cardPayload(msg: CardMessage) {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     msg.buttons.map((b) =>
-      new ButtonBuilder()
-        .setCustomId(b.id)
-        .setLabel(b.label)
-        .setStyle(b.danger ? ButtonStyle.Danger : ButtonStyle.Secondary),
+      b.url
+        ? new ButtonBuilder().setURL(b.url).setLabel(b.label).setStyle(ButtonStyle.Link)
+        : new ButtonBuilder()
+            .setCustomId(b.id)
+            .setLabel(b.label)
+            .setStyle(b.danger ? ButtonStyle.Danger : ButtonStyle.Secondary),
     ),
   );
   const files = msg.frame ? [new AttachmentBuilder(Buffer.from(msg.frame), { name: 'frame.png' })] : [];

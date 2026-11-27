@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { FakeTimers } from './fake-timers';
-import { MainPosts, isMilestone, msUntilUtcHour } from './posts';
+import { MainPosts, isMilestone, mergeLevelUps, msUntilUtcHour, xpGains } from './posts';
 
 const T0 = Date.UTC(2026, 0, 1, 10, 0, 0);
 
-function setup(o: { maxPerHour?: number; recapHourUtc?: number; spend?: number } = {}) {
+function setup(o: { maxPerHour?: number; recapHourUtc?: number; spend?: number; mergeWindowSec?: number } = {}) {
   const timers = new FakeTimers(T0);
   const sent: string[] = [];
   const logs: string[] = [];
@@ -16,6 +16,7 @@ function setup(o: { maxPerHour?: number; recapHourUtc?: number; spend?: number }
     maxPerHour: o.maxPerHour,
     recapHourUtc: o.recapHourUtc,
     spendSince: o.spend === undefined ? undefined : () => o.spend!,
+    mergeWindowSec: o.mergeWindowSec ?? 0,
   });
   return { timers, sent, logs, posts };
 }
@@ -61,9 +62,10 @@ describe('MainPosts', () => {
     expect(sent.some((s) => s.startsWith('Last 24 hours'))).toBe(false);
     await timers.advance(1);
     expect(sent.at(-1)).toBe('Last 24 hours: 2 level-ups, 7 items, 1 deaths, 1 instructions, spend $0.42.');
-    // The next recap comes one day later and has no old events.
+    // The next day has no events, so no recap is posted.
+    const n = sent.length;
     await timers.advance(24 * 3_600_000);
-    expect(sent.at(-1)).toBe('Last 24 hours: 0 level-ups, 0 items, 0 deaths, 0 instructions, spend $0.42.');
+    expect(sent).toHaveLength(n);
     posts.stop();
     expect(timers.pending()).toBe(0);
   });
@@ -95,5 +97,108 @@ describe('MainPosts', () => {
     posts.record({ kind: 'instruction_done', instruction: 'x', outcome: 'done' });
     expect(sent).toEqual([]);
     expect(posts.recap().instructions).toBe(1);
+  });
+});
+
+describe('MainPosts merge and recap from the events table', () => {
+  test('level-ups within the merge window become one post', async () => {
+    const { timers, sent, posts } = setup({ mergeWindowSec: 60 });
+    expect(await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 9, level: 10 })).toBe(false);
+    await timers.advance(30_000);
+    await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 10, level: 11 });
+    await posts.onEvent({ kind: 'level_up', skill: 'Strength', from: 19, level: 20 });
+    expect(sent).toEqual([]);
+    await timers.advance(30_000);
+    await Promise.resolve();
+    expect(sent).toEqual(['Milestone: Attack reached level 11, Strength reached level 20.']);
+    // A later burst with no milestone posts nothing.
+    await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 11, level: 12 });
+    await timers.advance(60_000);
+    expect(sent).toHaveLength(1);
+    expect(timers.pending()).toBe(0);
+  });
+
+  test('a merged post counts once against the hourly cap', async () => {
+    const { timers, sent, posts } = setup({ mergeWindowSec: 60, maxPerHour: 1 });
+    for (const skill of ['Attack', 'Strength', 'Defence']) await posts.onEvent({ kind: 'level_up', skill, from: 9, level: 10 });
+    await timers.advance(60_000);
+    await Promise.resolve();
+    await posts.onEvent({ kind: 'death' });
+    expect(sent).toHaveLength(1);
+  });
+
+  test('stop drops waiting level-ups; flushLevels posts them', async () => {
+    const { sent, posts, timers } = setup({ mergeWindowSec: 60 });
+    await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 9, level: 10 });
+    expect(await posts.flushLevels()).toBe(true);
+    await posts.onEvent({ kind: 'level_up', skill: 'Magic', from: 9, level: 10 });
+    posts.stop();
+    expect(timers.pending()).toBe(0);
+    expect(sent).toEqual(['Milestone: Attack reached level 10.']);
+  });
+
+  test('mergeLevelUps keeps one entry per skill', () => {
+    expect(mergeLevelUps([
+      { kind: 'level_up', skill: 'A', from: 3, level: 4 },
+      { kind: 'level_up', skill: 'A', from: 4, level: 6 },
+      { kind: 'level_up', skill: 'B', from: 1, level: 2 },
+    ])).toEqual([{ kind: 'level_up', skill: 'A', from: 3, level: 6 }, { kind: 'level_up', skill: 'B', from: 1, level: 2 }]);
+  });
+
+  test('death post has the lost items and the guessed killer', async () => {
+    const { sent, posts } = setup();
+    await posts.onEvent({ kind: 'death', killer: 'Giant rat', lost: [{ name: 'Bronze axe', count: 1 }] });
+    expect(sent[0]).toBe('The account died. Probably killed by Giant rat. Lost: 1 x Bronze axe.');
+  });
+
+  test('recap from stored events survives a restart and has XP per skill', async () => {
+    const timers = new FakeTimers(T0);
+    const sent: string[] = [];
+    const since: number[] = [];
+    const posts = new MainPosts({
+      channel: { send: async (c) => void sent.push(c) },
+      secrets: [], timers, log: () => {},
+      eventsSince: (t) => {
+        since.push(t);
+        return [
+          { time: T0 - 1000, type: 'level_up', data: { kind: 'level_up', skill: 'Attack', from: 4, level: 6 } },
+          { time: T0 - 900, type: 'level_up' },
+          { time: T0 - 800, type: 'item_gain', data: { kind: 'item_gain', items: [{ name: 'Logs', count: 3 }] } },
+          { time: T0 - 700, type: 'death', data: null },
+          { time: T0 - 600, type: 'instruction_done', data: { kind: 'instruction_done', instruction: 'x', outcome: 'done' } },
+        ];
+      },
+      xpGainedSince: () => ({ Attack: 300, Woodcutting: 12_000, Magic: 0 }),
+    });
+    expect(await posts.postRecap()).toBe(true);
+    expect(since).toEqual([T0 - 86_400_000]);
+    expect(sent[0]).toBe('Last 24 hours: 3 level-ups, 3 items, 1 deaths, 1 instructions. XP: Woodcutting +12,000, Attack +300.');
+    expect(posts.recap().xpBySkill).toEqual([{ skill: 'Woodcutting', xp: 12_000 }, { skill: 'Attack', xp: 300 }]);
+  });
+
+  test('recap is skipped with no stored events; a failed read falls back to memory', async () => {
+    const timers = new FakeTimers(T0);
+    const sent: string[] = [];
+    const logs: string[] = [];
+    let fail = false;
+    const posts = new MainPosts({
+      channel: { send: async (c) => void sent.push(c) },
+      secrets: [], timers, log: (l) => logs.push(l),
+      eventsSince: () => { if (fail) throw new Error('db locked'); return []; },
+    });
+    posts.record({ kind: 'death' });
+    expect(await posts.postRecap()).toBe(false);
+    expect(logs.some((l) => l.includes('recap skipped'))).toBe(true);
+    fail = true;
+    expect(await posts.postRecap()).toBe(true);
+    expect(sent[0]).toContain('1 deaths');
+  });
+
+  test('xpGains compares the first and the last sample', () => {
+    expect(xpGains([])).toEqual({});
+    expect(xpGains([
+      { time: 2, skills: { A: { level: 2, xp: 150 }, B: { level: 1, xp: 0 } } },
+      { time: 1, skills: { A: { level: 1, xp: 50 }, B: { level: 1, xp: 0 } } },
+    ])).toEqual({ A: 100 });
   });
 });

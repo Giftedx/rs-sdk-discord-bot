@@ -5,9 +5,9 @@
 // Start: bun src/bot/main.ts (docs/running-the-bot.md).
 import Anthropic from '@anthropic-ai/sdk';
 import { Client, Events, GatewayIntentBits, type Interaction, type Message } from 'discord.js';
-import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { knowledgeFiles, loadKnowledge } from '../agent/store';
+import { createKnowledgePack } from '../agent/store';
 import { prepareJobCgroup, type JobCgroup } from '../box/cgroup';
 import { connectGameLink } from '../gamelink/client';
 import { openLocalGameLink, readTokenFile, type GameLink } from '../gamelink/link';
@@ -16,7 +16,7 @@ import { createWakeScheduler } from '../orchestrator/wakes';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 import { loadBotConfig } from './config';
 import { startGuild, type Guild } from './guild';
-import { createKeyedLock, mentionsBot, stripMentions } from './helpers';
+import { createKeyedLock, mentionsBot, stripMentions, takeRevisionFlag } from './helpers';
 
 const ROOT = resolve(dirname(import.meta.path), '..', '..');
 const TICK_MS = 5_000;
@@ -55,6 +55,7 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 mkdirSync(cfg.dataDir, { recursive: true });
 const dbPath = join(cfg.dataDir, 'bot.sqlite');
+const REVISION_FLAG = join(cfg.dataDir, 'revision-changed');
 const db = openDb(dbPath);
 // The box user must not read the database. SQLite gives -wal and -shm the mode of the main file.
 for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) { try { chmodSync(p, 0o600); } catch { /* not created yet */ } }
@@ -115,7 +116,7 @@ try {
   }
   const shared = {
     cfg, root: ROOT, link, anthropic: new Anthropic(), db, cgroup, discord,
-    knowledge: loadKnowledge(knowledgeFiles(ROOT)),
+    knowledge: createKnowledgePack(ROOT),
     apiReference: readFileSync(join(ROOT, 'vendor', 'rs-sdk', 'sdk', 'API.md'), 'utf8'),
     secrets, clean, log,
     wakes: createWakeScheduler({ watchdogMs: cfg.watchdogMs }),
@@ -137,6 +138,13 @@ let lastPrune = 0;
 ticker = setInterval(() => {
   for (const g of guilds) {
     try { g.tick(); } catch (err) { log(`[${g.name}] tick failed: ${errText(err)}`); }
+  }
+  // scripts/server-revision-check.sh writes this file when the game client changed. Gamelink restarts
+  // on its own (rs-revision-check.service); the bot logs the change once and draws the cards again.
+  const revision = takeRevisionFlag(REVISION_FLAG, { read: p => readFileSync(p, 'utf8'), remove: p => rmSync(p, { force: true }) });
+  if (revision !== null) {
+    log(`game revision changed: ${revision}`);
+    for (const g of guilds) g.refreshCard();
   }
   if (Date.now() - lastPrune > 3_600_000) {
     lastPrune = Date.now();

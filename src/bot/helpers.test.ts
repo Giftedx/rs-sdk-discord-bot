@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { cardFor, cardView, createAdmission, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptEvent, stripMentions } from './helpers';
+import {
+  cardFor, cardView, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
+  scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
+} from './helpers';
 
 const state = { hp: 5, maxHp: 10, x: 3222, z: 3218, plane: 0, skills: { Woodcutting: { level: 10, xp: 1200 } }, inventory: {}, inCombat: false };
 
@@ -70,13 +73,106 @@ describe('cardView', () => {
     expect(v.note).toBe('game tab: reloading');
     expect(v.frame).toBe(png);
   });
+  test('the reason of the tab, the inventory, xp samples, the last event and the script', () => {
+    const samples = [{ time: 0, skills: {} }, { time: 60_000, skills: {} }];
+    const v = cardView({ ...base, running: 'chop', tabStatus: 'login_refused', tabReason: 'Invalid username or password.', inventory: { used: 3, max: 28 }, xpSamples: samples, lastEvent: 'Got 1 x Logs.', script: 'chop-trees' });
+    expect(v.note).toBe('game tab: login_refused (Invalid username or password.)');
+    expect(v.inventory).toEqual({ used: 3, max: 28 });
+    expect(v.xpSamples).toBe(samples);
+    expect(v.lastEvent).toBe('Got 1 x Logs.');
+    expect(v.script).toBe('chop-trees');
+    const idle = cardView({ ...base, script: 'chop-trees', xpSamples: [samples[0]!] });
+    expect(idle.script).toBeUndefined();
+    expect(idle.xpSamples).toBeUndefined();
+  });
+});
+
+describe('tabLine', () => {
+  test('adds the reason only out of the game', () => {
+    expect(tabLine('in_game', 'old')).toBe('in_game');
+    expect(tabLine('reloading', null)).toBe('reloading');
+    expect(tabLine('out_of_game', 'The server is being updated.')).toBe('out_of_game (The server is being updated.)');
+  });
+});
+
+describe('receiptChanges', () => {
+  test('lists the skills that gained xp and the items whose count changed', () => {
+    const before = { ...state, skills: { Woodcutting: { level: 10, xp: 1200 }, Attack: { level: 1, xp: 0 } }, inventory: { 'Bronze axe': 1, Coins: 5 } };
+    const after = { ...state, skills: { Woodcutting: { level: 11, xp: 1400 }, Attack: { level: 1, xp: 0 } }, inventory: { 'Bronze axe': 1, Logs: 7 } };
+    expect(receiptChanges(before, after)).toEqual({
+      skills: [{ name: 'Woodcutting', before: 10, after: 11, xp: 200 }],
+      inventory: [{ name: 'Logs', before: 0, after: 7 }, { name: 'Coins', before: 5, after: 0 }],
+    });
+    expect(receiptChanges(null, after)).toEqual({ skills: [], inventory: [] });
+  });
+});
+
+describe('createDeathEnricher', () => {
+  const alive = { ...state, hp: 8, inCombat: true, inventory: { 'Bronze axe': 1, Logs: 3 } };
+  test('a death at hp 0 waits for the respawn, then lists the lost items and the killer', () => {
+    const enrich = createDeathEnricher();
+    expect(enrich([], alive, 'Giant rat')).toEqual([]);
+    expect(enrich([{ kind: 'death' }], { ...alive, hp: 0 }, undefined)).toEqual([]);
+    expect(enrich([], { ...alive, hp: 10, inventory: { 'Bronze axe': 1 } }, undefined))
+      .toEqual([{ kind: 'death', killer: 'Giant rat', lost: [{ name: 'Logs', count: 3 }] }]);
+  });
+  test('a death found at the respawn is enriched at once; other events pass', () => {
+    const enrich = createDeathEnricher();
+    enrich([], alive, undefined);
+    const gain = { kind: 'item_gain' as const, items: [{ name: 'Coins', count: 1 }] };
+    expect(enrich([{ kind: 'death' }, gain], { ...alive, hp: 10, inventory: { Coins: 1 } }, undefined))
+      .toEqual([{ kind: 'death', lost: [{ name: 'Bronze axe', count: 1 }, { name: 'Logs', count: 3 }] }, gain]);
+  });
+  test('without a respawn the death posts after holdMs, with no lost items', () => {
+    let t = 0;
+    const enrich = createDeathEnricher({ holdMs: 1_000, now: () => t });
+    enrich([], alive, 'Goblin');
+    expect(enrich([{ kind: 'death' }], { ...alive, hp: 0 }, undefined)).toEqual([]);
+    t = 1_000;
+    expect(enrich([], { ...alive, hp: 0 }, undefined)).toEqual([{ kind: 'death', killer: 'Goblin' }]);
+  });
+});
+
+describe('scriptFromProgress', () => {
+  test('reads the saved script name, null for new code, undefined for other lines', () => {
+    expect(scriptFromProgress('Running saved script `chop-trees`.')).toBe('chop-trees');
+    expect(scriptFromProgress('Running new code.')).toBeNull();
+    expect(scriptFromProgress('Looking at the game.')).toBeUndefined();
+  });
+});
+
+describe('wakeContextText', () => {
+  test('one short block with goal, queue, tab and state', () => {
+    expect(wakeContextText({ goal: null, queue: ['mine copper', 'bank'], tab: 'in_game', hp: { hp: 5, maxHp: 10 }, position: { x: 1, z: 2, plane: 0 }, inventoryUsed: 4, routineOnly: true }))
+      .toBe('Goal: none set. Queue: 2 waiting, next: mine copper. Game tab: in_game. HP 5/10. Position 1, 2, level 0. Inventory 4/28. The budget is low: do only routine work, keep it short.');
+    expect(wakeContextText({ goal: 'level 20', queue: [], tab: 'reloading', hp: null, position: null, inventoryUsed: null, routineOnly: false }))
+      .toBe('Goal: level 20. Queue: empty. Game tab: reloading. No fresh game state.');
+  });
+});
+
+describe('takeRevisionFlag', () => {
+  test('reads the first line and removes the file; null without a file', () => {
+    const removed: string[] = [];
+    const fs = { read: () => '2026-11-27T10:00Z aaa bbb\n', remove: (p: string) => { removed.push(p); } };
+    expect(takeRevisionFlag('/x/revision-changed', fs)).toBe('2026-11-27T10:00Z aaa bbb');
+    expect(removed).toEqual(['/x/revision-changed']);
+    expect(takeRevisionFlag('/x/none', { read: () => { throw new Error('ENOENT'); }, remove: () => {} })).toBeNull();
+  });
 });
 
 describe('cardFor', () => {
   const at = new Date('2026-11-27T10:15:00Z');
   test('level up takes the xp from the state', () => {
     expect(cardFor({ kind: 'level_up', skill: 'Woodcutting', from: 9, level: 10 }, state, null, at))
-      .toEqual({ kind: 'level_up', data: { skill: 'Woodcutting', level: 10, xp: 1200 } });
+      .toEqual({ kind: 'level_up', data: { skill: 'Woodcutting', level: 10, xp: 1200, from: 9, totalLevel: 10 } });
+  });
+  test('death carries the lost items and the killer guess', () => {
+    expect(cardFor({ kind: 'death', lost: [{ name: 'Bronze axe', count: 1 }], killer: 'Goblin' }, state, null, at)?.data)
+      .toEqual({ place: '3222, 3218, level 0', time: '2026-11-27 10:15 UTC', items: [{ name: 'Bronze axe', count: 1 }], killer: 'Goblin' });
+  });
+  test('recap carries the xp per skill', () => {
+    const recap = { levelUps: 0, items: 0, deaths: 0, instructions: 1, spendUsd: null, xpBySkill: [{ skill: 'Attack', xp: 300 }] };
+    expect(cardFor({ kind: 'recap', recap }, null, null, at)?.data).toMatchObject({ xp: [{ skill: 'Attack', xp: 300 }] });
   });
   test('death names the tile and the time', () => {
     expect(cardFor({ kind: 'death' }, state, null, at)).toEqual({ kind: 'death', data: { place: '3222, 3218, level 0', time: '2026-11-27 10:15 UTC' } });

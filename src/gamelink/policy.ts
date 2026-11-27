@@ -16,9 +16,13 @@ export interface PolicyContext { jobActive: boolean; nowMs: number; }
 
 export type Verdict =
   | { allow: true }
-  | { allow: false; reason: 'no_job' | 'blocked_type' | 'unknown_type' | 'client_command' | 'chat_rate' | 'malformed' };
+  | { allow: false; reason: 'no_job' | 'blocked_type' | 'unknown_type' | 'client_command' | 'chat_rate' | 'malformed' | 'logout_component' };
 
 export interface ActionPolicy { check(action: unknown, ctx: PolicyContext): Verdict; }
+
+// The logout button of the client. Only gamelink logs the account out (game-tab.ts), never a job.
+export const LOGOUT_COMPONENT = 2458;
+const COMPONENT_TYPES: ReadonlySet<string> = new Set(['clickComponent', 'clickComponentWithOption']);
 
 const CHAT_TYPES: ReadonlySet<string> = new Set(['say', 'privateMessage']);
 const WINDOW_MS = 60_000;
@@ -32,11 +36,12 @@ export function createActionPolicy(opts: { chatPerMinute?: number } = {}): Actio
   return {
     check(action, ctx) {
       if (typeof action !== 'object' || action === null) return deny('malformed');
-      const { type, message } = action as { type?: unknown; message?: unknown };
+      const { type, message, componentId } = action as { type?: unknown; message?: unknown; componentId?: unknown };
       if (typeof type !== 'string') return deny('malformed');
       if (!ctx.jobActive) return deny('no_job');
       if (BLOCKED_ACTION_TYPES.has(type)) return deny('blocked_type');
       if (!ALLOWED_ACTION_TYPES.has(type)) return deny('unknown_type');
+      if (COMPONENT_TYPES.has(type) && Number(componentId) === LOGOUT_COMPONENT) return deny('logout_component');
       if (!CHAT_TYPES.has(type)) return { allow: true };
 
       if (typeof message !== 'string') return deny('malformed');

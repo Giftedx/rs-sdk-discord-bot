@@ -10,25 +10,29 @@ import {
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInstruction, type AgentDeps, type AgentJobResult, type InstructionResult, type WakeKind } from '../agent/loop';
-import { createStore, type KnowledgeChunk } from '../agent/store';
+import { createStore, type KnowledgeChunk, type KnowledgePack } from '../agent/store';
 import type { JobCgroup } from '../box/cgroup';
 import { createJobRunner } from '../box/job-runner';
 import { fileSeedRecord, seedStore } from '../box/seed';
 import { cardChannel, logThreadHost, postChannel } from '../discord/adapters';
 import { AdventureLog } from '../discord/adventure-log';
-import { MainPosts, type CardSubject } from '../discord/posts';
-import { StatusCard, STATUS_ID } from '../discord/status-card';
+import { MainPosts, xpGains, type CardSubject } from '../discord/posts';
+import { StatusCard, STATUS_ID, XP_RATE_WINDOW_MS, type SkillSample } from '../discord/status-card';
 import { classifyMessage, type ChannelLine } from './addressee';
 import { realTimers } from '../discord/types';
-import { compactState as eventState, diffStates, eventText, type CompactState as EventState, type GameEvent } from '../events/diff';
+import { compactState as eventState, diffStates, eventText, guessKiller, type CompactState as EventState, type GameEvent } from '../events/diff';
 import type { GameLink } from '../gamelink/link';
-import { createBudget } from '../orchestrator/budget';
+import { WAIT_IDLE_CAP_MS } from '../gamelink/proxy';
+import { createBudget, modelsFor } from '../orchestrator/budget';
 import type { InstructionRow, OrchestratorDb } from '../orchestrator/db';
-import { compactState as wakeState, type WakeScheduler } from '../orchestrator/wakes';
+import { compactState as wakeState, type CompactState as WakeState, type WakeScheduler } from '../orchestrator/wakes';
 import { formatWorldState } from '../../vendor/rs-sdk/sdk/formatter';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
 import type { BotConfig, GuildConfig } from './config';
-import { ADMIT_TEXT, cardFor, cardView, createAdmission, createRateLimit, jobSignal, receiptEvent, type Receipt, type createKeyedLock } from './helpers';
+import {
+  ADMIT_TEXT, cardFor, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
+  scriptFromProgress, tabLine, wakeContextText, type Receipt, type createKeyedLock,
+} from './helpers';
 
 export interface Shared {
   cfg: BotConfig;
@@ -38,7 +42,7 @@ export interface Shared {
   db: OrchestratorDb;
   cgroup: JobCgroup | null;
   discord: Client;
-  knowledge: KnowledgeChunk[];
+  knowledge: KnowledgeChunk[] | KnowledgePack;
   apiReference: string;
   secrets: string[];
   clean(text: string): string;
@@ -50,6 +54,8 @@ export interface Shared {
 const STATE_FRESH_MS = 30_000;
 const SNAPSHOT_MS = 30_000;
 const WAKES: readonly WakeKind[] = ['instruction', 'timer', 'trigger'];
+// The loop checks its time limit before each turn. This backstop stops a model call that hangs.
+const TIME_CAP_GRACE_MS = 5 * 60_000;
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export type Guild = Awaited<ReturnType<typeof startGuild>>;
@@ -74,7 +80,15 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
 
   const runner = createJobRunner({
     rootDir: sh.root, scratchDir: join(g.dataDir, 'jobs'), account: link.account, get bootToken() { return link.bootToken; }, secrets: sh.secrets,
-    proxy: { get port() { return link.proxyPort; }, setJobActive: active => link.setJobActive(active) },
+    proxy: {
+      get port() { return link.proxyPort; },
+      // At the end of a job, wait until the gateway answered every action of the job, so the
+      // next job does not start while the account still acts. Server log only.
+      setJobActive: async active => {
+        if (!active && !(await link.waitIdle(WAIT_IDLE_CAP_MS))) log(`job ended with ${link.actionsInFlight()} actions in flight`);
+        await link.setJobActive(active);
+      },
+    },
     boxUser: g.boxUser, ...(g.boxUser ? { bunPath: cfg.boxBunPath } : {}),
     ...(sh.cgroup ? {
       onSpawn: (pid: number) => {
@@ -90,6 +104,8 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   let current: { row: InstructionRow; abort: AbortController; job: ReturnType<typeof jobSignal> | null } | null = null;
   const budget = createBudget(db, cfg.monthlyCapUsd, {
     resetDay: cfg.spendResetDay,
+    guild: g.name,
+    guildCount: cfg.guilds.length,
     context: () => ({ guild: g.name, instructionId: current?.row.id ?? null }),
   });
   const admit = createAdmission({ max: cfg.queueMax, userCooldownMs: cfg.userCooldownMs });
@@ -104,6 +120,15 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   let lastReceipt: Receipt | null = null;
   let lastSnapshotAt = 0;
   let stopping = false;
+  let script: string | null = null;
+  let lastTab: string | null = null;
+  const enrichDeaths = createDeathEnricher();
+
+  // Skill snapshots of the last 15 minutes, for the XP per hour on the status card.
+  const xpSamples = (): SkillSample[] =>
+    db.snapshotsSince<WakeState>(g.name, Date.now() - XP_RATE_WINDOW_MS)
+      .filter(s => s.state && typeof s.state.skills === 'object')
+      .map(s => ({ time: s.time, skills: s.state.skills }));
 
   const freshState = (): BotWorldState | null => {
     const s = lastGame();
@@ -112,7 +137,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
 
   function gameState(): string {
     const ps = prx.status();
-    const head = `Game tab: ${sup.status()}. Gateway connection: ${ps.connected ? 'up' : `down${ps.lastError ? ` (${ps.lastError})` : ''}`}.`;
+    const head = `Game tab: ${tabLine(sup.status(), link.tabReason())}. Gateway connection: ${ps.connected ? 'up' : `down${ps.lastError ? ` (${ps.lastError})` : ''}`}.`;
     const last = lastGame();
     if (!last) return `${head}\nNo game state yet.`;
     const text = formatWorldState(last.state, Date.now() - last.at, { brief: true });
@@ -129,7 +154,8 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   }
 
   function view() {
-    const p = freshState()?.player;
+    const s = freshState();
+    const p = s?.player;
     const b = budget.status();
     return cardView({
       goal,
@@ -138,9 +164,28 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       hp: p ? { hp: p.hp, maxHp: p.maxHp } : null,
       queueLength: db.countWaiting(g.name),
       spend: { usedUsd: b.periodSpentUsd, capUsd: b.monthlyCapUsd },
-      budgetNote: b.reason,
+      budgetNote: b.reason ?? (b.routineOnly ? 'budget low: small model only' : null),
       tabStatus: sup.status(),
+      tabReason: link.tabReason(),
       frame: frames.latest()?.png ?? null,
+      inventory: s ? { used: s.inventory.length, max: 28 } : null,
+      xpSamples: xpSamples(),
+      lastEvent: db.recentEvents(1, g.name)[0]?.text ?? null,
+      script,
+    });
+  }
+
+  function wakeContext(): string {
+    const s = freshState();
+    const p = s?.player;
+    return wakeContextText({
+      goal,
+      queue: db.listQueue(g.name).filter(r => r.status === 'waiting').map(r => r.text),
+      tab: tabLine(sup.status(), link.tabReason()),
+      hp: p ? { hp: p.hp, maxHp: p.maxHp } : null,
+      position: p ? { x: p.worldX, z: p.worldZ, plane: p.level } : null,
+      inventoryUsed: s ? s.inventory.length : null,
+      routineOnly: budget.status().routineOnly,
     });
   }
 
@@ -148,14 +193,14 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     (db.raw.query('SELECT COALESCE(SUM(usd), 0) AS s FROM spend WHERE guild = ? AND time >= ?').get(g.name, since) as { s: number }).s;
 
   function emit(e: GameEvent, ownMessage = false): void {
-    db.addEvent(g.name, e.kind, eventText(e));
+    db.addEvent(g.name, e.kind, eventText(e), e);
     advLog?.add(eventText(e));
     if (ownMessage) posts?.record(e);
     else void posts?.onEvent(e);
   }
 
-  const deps = (onProgress: (line: string) => void): AgentDeps => ({
-    model: cfg.model,
+  const deps = (onProgress: (line: string) => void, m: { model: string; escalationModel: string | null }): AgentDeps => ({
+    model: m.model,
     effort: cfg.effort,
     // Server-side fallback: if the model declines, the API runs the request on a fallback model.
     callModel: (params, signal) => sh.anthropic.beta.messages.create(
@@ -185,11 +230,13 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     store, knowledge: sh.knowledge, apiReference: sh.apiReference, gameState, frame, spend: budget,
     maxTurns: cfg.maxTurns,
     maxInstructionUsd: cfg.maxInstructionUsd,
+    maxInstructionMs: cfg.maxInstructionMs,
+    wakeContext,
     onProgress,
     setTimer: (minutes, note) => { db.addTimer(g.name, Date.now() + minutes * 60_000, note); log(`timer set for ${minutes} min`); },
     post: text => { advLog?.add(text); },
     setGoal: text => { goal = text; void card?.update(); },
-    ...(cfg.escalationModel ? { escalationModel: cfg.escalationModel } : {}),
+    ...(m.escalationModel ? { escalationModel: m.escalationModel } : {}),
   });
 
   function allowed(member: GuildMember | null): boolean {
@@ -218,16 +265,36 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       editTimer = setTimeout(() => { editTimer = null; void msg.edit({ content: body(), allowedMentions: { parse: [] } }).catch(() => {}); }, 3_000);
     };
 
-    log(`instruction ${row.id} started (${wake})`);
+    // At 80% of the cap the main loop runs on the small model, with no escalation.
+    const models = modelsFor(budget.status(), cfg);
+    const startedAt = Date.now();
+    const startState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
+    log(`instruction ${row.id} started (${wake}, ${models.model})`);
     if (sup.status() === 'in_game') frames.start();
     void card?.instructionStarted();
-    const result: InstructionResult = await runInstruction(deps(line => { lines.push(line); step = line; scheduleEdit(); }), row.text, row.user, abort.signal, wake)
-      .catch(err => ({ summary: `Error: ${errText(err)}`, turns: 0, usd: 0, model: cfg.model, escalated: false, stopReason: 'error' as const, lastFrame: null }));
+    const onProgress = (line: string) => {
+      lines.push(line); step = line; scheduleEdit();
+      const sc = scriptFromProgress(line);
+      if (sc !== undefined) script = sc;
+    };
+    const backstop = setTimeout(() => { log(`instruction ${row.id} passed its time limit: stopped`); abort.abort('time_cap'); }, cfg.maxInstructionMs + TIME_CAP_GRACE_MS);
+    // A trigger wake (low HP, death) starts on the stronger model when there is one.
+    const result: InstructionResult = await runInstruction(deps(onProgress, models), row.text, row.user, abort.signal, wake, { escalateFromStart: wake === 'trigger' })
+      .catch(err => ({ summary: `Error: ${errText(err)}`, turns: 0, usd: 0, model: models.model, escalated: false, stopReason: 'error' as const, lastFrame: null }));
+    clearTimeout(backstop);
+    script = null;
     if (editTimer) clearTimeout(editTimer);
     log(`instruction ${row.id} ended: ${result.stopReason}, ${result.turns} turns, $${result.usd.toFixed(3)}${result.escalated ? `, escalated to ${result.model}` : ''}`);
     db.finishInstruction(row.id, result.stopReason === 'aborted' ? 'stopped' : 'done', result.summary.slice(0, 2_000), result.usd);
 
-    lastReceipt = { instruction: row.text.slice(0, 300), summary: result.summary.slice(0, 600), turns: result.turns, costUsd: result.usd };
+    const endState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
+    const changes = receiptChanges(startState, endState);
+    lastReceipt = {
+      instruction: row.text.slice(0, 300), summary: result.summary.slice(0, 600), turns: result.turns, costUsd: result.usd,
+      durationMs: Date.now() - startedAt,
+      ...(changes.skills.length > 0 ? { skills: changes.skills } : {}),
+      ...(changes.inventory.length > 0 ? { inventory: changes.inventory } : {}),
+    };
     const files: AttachmentBuilder[] = [];
     const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
     if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
@@ -294,7 +361,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       `**Now:** ${current ? current.row.text : 'nothing'}${goal ? ` (goal: ${goal})` : ''}`,
       `**Queue:** ${waiting.length ? waiting.map((w, i) => `${i + 1}. ${w.text}`).join(' | ') : 'empty'}`,
       `**Timers:** ${timers.length ? timers.map(t => `${new Date(t.due).toISOString().slice(11, 16)} UTC ${t.note}`).join(' | ') : 'none'}`,
-      `**Spend:** $${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)} this period, $${b.todaySpentUsd.toFixed(2)} of $${b.dailyAllowanceUsd.toFixed(2)} today${b.reason ? ` (${b.reason})` : ''}`,
+      `**Spend:** $${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)} this period, $${b.todaySpentUsd.toFixed(2)} of $${b.dailyAllowanceUsd.toFixed(2)} today${cfg.guilds.length > 1 ? `, all servers $${b.globalSpentUsd.toFixed(2)} of $${b.globalCapUsd.toFixed(2)}` : ''}${b.reason ? ` (${b.reason})` : b.routineOnly ? ' (budget low: small model only)' : ''}`,
       '```', gameState().slice(0, 1_200), '```',
     ].join('\n');
   }
@@ -314,6 +381,10 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       posts = new MainPosts({
         channel: postChannel(ch), secrets: sh.secrets, timers: realTimers, log,
         maxPerHour: cfg.postsPerHour, recapHourUtc: cfg.recapHourUtc, spendSince: guildSpendSince, draw,
+        eventsSince: since => db.eventsSince(g.name, since),
+        xpGainedSince: since => xpGains(db.snapshotsSince<WakeState>(g.name, since)
+          .filter(s => s.state && typeof s.state.skills === 'object')
+          .map(s => ({ time: s.time, skills: s.state.skills }))),
       });
       posts.start();
       void runNext();
@@ -327,9 +398,16 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       const inGame = sup.status() === 'in_game';
       const ws = inGame ? wakeState(state) : null;
       if (ws && now - lastSnapshotAt >= SNAPSHOT_MS) { db.addSnapshot(g.name, ws); lastSnapshotAt = now; }
+      const tab = sup.status();
+      if (tab !== lastTab) {
+        // A refused login stops the reloads in gamelink. The bot does not retry; the server log has the alert.
+        if (tab === 'login_refused') log(`ALERT game login refused: ${link.tabReason() ?? 'no reason given'}. Fix the account settings and restart gamelink.`);
+        lastTab = tab;
+        void card?.update();
+      }
       const es = inGame && state ? eventState(state) : null;
-      if (es) {
-        for (const e of diffStates(prevEvents, es)) emit(e);
+      if (es && state) {
+        for (const e of enrichDeaths(diffStates(prevEvents, es), es, guessKiller(state))) emit(e);
         prevEvents = es;
       }
       const actions = sh.wakes.tick({
@@ -373,7 +451,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       if (!addr.toBot) return;
       if (addr.kind === 'stop') {
         if (!current) { await reply('I am not doing anything right now.'); return; }
-        current.abort.abort();
+        current.abort.abort('user');
         await reply('Okay, I am stopping what I was doing.');
         return;
       }
@@ -401,12 +479,16 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       }
     },
 
+    // Draws the status card again now, for example after the game revision changed.
+    refreshCard(): void { void card?.update(); },
+
     async stop(): Promise<void> {
       if (stopping) return;
       stopping = true;
-      current?.abort.abort();
+      current?.abort.abort('shutdown');
       frames.stop();
       card?.stopTimer();
+      await posts?.flushLevels().catch(() => false);
       posts?.stop();
       await advLog?.flush().catch(() => {});
       advLog?.stop();

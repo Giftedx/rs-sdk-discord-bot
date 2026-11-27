@@ -45,3 +45,9 @@ test('drops a malformed action', () => {
   for (const bad of [null, 'walkTo', 42, {}, { type: 7 }])
     expect(p.check(bad, on)).toEqual({ allow: false, reason: 'malformed' });
 });
+test('refuses a click on the logout button; other components pass', () => {
+  const p = createActionPolicy();
+  expect(p.check({ type: 'clickComponent', componentId: 2458 }, on)).toEqual({ allow: false, reason: 'logout_component' });
+  expect(p.check({ type: 'clickComponentWithOption', componentId: '2458', optionIndex: 1 }, on)).toEqual({ allow: false, reason: 'logout_component' });
+  expect(p.check({ type: 'clickComponent', componentId: 2459 }, on).allow).toBe(true);
+});

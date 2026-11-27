@@ -15,7 +15,8 @@ export interface CompactState {
 export type GameEvent =
   | { kind: 'level_up'; skill: string; from: number; level: number }
   | { kind: 'total_level'; total: number }
-  | { kind: 'death' }
+  // lost and killer are filled by the caller: the inventory before minus after, and the NPC that fought the player last.
+  | { kind: 'death'; lost?: { name: string; count: number }[]; killer?: string }
   | { kind: 'item_gain'; items: { name: string; count: number }[] }
   | { kind: 'instruction_done'; instruction: string; outcome: string };
 
@@ -79,11 +80,44 @@ export function eventText(e: GameEvent): string {
       return `${e.skill} level ${e.level} (was ${e.from}).`;
     case 'total_level':
       return `Total level ${e.total}.`;
-    case 'death':
-      return 'The account died.';
+    case 'death': {
+      const lost = e.lost && e.lost.length > 0 ? ` Lost: ${itemList(e.lost)}.` : '';
+      // The killer is a guess from the game state, and the text says so.
+      const killer = e.killer ? ` Probably killed by ${e.killer}.` : '';
+      return `The account died.${killer}${lost}`;
+    }
     case 'item_gain':
-      return `Got ${e.items.map((i) => `${i.count} x ${i.name}`).join(', ')}.`;
+      return `Got ${itemList(e.items)}.`;
     case 'instruction_done':
       return `Instruction ended (${e.outcome}): ${e.instruction}`;
   }
+}
+
+function itemList(items: { name: string; count: number }[]): string {
+  return items.map((i) => `${i.count} x ${i.name}`).join(', ');
+}
+
+/** The items in `before` and not in `after`, by name. For the death post. */
+export function lostItems(before: Record<string, number>, after: Record<string, number>): { name: string; count: number }[] {
+  const out: { name: string; count: number }[] = [];
+  for (const [name, n] of Object.entries(before)) {
+    const loss = n - (after[name] ?? 0);
+    if (loss >= 1) out.push({ name, count: loss });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * The name of the NPC that hit the player last, or the NPC the player fought, from one state.
+ * It is a guess: the NPC can be out of the nearby list, and another NPC can have the same name.
+ */
+export function guessKiller(s: BotWorldState): string | undefined {
+  const npcName = (index: number) => (s.nearbyNpcs ?? []).find((n) => n.index === index)?.name;
+  const hits = (s.combatEvents ?? []).filter((e) => e.type === 'damage_taken' && e.sourceType === 'npc').sort((a, b) => b.tick - a.tick);
+  for (const h of hits) {
+    const name = npcName(h.sourceIndex);
+    if (name) return name;
+  }
+  const c = s.player?.combat;
+  return c && c.targetType === 'npc' && c.targetIndex >= 0 ? npcName(c.targetIndex) : undefined;
 }

@@ -180,7 +180,7 @@ Planned: one process per account. Today `scripts/box-standin.ts` and the child p
 
 ## 6. The agent loop
 
-**Built** (`src/agent/loop.ts`, `src/orchestrator/wakes.ts`, `src/orchestrator/budget.ts`): the wake rules below (an instruction, a timer, low HP below 30% with a re-arm at 40%, a death, and the watchdog that stops a job with no progress for `WATCHDOG_MINUTES`), at most 6 timer and trigger wakes per hour and guild, the daily allowance (the cap divided by the days of the period from `SPEND_RESET_DAY`), and the tools `set_timer`, `post`, `set_goal` and `escalate`. `queue_done` is not built; `finish` covers it. The trigger state and the wake counts are in memory.
+**Built** (`src/agent/loop.ts`, `src/orchestrator/wakes.ts`, `src/orchestrator/budget.ts`): the wake rules below (an instruction, a timer, low HP below 30% with a re-arm at 40%, a death, and the watchdog that stops a job with no progress for `WATCHDOG_MINUTES`), at most 6 timer and trigger wakes per hour and guild, the daily allowance (the cap divided by the days of the period from `SPEND_RESET_DAY`), and the tools `set_timer`, `post`, `set_goal`, `escalate`, `notes_search` and `diary_append`. Before each wake the AI gets a short context block: the personality, the last diary lines, the goal, the queue, the tab status, HP, position and inventory. One instruction stops at `AI_MAX_INSTRUCTION_MIN` (`time_cap`). A trigger wake starts on `ESCALATION_MODEL`. Each guild has an equal share of the cap; the daily allowance is the cap that is left divided by the days left; at 80% of the share or the cap the main loop runs on `SMALL_MODEL` with no escalation. `queue_done` is not built; `finish` covers it. The trigger state and the wake counts are in memory.
 
 The planned text follows:
 
@@ -202,8 +202,9 @@ Tools that the AI will get:
 |---|---|
 | `run_code`, `run_script` | Start a job in the box, from new code or from a saved script. |
 | `save_script`, `list_scripts`, `read_script`, `delete_script` | Manage saved scripts. |
-| `search_knowledge` | Search the knowledge pack. |
-| `notes_read`, `notes_write`, `notes_search` | Read, edit and search the notes. |
+| `search_knowledge` | Search the knowledge pack: the learnings and the titles of the vendored wiki pages (`vendor/rs-sdk/wiki`). |
+| `notes_read`, `notes_write`, `notes_search` | Read, edit and search the notes. `notes_search` also searches `diary.md`. |
+| `diary_append` | Add one dated line to `diary.md` (the last 200 lines are kept). The last 10 lines and the fixed `personality.md` go before each wake. |
 | `look` | Get the newest frame as picture input. |
 | `post`, `set_goal` | Write to the adventure log, and set the text of the status card. |
 | `set_timer`, `queue_done`, `escalate` | Schedule a wake, finish an instruction, and request a stronger model. |

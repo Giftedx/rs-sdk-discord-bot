@@ -18,6 +18,7 @@ export interface ProxyOptions {
   maxReconnectDelayMs?: number;     // default 300_000: the cap of the backoff after a refused login
   log?: (line: string) => void;     // one line per event; never holds the password or a raw gateway message
   timers?: ProxyTimers;             // default: the global setTimeout and clearTimeout
+  inFlightMaxAgeMs?: number;        // default 120_000: an action with no result after this long no longer counts
 }
 
 export interface ProxyTimers {
@@ -36,9 +37,14 @@ export interface ProxyHandle {
   setJobActive(active: boolean): void;
   upstreamConnected(): boolean;
   status(): ProxyStatus;
+  // Actions sent to the gateway whose sdk_action_result has not come yet.
+  actionsInFlight(): number;
+  // True when no action is in flight, at once or within timeoutMs (capped at WAIT_IDLE_CAP_MS).
+  waitIdle(timeoutMs: number): Promise<boolean>;
   stop(): Promise<void>;
 }
 
+export const WAIT_IDLE_CAP_MS = 30_000;
 const MAX_BOX_MESSAGE_BYTES = 65_536;
 export const BOX_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024;
 const RELAYED_TYPES: ReadonlySet<string> = new Set(['sdk_state', 'sdk_action_result', 'sdk_info']);
@@ -99,6 +105,20 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
   let lastConnected: string | null = null;   // last upstream sdk_connected, as received
   let lastInfo: string | null = null;        // last upstream sdk_info, as received
   let box: ServerWebSocket<BoxData> | null = null;
+  const inFlightMaxAgeMs = opts.inFlightMaxAgeMs ?? 120_000;
+  const inFlight = new Map<string, number>();   // action key -> time sent
+  const idleWaiters = new Set<() => void>();
+  let anonActions = 0;
+  const countInFlight = () => {
+    const oldest = now() - inFlightMaxAgeMs;
+    for (const [k, at] of inFlight) if (at < oldest) inFlight.delete(k);
+    return inFlight.size;
+  };
+  const notifyIdle = () => {
+    if (countInFlight() > 0) return;
+    for (const w of [...idleWaiters]) w();
+  };
+  const actionKey = (id: unknown) => (typeof id === 'string' || typeof id === 'number' ? `id:${id}` : `anon:${anonActions++}`);
 
   let droppingState = false;
   const sendToBox = (text: string, droppable = false) => {
@@ -132,6 +152,9 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     upstreamReady = false;
     clearUpstreamTimer();
     lastError = reason;
+    // No result comes for an action that was sent on this socket.
+    inFlight.clear();
+    notifyIdle();
     log(reason);
     try { ws.close(); } catch { /* already closed */ }
     scheduleReconnect(refused);
@@ -170,12 +193,18 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
       }
       if (msg.type === 'sdk_error') {
         // An answer to the proxy's own sdk_connect is a refused login. It never reaches the box.
-        if (upstreamReady) sendToBox(text);
-        else dropUpstream(ws, `the gateway refused the login: ${errorText(msg.error, opts.password)}`, true);
+        if (upstreamReady) {
+          // The gateway also answers a refused action with sdk_error and its actionId
+          // (gateway.ts: "Bot not connected"). That action is no longer in flight.
+          const id = msg.actionId;
+          if ((typeof id === 'string' || typeof id === 'number') && inFlight.delete(actionKey(id))) notifyIdle();
+          sendToBox(text);
+        } else dropUpstream(ws, `the gateway refused the login: ${errorText(msg.error, opts.password)}`, true);
         return;
       }
       if (!RELAYED_TYPES.has(msg.type as string)) return;
       if (msg.type === 'sdk_info') lastInfo = text;
+      if (msg.type === 'sdk_action_result' && inFlight.delete(actionKey(msg.actionId))) notifyIdle();
       if (msg.type === 'sdk_state' && opts.onState) {
         try { opts.onState(msg.state, now()); } catch { /* a failing tap must not stop the relay */ }
       }
@@ -211,6 +240,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     if (ws !== box || msg.type !== 'sdk_action') return;
     const verdict = opts.policy.check(msg.action, { jobActive, nowMs: now() });
     if (verdict.allow && upstream && upstreamReady) {
+      inFlight.set(actionKey(msg.actionId), now());
       upstream.send(JSON.stringify(msg));
       return;
     }
@@ -250,6 +280,22 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     port: server.port as number,
     setJobActive(active) { jobActive = active; },
     upstreamConnected: () => upstreamReady && upstream?.readyState === WebSocket.OPEN,
+    actionsInFlight: countInFlight,
+    waitIdle(timeoutMs) {
+      if (countInFlight() === 0) return Promise.resolve(true);
+      const ms = Math.min(Math.max(0, timeoutMs), WAIT_IDLE_CAP_MS);
+      return new Promise<boolean>(resolve => {
+        let timer: unknown = null;
+        const done = (idle: boolean) => {
+          idleWaiters.delete(waiter);
+          if (timer !== null) timers.clearTimeout(timer);
+          resolve(idle);
+        };
+        const waiter = () => done(true);
+        idleWaiters.add(waiter);
+        timer = timers.setTimeout(() => { timer = null; done(countInFlight() === 0); }, ms);
+      });
+    },
     status: () => ({ connected: upstreamReady && upstream?.readyState === WebSocket.OPEN, lastError, reconnects: Math.max(0, attempts - 1) }),
     async stop() {
       stopped = true;
@@ -259,6 +305,8 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
       upstream = null;
       upstreamReady = false;
       ws?.close();
+      inFlight.clear();
+      notifyIdle();
       // Not awaited: on Bun 1.3.14 (Windows) the promise never settles after the server closed a
       // WebSocket itself. The listener and all connections close synchronously.
       void server.stop(true);

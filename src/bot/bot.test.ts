@@ -11,7 +11,10 @@ const base = {
 describe('loadBotConfig', () => {
   test('defaults', () => {
     const c = loadBotConfig(base, '/root');
-    expect(c.model).toBe('claude-opus-5-5');
+    expect(c.model).toBe('claude-sonnet-5-5');
+    expect(c.escalationModel).toBe('claude-opus-5-5');
+    expect(c.smallModel).toBe('claude-haiku-5-5');
+    expect(c.maxInstructionMs).toBe(120 * 60_000);
     expect(c.effort).toBe('medium');
     expect(c.idleGuard).toBe(true);
     expect(c.maxTurns).toBe(25);
@@ -30,6 +33,14 @@ describe('loadBotConfig', () => {
     const { DISCORD_ALLOWED_ROLE_ID: _, ...noRole } = base;
     expect(() => loadBotConfig(noRole, '/r')).toThrow(/DISCORD_ALLOW_EVERYONE/);
     expect(loadBotConfig({ ...noRole, DISCORD_ALLOW_EVERYONE: '1' }, '/r').allowedRoleId).toBeNull();
+  });
+  test('model settings and the instruction time limit', () => {
+    const c = loadBotConfig({ ...base, AI_MODEL: 'claude-opus-5-5', ESCALATION_MODEL: 'none', AI_MAX_INSTRUCTION_MIN: '30' }, '/r');
+    expect(c.model).toBe('claude-opus-5-5');
+    expect(c.escalationModel).toBeNull();
+    expect(c.maxInstructionMs).toBe(30 * 60_000);
+    expect(() => loadBotConfig({ ...base, ESCALATION_MODEL: 'Bad Model' }, '/r')).toThrow(/ESCALATION_MODEL/);
+    expect(() => loadBotConfig({ ...base, AI_MAX_INSTRUCTION_MIN: '0' }, '/r')).toThrow(/AI_MAX_INSTRUCTION_MIN/);
   });
   test('refuses bad values and never prints them', () => {
     expect(() => loadBotConfig({ ...base, DISCORD_TOKEN: '' }, '/r')).toThrow(/DISCORD_TOKEN/);
@@ -58,13 +69,13 @@ describe('GUILDS_FILE', () => {
     { name: 'alpha', channelId: '323456789012345678', allowedRoleId: '423456789012345678', account: 'acca', passwordEnv: 'PW_ALPHA' },
     { name: 'beta', channelId: '523456789012345678', allowEveryone: true, account: 'accb', passwordEnv: 'PW_BETA', dataSubdir: 'b', boxUser: 'rsbox2' },
   ];
-  const env = { ...common, GUILDS_FILE: 'guilds.json', PW_ALPHA: 'secret-a', PW_BETA: 'secret-b', DATA_DIR: '/d', PROXY_PORT: '7800' };
+  const env = { ...common, GUILDS_FILE: 'guilds.json', PW_ALPHA: 'secretA', PW_BETA: 'secretB', DATA_DIR: '/d', PROXY_PORT: '7800' };
   const load = (list: unknown, e: Record<string, string | undefined> = env) => loadBotConfig(e, '/r', () => JSON.stringify(list));
 
   test('one guild per entry, with its own port, data dir, account and password', () => {
     const c = load(entries);
     expect(c.guilds.map(g => [g.name, g.game.proxyPort, g.game.account.name, g.game.account.password, g.boxUser, g.allowedRoleId]))
-      .toEqual([['alpha', 7800, 'acca', 'secret-a', 'rsbox', '423456789012345678'], ['beta', 7801, 'accb', 'secret-b', 'rsbox2', null]]);
+      .toEqual([['alpha', 7800, 'acca', 'secretA', 'rsbox', '423456789012345678'], ['beta', 7801, 'accb', 'secretB', 'rsbox2', null]]);
     expect(c.guilds[0]!.dataDir.replace(/\\/g, '/')).toMatch(/\/d\/alpha$/);
     expect(c.guilds[1]!.dataDir.replace(/\\/g, '/')).toMatch(/\/d\/b$/);
     expect(c.channelId).toBe('323456789012345678');
@@ -74,7 +85,7 @@ describe('GUILDS_FILE', () => {
     let msg = '';
     try { load(entries, noPw); } catch (err) { msg = (err as Error).message; }
     expect(msg).toMatch(/entry 2: .*passwordEnv/);
-    expect(msg).not.toContain('secret-a');
+    expect(msg).not.toContain('secretA');
     expect(() => load([{ ...entries[0], password: 'x', passwordEnv: 'bad name' }])).toThrow(/passwordEnv/);
   });
   test('refuses duplicates, bad entries and a missing file', () => {

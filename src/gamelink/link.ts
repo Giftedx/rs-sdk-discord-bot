@@ -8,11 +8,12 @@ import type { CardDataMap, CardKind } from '../cards/templates';
 import type { Config } from '../shared/config';
 import { launchBrowserWithProfile, sweepStaleProfiles, type ProfiledBrowser } from './browser-profile';
 import { openCardTab, type CardTab } from './card-tab';
-import { createFrameStore, type StoredFrame } from './frame-store';
+import { createFrameStore, type FrameStore, type StoredFrame } from './frame-store';
 import { openGameTab, type GameTab } from './game-tab';
 import { createActionPolicy } from './policy';
 import { startProxy, type ProxyHandle, type ProxyStatus } from './proxy';
-import { createSupervisor, type Supervisor, type TabStatus } from './supervisor';
+import { reloginDelayMs } from './relogin';
+import { createSupervisor, nextFirstLoginAt, type Supervisor, type TabStatus } from './supervisor';
 
 export interface GuildLink {
   readonly name: string;
@@ -21,6 +22,8 @@ export interface GuildLink {
   readonly proxyPort: number;
   readonly bootToken: string;
   tabStatus(): TabStatus;
+  // The last login message of the client while out of the game (why a login failed), or null.
+  tabReason(): string | null;
   proxyStatus(): ProxyStatus;
   // The newest state from the state tap and the time it came, or null.
   state(): { state: unknown; at: number } | null;
@@ -31,6 +34,10 @@ export interface GuildLink {
   startFrames(): void;
   stopFrames(): void;
   setJobActive(active: boolean): Promise<void>;
+  // Actions sent to the game whose result has not come yet.
+  actionsInFlight(): number;
+  // True when no action is in flight within timeoutMs (capped at 30 s). For the end of a job.
+  waitIdle(timeoutMs: number): Promise<boolean>;
   // Null when there is no card tab.
   drawCard<K extends CardKind>(kind: K, data: CardDataMap[K]): Promise<Uint8Array | null>;
   logout(): Promise<boolean>;
@@ -69,6 +76,8 @@ export interface LocalLinkOptions {
   idleGuard: boolean;
   cards: boolean;
   log(line: string): void;
+  // The wait before the first login of each tab. Default reloginDelayMs: 20 to 30 s.
+  startDelay?: () => number;
 }
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -92,10 +101,14 @@ export async function openLocalGameLink(opts: LocalLinkOptions): Promise<GameLin
       cards = await openCardTab(pb.browser, { iconHost: new URL(first.botPageUrl).origin })
         .catch(err => { opts.log(`card tab not open, posts go without cards: ${errText(err)}`); return null; });
     }
+    const startDelay = opts.startDelay ?? (() => reloginDelayMs());
+    let prevLoginAt: number | null = null;
     for (const g of opts.guilds) {
       const log = (line: string) => opts.log(`[${g.name}] ${line}`);
-      log(`game server ${g.game.serverHost}, proxy port ${g.game.proxyPort}`);
-      guilds.set(g.name, await startLocalGuild(pb, cards, g, opts.idleGuard, log));
+      const loginAt: number = nextFirstLoginAt(prevLoginAt, Date.now(), startDelay());
+      prevLoginAt = loginAt;
+      log(`game server ${g.game.serverHost}, proxy port ${g.game.proxyPort}, first login in ${Math.round((loginAt - Date.now()) / 1000)} s`);
+      guilds.set(g.name, await startLocalGuild(pb, cards, g, opts.idleGuard, loginAt, log));
     }
   } catch (err) {
     await closeAll();
@@ -112,13 +125,14 @@ export async function openLocalGameLink(opts: LocalLinkOptions): Promise<GameLin
   };
 }
 
-async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: LocalGuildSpec, idleGuard: boolean, log: (line: string) => void): Promise<GuildLink> {
+async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: LocalGuildSpec, idleGuard: boolean, firstLoginAt: number, log: (line: string) => void): Promise<GuildLink> {
   const bootToken = randomBytes(24).toString('base64url');
   let tab: GameTab | null = null;
   let sup: Supervisor | null = null;
   let proxy: ProxyHandle | null = null;
   let lastState: unknown = null;
   let lastStateAt = 0;
+  let frames: FrameStore | null = null;
 
   const stopParts = async () => {
     sup?.stop();
@@ -131,8 +145,16 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
   };
 
   try {
-    tab = await openGameTab({ browser: pb.browser, botPageUrl: g.game.botPageUrl, account: g.game.account.name, password: g.game.account.password, fps: g.game.fps });
-    sup = createSupervisor({ tab, idleGuard, log });
+    tab = await openGameTab({ browser: pb.browser, botPageUrl: g.game.botPageUrl, account: g.game.account.name, password: g.game.account.password, fps: g.game.fps, deferLogin: true });
+    // The source checks that the tab is still in the game after each capture.
+    frames = createFrameStore({ source: tab, log });
+    const store = frames;
+    sup = createSupervisor({
+      tab, idleGuard, log,
+      startDelayMs: Math.max(0, firstLoginAt - Date.now()),
+      // The rig check runs once, after the first login; a failure turns frames off for this tab.
+      onInGame: () => { void store.checkRig(); },
+    });
     sup.start();
     proxy = await startProxy({
       upstreamUrl: g.game.gatewayUrl,
@@ -151,7 +173,7 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
   const gameTab = tab;
   const supervisor = sup;
   const prx = proxy;
-  const frames = createFrameStore({ source: gameTab, log });
+  const store = frames!;
   let closed = false;
 
   return {
@@ -160,19 +182,22 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
     proxyPort: prx.port,
     bootToken,
     tabStatus: () => supervisor.status(),
+    tabReason: () => supervisor.reason(),
     proxyStatus: () => prx.status(),
     state: () => (lastState === null ? null : { state: lastState, at: lastStateAt }),
-    latestFrame: () => frames.latest(),
+    latestFrame: () => store.latest(),
     async frame() {
-      const f = frames.latest();
+      const f = store.latest();
       if (f && Date.now() - f.at < FRAME_FRESH_MS) return f.png;
-      if (supervisor.status() !== 'in_game') return f?.png ?? null;
+      if (supervisor.status() !== 'in_game' || store.disabled) return f?.png ?? null;
       return gameTab.frame('view').catch(() => f?.png ?? null);
     },
-    framesActive: () => frames.active,
-    startFrames: () => frames.start(),
-    stopFrames: () => frames.stop(),
+    framesActive: () => store.active,
+    startFrames: () => store.start(),
+    stopFrames: () => store.stop(),
     async setJobActive(active) { prx.setJobActive(active); },
+    actionsInFlight: () => prx.actionsInFlight(),
+    waitIdle: timeoutMs => prx.waitIdle(timeoutMs),
     async drawCard(kind, data) {
       if (!cards) return null;
       return cards.draw(kind, data);
@@ -184,7 +209,7 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
     async close() {
       if (closed) return;
       closed = true;
-      frames.stop();
+      store.stop();
       await stopParts();
     },
   };

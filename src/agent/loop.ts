@@ -1,11 +1,11 @@
 // The agent loop of one instruction. The AI gets tools that start jobs in the box, manage
 // saved scripts and notes, search the knowledge pack, and read the game state and a frame.
 // The loop ends when the AI calls `finish`, stops calling tools, hits the turn cap, hits the
-// spend cap, or the user presses Stop.
+// spend cap, hits the time cap, or the orchestrator aborts it.
 import type Anthropic from '@anthropic-ai/sdk';
 import type { JobResult } from '../box/job-runner';
 import type { SpendTracker } from './spend';
-import { searchKnowledge, type KnowledgeChunk, type Store } from './store';
+import { searchKnowledge, type KnowledgeChunk, type KnowledgePack, type Store } from './store';
 
 type Params = Anthropic.Beta.MessageCreateParamsNonStreaming;
 type MessageParam = Anthropic.Beta.BetaMessageParam;
@@ -18,7 +18,7 @@ export interface AgentDeps {
   callModel(params: Params, signal: AbortSignal): Promise<Message>;
   runJob(code: string, timeoutMs: number, signal: AbortSignal): Promise<AgentJobResult>;
   store: Store;
-  knowledge: KnowledgeChunk[];
+  knowledge: KnowledgeChunk[] | KnowledgePack;
   apiReference: string;
   gameState(): string;
   frame(): Promise<Uint8Array | null>;
@@ -34,6 +34,17 @@ export interface AgentDeps {
   setGoal?(text: string): void | Promise<void>;
   /** When set, the AI gets escalate: the rest of the instruction uses this model. */
   escalationModel?: string;
+  /** A compact context block for the first message, such as a game state summary and the queue. */
+  wakeContext?(): string;
+  /** The wall-clock limit of one instruction in ms. Undefined means no limit. */
+  maxInstructionMs?: number;
+  /** The clock in ms. Default Date.now. */
+  now?(): number;
+}
+
+export interface RunOptions {
+  /** Start on deps.escalationModel, for example for a watchdog or trigger wake. */
+  escalateFromStart?: boolean;
 }
 
 /** Why this run started. Timer and trigger wakes have no human author. */
@@ -49,7 +60,7 @@ export interface InstructionResult {
   /** The model of the last turn. It differs from deps.model after escalate. */
   model: string;
   escalated: boolean;
-  stopReason: 'finished' | 'no_tools' | 'turn_cap' | 'spend_cap' | 'month_cap' | 'aborted' | 'refusal' | 'error';
+  stopReason: 'finished' | 'no_tools' | 'turn_cap' | 'spend_cap' | 'time_cap' | 'month_cap' | 'aborted' | 'refusal' | 'error';
   lastFrame: Uint8Array | null;
 }
 
@@ -81,9 +92,11 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
   { name: 'list_scripts', description: 'List the saved scripts.', input_schema: obj({}, []) },
   { name: 'read_script', description: 'Read one saved script.', input_schema: obj({ name: { type: 'string' } }, ['name']) },
   { name: 'delete_script', description: 'Delete one saved script.', input_schema: obj({ name: { type: 'string' } }, ['name']) },
-  { name: 'search_knowledge', description: 'Search the game knowledge pack (rs-sdk learnings: banking, combat, fishing, mining, walking and more).', input_schema: obj({ query: { type: 'string' } }, ['query']) },
+  { name: 'search_knowledge', description: 'Search the game knowledge pack: rs-sdk learnings (banking, combat, fishing, mining, walking and more) and the wiki (items, NPCs, shops, quests, skills; an item page lists who sells and drops it). Search by name, such as "bronze axe" or "chicken".', input_schema: obj({ query: { type: 'string' } }, ['query']) },
   { name: 'notes_read', description: 'Read your notes. They stay between instructions and restarts.', input_schema: obj({}, []) },
   { name: 'notes_write', description: 'Replace your notes with new text (max 20000 characters). Keep what you learned: places, what worked, what failed, long-term goals.', input_schema: obj({ text: { type: 'string' } }, ['text']) },
+  { name: 'notes_search', description: 'Search your notes and your diary for words. Each hit shows the file and line.', input_schema: obj({ query: { type: 'string' } }, ['query']) },
+  { name: 'diary_append', description: 'Add one short dated line to your diary: what you did in this instruction and how it went. Write one entry per instruction, before finish.', input_schema: obj({ text: { type: 'string', description: 'max 300 characters' } }, ['text']) },
   { name: 'game_state', description: 'Read the current game state: position, HP, skills, inventory, nearby things, recent messages.', input_schema: obj({}, []) },
   { name: 'look', description: 'See the newest picture of the game view.', input_schema: obj({}, []) },
   { name: 'finish', description: 'End the instruction. Give a short summary for the Discord channel: what you did and the result.', input_schema: obj({ summary: { type: 'string' } }, ['summary']) },
@@ -124,10 +137,27 @@ export function toolsFor(deps: Pick<AgentDeps, 'setTimer' | 'post' | 'setGoal' |
   return out;
 }
 
-export function firstMessage(instruction: string, user: string, wake: WakeKind): string {
-  if (wake === 'timer') return `A timer that you set fired. No Discord user is waiting. Your note:\n${instruction}`;
-  if (wake === 'trigger') return `A game trigger fired. No Discord user gave this instruction. Check game_state and keep the account safe first:\n${instruction}`;
-  return `Instruction from Discord user "${user.replace(/"/g, "'")}":\n${instruction}`;
+export function firstMessage(instruction: string, user: string, wake: WakeKind, context = ''): string {
+  const head = context.trim() ? `${context.trim()}\n\n` : '';
+  if (wake === 'timer') return `${head}A timer that you set fired. No Discord user is waiting. Your note:\n${instruction}`;
+  if (wake === 'trigger') return `${head}A game trigger fired. No Discord user gave this instruction. Check game_state and keep the account safe first:\n${instruction}`;
+  return `${head}Instruction from Discord user "${user.replace(/"/g, "'")}":\n${instruction}`;
+}
+
+export const DIARY_LINES_IN_CONTEXT = 10;
+const MAX_WAKE_CONTEXT = 4_000;
+
+/** The context block of the first message: the personality, the last diary lines and deps.wakeContext. */
+export function wakeContextBlock(deps: Pick<AgentDeps, 'store' | 'wakeContext'>): string {
+  const parts: string[] = [];
+  const personality = deps.store.readPersonality();
+  if (personality) parts.push(`Your personality (fixed):\n${personality}`);
+  const diary = deps.store.diaryTail(DIARY_LINES_IN_CONTEXT);
+  if (diary.length) parts.push(`Your last diary lines:\n${diary.join('\n')}`);
+  let extra = '';
+  try { extra = deps.wakeContext?.().trim() ?? ''; } catch (err) { extra = `(The context is not available: ${err instanceof Error ? err.message : String(err)})`; }
+  if (extra) parts.push(`Context now:\n${extra.slice(0, MAX_WAKE_CONTEXT)}`);
+  return parts.join('\n\n');
 }
 
 export function systemPrompt(apiReference: string): string {
@@ -138,7 +168,8 @@ How to work:
 - Prefer saved scripts. Test new code with a short run_code, then save the code that works.
 - A long task (such as training a skill for a while) is one job with a loop and a time limit, not many short jobs. Each of your turns costs money; a job costs nothing while it runs.
 - Read the job output. If an action fails, read the reason, fix the code, and try again. After 3 failed tries of one approach, try another approach or finish and say what blocks you.
-- Before you finish, write what you learned to your notes if it is useful later.
+- Before you finish, write what you learned to your notes if it is useful later, and add one diary line with diary_append.
+- Speak in the voice of your personality, but keep the facts exact.
 - Call finish with a short, plain summary. Two or three sentences.
 
 Rules (the server refuses some of these anyway):
@@ -180,22 +211,39 @@ function formatJob(r: AgentJobResult): string {
   return `${head}\n${r.output}`;
 }
 
-export async function runInstruction(deps: AgentDeps, instruction: string, user: string, signal: AbortSignal, wake: WakeKind = 'instruction'): Promise<InstructionResult> {
-  const messages: MessageParam[] = [{ role: 'user', content: firstMessage(instruction, user, wake) }];
+export async function runInstruction(deps: AgentDeps, instruction: string, user: string, signal: AbortSignal, wake: WakeKind = 'instruction', options: RunOptions = {}): Promise<InstructionResult> {
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const messages: MessageParam[] = [{ role: 'user', content: firstMessage(instruction, user, wake, wakeContextBlock(deps)) }];
   const system = systemPrompt(deps.apiReference);
-  const tools = toolsFor(deps);
-  let model = deps.model;
-  let escalated = false;
+  const fromStart = !!(options.escalateFromStart && deps.escalationModel);
+  // After an escalation from the start, the escalate tool has nothing left to do.
+  const tools = toolsFor(deps).filter(t => !(fromStart && t.name === 'escalate'));
+  let model = fromStart ? deps.escalationModel! : deps.model;
+  let escalated = fromStart;
+  const limitMs = deps.maxInstructionMs;
+  const leftMs = () => (limitMs === undefined ? Infinity : limitMs - (now() - startedAt));
+  // A job never runs past the time cap of the instruction.
+  const jobTimeout = (s: unknown) => Math.min(clampTimeout(s), Math.max(1_000, leftMs()));
   let usd = 0;
   let turns = 0;
   let lastFrame: Uint8Array | null = null;
   const done = (summary: string, stopReason: InstructionResult['stopReason']): InstructionResult =>
     ({ summary, turns, usd, model, escalated, stopReason, lastFrame });
+  // The caller gives the reason as signal.reason: 'user' (someone said stop), 'time_cap'
+  // (the backstop of the time limit) or 'shutdown' (the bot restarts).
+  const stopped = (): InstructionResult => {
+    const why = signal.reason;
+    if (why === 'time_cap') return done('This instruction used its time limit. I stopped.', 'time_cap');
+    if (why === 'shutdown') return done('The bot is restarting. This request waits in the queue.', 'aborted');
+    return done('Stopped by a user.', 'aborted');
+  };
 
   while (true) {
-    if (signal.aborted) return done('Stopped by a user.', 'aborted');
+    if (signal.aborted) return stopped();
     if (deps.spend.overCap()) return done('The monthly spend cap is reached. I stopped.', 'month_cap');
     if (usd >= deps.maxInstructionUsd) return done(`This instruction used its spend limit ($${deps.maxInstructionUsd.toFixed(2)}). I stopped.`, 'spend_cap');
+    if (leftMs() <= 0) return done(`This instruction used its time limit (${Math.round(limitMs! / 60_000)} min). I stopped.`, 'time_cap');
     if (turns >= deps.maxTurns) return done(`This instruction used its ${deps.maxTurns} turns. I stopped.`, 'turn_cap');
     turns++;
 
@@ -211,7 +259,7 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
         cache_control: { type: 'ephemeral' },
       } as Params, signal);
     } catch (err) {
-      if (signal.aborted) return done('Stopped by a user.', 'aborted');
+      if (signal.aborted) return stopped();
       return done(`The AI call failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
     usd += deps.spend.add(response.model ?? model,response.usage);
@@ -236,14 +284,14 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
         switch (use.name) {
           case 'run_code': {
             deps.onProgress('Running new code.');
-            content = formatJob(await deps.runJob(str(input.code), clampTimeout(input.timeout_s), signal));
+            content = formatJob(await deps.runJob(str(input.code), jobTimeout(input.timeout_s), signal));
             break;
           }
           case 'run_script': {
             const name = str(input.name);
             const body = deps.store.readScript(name);
             deps.onProgress(`Running saved script \`${name}\`.`);
-            content = formatJob(await deps.runJob(body, clampTimeout(input.timeout_s), signal));
+            content = formatJob(await deps.runJob(body, jobTimeout(input.timeout_s), signal));
             break;
           }
           case 'save_script':
@@ -261,6 +309,8 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
           case 'search_knowledge': content = searchKnowledge(deps.knowledge, str(input.query)); break;
           case 'notes_read': content = deps.store.readNotes() || 'No notes yet.'; break;
           case 'notes_write': deps.store.writeNotes(str(input.text)); content = 'Notes saved.'; break;
+          case 'notes_search': content = deps.store.searchNotes(str(input.query)); break;
+          case 'diary_append': content = `Added: ${deps.store.appendDiary(str(input.text))}`; break;
           case 'game_state': content = deps.gameState(); break;
           case 'look': {
             const png = await deps.frame();

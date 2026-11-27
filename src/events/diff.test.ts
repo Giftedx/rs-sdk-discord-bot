@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
-import { compactState, diffStates, eventText, type CompactState } from './diff';
+import { compactState, diffStates, eventText, guessKiller, lostItems, type CompactState } from './diff';
 
 function snap(over: Partial<CompactState> = {}): CompactState {
   return {
@@ -100,5 +100,29 @@ describe('compactState', () => {
       inventory: { Logs: 2, Coins: 50 },
       inCombat: true,
     });
+  });
+});
+
+describe('death details', () => {
+  test('lostItems is the inventory before minus after', () => {
+    expect(lostItems({ Logs: 3, 'Bronze axe': 1, Coins: 10 }, { Logs: 1, Coins: 20 })).toEqual([
+      { name: 'Bronze axe', count: 1 },
+      { name: 'Logs', count: 2 },
+    ]);
+  });
+
+  test('guessKiller: the NPC of the newest hit, then the combat target', () => {
+    const base = {
+      player: { combat: { inCombat: true, targetIndex: 7, targetType: 'npc', lastDamageTick: 5 } },
+      nearbyNpcs: [{ index: 3, name: 'Goblin' }, { index: 7, name: 'Giant rat' }],
+    };
+    const hit = (tick: number, sourceIndex: number) => ({ tick, type: 'damage_taken', damage: 1, sourceType: 'npc', sourceIndex, targetType: 'player', targetIndex: 0 });
+    expect(guessKiller({ ...base, combatEvents: [hit(9, 3), hit(4, 7)] } as unknown as BotWorldState)).toBe('Goblin');
+    expect(guessKiller({ ...base, combatEvents: [hit(9, 99)] } as unknown as BotWorldState)).toBe('Giant rat');
+    expect(guessKiller({ player: null, nearbyNpcs: [], combatEvents: [] } as unknown as BotWorldState)).toBeUndefined();
+  });
+
+  test('death eventText without details', () => {
+    expect(eventText({ kind: 'death' })).toBe('The account died.');
   });
 });

@@ -17,6 +17,9 @@ function fakeGuild() {
   const g: GuildLink = {
     name: 'main', account: 'abc', proxyPort: 7790, bootToken: 'boot-token-xyz',
     tabStatus: () => 'in_game',
+    tabReason: () => 'Connecting to server...',
+    actionsInFlight: () => 2,
+    waitIdle: async ms => { calls.push(`idle:${ms}`); return ms > 0; },
     proxyStatus: () => ({ connected: true, lastError: null, reconnects: 0 }),
     state: () => ({ state: { player: { hp: 7 } }, at: Date.now() - 1_000 }),
     latestFrame: () => ({ at: 1234, png: PNG }),
@@ -83,6 +86,19 @@ describe('gamelink socket', () => {
     expect(c.framesActive()).toBe(true);
     // The first job:false is the reset at connect: a crashed bot may have left the flag on.
     expect(calls).toEqual(['job:false', 'job:true', 'job:false', 'card:death', 'logout', 'frames:start']);
+  });
+
+  test('status carries the tab reason and the actions in flight; waitIdle goes over the socket, capped at 30 s', async () => {
+    const c = client.guilds.get('main')!;
+    expect(c.tabReason()).toBe('Connecting to server...');
+    expect(c.actionsInFlight()).toBe(2);
+    const before = calls.length;
+    expect(await c.waitIdle(5_000)).toBe(true);
+    expect(await c.waitIdle(0)).toBe(false);
+    expect(await c.waitIdle(90_000)).toBe(true);
+    expect(calls.slice(before)).toEqual(['idle:5000', 'idle:0', 'idle:30000']);
+    const bad = await fetch('http://gamelink/guilds/main/idle', { unix: sock, method: 'POST', headers: { authorization: `Bearer ${TOKEN}` }, body: '{"timeoutMs":"x"}' } as RequestInit);
+    expect(bad.status).toBe(400);
   });
 
   const raw = (path: string, auth?: string) =>

@@ -108,3 +108,43 @@ test('the timer callback runs a tick', async () => {
   expect(calls).toBe(2);
   expect(s.all().length).toBe(2);
 });
+
+test('a frame is dropped when the tab is out of the game after the capture', async () => {
+  let inGame = false;
+  const lines: string[] = [];
+  const { timers } = fakeTimers();
+  const s = createFrameStore({ source: { frame: async () => png(1), inGame: async () => inGame }, timers, log: l => lines.push(l) });
+  s.start();
+  await Bun.sleep(1);
+  expect(s.latest()).toBeNull();
+  expect(lines.some(l => l.includes('frame dropped'))).toBe(true);
+  inGame = true;
+  expect(await s.tick()).toBe(true);
+  expect(s.latest()!.png[0]).toBe(1);
+});
+
+test('checkRig runs selfCheck once; a failure turns frames off with a clear log line', async () => {
+  let checks = 0;
+  const lines: string[] = [];
+  const { state, timers } = fakeTimers();
+  const s = createFrameStore({ source: { frame: async () => png(1), selfCheck: async () => { checks++; throw new Error('canvas 800x600'); } }, timers, log: l => lines.push(l) });
+  s.start();
+  expect(await s.checkRig()).toBe(false);
+  expect(await s.checkRig()).toBe(false);
+  expect(checks).toBe(1);
+  expect(s.active).toBe(false);
+  expect(s.disabled).toBe(true);
+  expect(state.fn).toBeNull();
+  s.start();
+  expect(s.active).toBe(false);
+  expect(lines.some(l => l.startsWith('FRAMES OFF') && l.includes('canvas 800x600'))).toBe(true);
+});
+
+test('checkRig passes without a selfCheck and when it succeeds', async () => {
+  const { timers } = fakeTimers();
+  expect(await createFrameStore({ source: { frame: async () => png(1) }, timers }).checkRig()).toBe(true);
+  const ok = createFrameStore({ source: { frame: async () => png(1), selfCheck: async () => {} }, timers });
+  expect(await ok.checkRig()).toBe(true);
+  ok.start();
+  expect(ok.active).toBe(true);
+});

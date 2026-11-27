@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CARD_KINDS, CARD_PAGE_HTML, CARD_PAGE_SCRIPT, CardDataError, cardIconIds, isCardKind, validateCardData } from './templates';
+import { CARD_KINDS, CARD_PAGE_HTML, CARD_PAGE_SCRIPT, CardDataError, cardIconIds, isCardKind, levelProgress, validateCardData, xpForLevel } from './templates';
 import { SAMPLE_CARDS } from './samples';
 
 describe('validateCardData', () => {
@@ -43,7 +43,33 @@ describe('validateCardData', () => {
 
   test('returns a copy without unknown fields', () => {
     const r = validateCardData('level_up', { skill: 'Attack', level: 2, xp: 83, extra: '<b>' }) as unknown as Record<string, unknown>;
-    expect(Object.keys(r).sort()).toEqual(['level', 'skill', 'xp']);
+    expect(Object.keys(r).sort()).toEqual(['level', 'progress', 'skill', 'xp']);
+  });
+
+  test('level card progress comes from the XP table, not from the input', () => {
+    const r = validateCardData('level_up', { skill: 'Attack', level: 2, xp: 120, from: 1, totalLevel: 33, progress: { toNext: -1, pct: 999 } });
+    // Level 2 starts at 83 xp and level 3 at 174.
+    expect(r.progress).toEqual({ toNext: 54, pct: 40 });
+    expect(r.from).toBe(1);
+    expect(r.totalLevel).toBe(33);
+    expect(validateCardData('level_up', { skill: 'Attack', level: 99, xp: 13_034_431 }).progress).toBeUndefined();
+  });
+
+  test('death card killer, receipt rows and recap xp', () => {
+    const d = validateCardData('death', { place: 'p', time: 't', killer: 'Goblin\u202e', items: [{ name: 'Logs', count: 2 }] });
+    expect(d.killer).toBe('Goblin');
+    expect(d.items).toEqual([{ name: 'Logs', count: 2 }]);
+    expect(cardIconIds('death', d)).toEqual([]);
+    const r = validateCardData('instruction_receipt', {
+      instruction: 'i', summary: 's', turns: 1, costUsd: 0, durationMs: 4_320_000,
+      skills: [{ name: 'Woodcutting', before: 39, after: 40, xp: 4100 }],
+      inventory: [{ name: 'Logs', before: 0, after: 27 }],
+    });
+    expect(r.skills).toHaveLength(1);
+    expect(r.inventory![0]!.after).toBe(27);
+    expect(() => validateCardData('instruction_receipt', { instruction: 'i', summary: 's', turns: 1, costUsd: 0, skills: [{ name: 'A', before: 0, after: 1, xp: 0 }] })).toThrow(/range/);
+    const recap = validateCardData('daily_recap', { date: 'd', counts: [], xp: [{ skill: 'Attack', xp: 500 }] });
+    expect(recap.xp).toEqual([{ skill: 'Attack', xp: 500 }]);
   });
 
   test('keeps markup in names as plain text data', () => {
@@ -79,5 +105,22 @@ describe('card page', () => {
     expect(CARD_PAGE_HTML).toContain('img-src data:');
     expect(CARD_PAGE_HTML).not.toMatch(/https?:\/\//);
     expect(CARD_PAGE_HTML).not.toContain('@font-face');
+  });
+});
+
+describe('xpForLevel', () => {
+  test('standard table at levels 1, 2, 50 and 99', () => {
+    expect(xpForLevel(1)).toBe(0);
+    expect(xpForLevel(2)).toBe(83);
+    expect(xpForLevel(50)).toBe(101_333);
+    expect(xpForLevel(99)).toBe(13_034_431);
+    expect(() => xpForLevel(0)).toThrow(RangeError);
+    expect(() => xpForLevel(1.5)).toThrow(RangeError);
+  });
+
+  test('levelProgress', () => {
+    expect(levelProgress(1, 0)).toEqual({ toNext: 83, pct: 0 });
+    expect(levelProgress(50, 101_333)).toEqual({ toNext: xpForLevel(51) - 101_333, pct: 0 });
+    expect(levelProgress(99, 13_034_431)).toBeNull();
   });
 });
