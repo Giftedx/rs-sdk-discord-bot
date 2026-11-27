@@ -13,7 +13,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { CardDataError, isCardKind, type CardDataMap, type CardKind } from '../cards/templates';
+import { CARD_FRAME_MAX_BYTES, CardDataError, isCardFrame, isCardKind, type CardDataMap, type CardKind } from '../cards/templates';
 import type { GameLink, GuildLink } from './link';
 import { WAIT_IDLE_CAP_MS } from './proxy';
 
@@ -170,10 +170,15 @@ async function route(link: GameLink, req: Request, log: (line: string) => void):
       return json({ ok: true });
     }
     case 'POST card': {
-      const body = await readJson(req) as { kind?: unknown; data?: unknown; withFrame?: unknown } | undefined;
+      const body = await readJson(req) as { kind?: unknown; data?: unknown; frame?: unknown } | undefined;
       if (!isCardKind(body?.kind)) return json({ error: 'unknown card kind' }, 400);
+      let frame: Uint8Array | null = null;
+      if (body.frame !== undefined) {
+        frame = typeof body.frame === 'string' ? new Uint8Array(Buffer.from(body.frame, 'base64')) : null;
+        if (!frame || !isCardFrame(frame)) return json({ error: 'frame must be a base64 PNG of at most ' + CARD_FRAME_MAX_BYTES + ' bytes' }, 400);
+      }
       try {
-        const bytes = await g.drawCard(body.kind as CardKind, body.data as CardDataMap[CardKind], { withFrame: body.withFrame === true });
+        const bytes = await g.drawCard(body.kind as CardKind, body.data as CardDataMap[CardKind], frame);
         return bytes ? png(bytes) : new Response(null, { status: 204 });
       } catch (err) {
         if (err instanceof CardDataError) return json({ error: err.message }, 400);

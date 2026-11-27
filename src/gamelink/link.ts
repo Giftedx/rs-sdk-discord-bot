@@ -4,7 +4,7 @@
 // The bot (src/bot/guild.ts, src/bot/main.ts) uses only this interface.
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { CardDataMap, CardKind } from '../cards/templates';
+import { type CardDataMap, type CardKind, isCardFrame } from '../cards/templates';
 import type { Config } from '../shared/config';
 import { launchBrowserWithProfile, sweepStaleProfiles, type ProfiledBrowser } from './browser-profile';
 import { openCardTab, type CardTab } from './card-tab';
@@ -41,8 +41,8 @@ export interface GuildLink {
   // True when no action is in flight within timeoutMs (capped at 30 s). For the end of a job.
   waitIdle(timeoutMs: number): Promise<boolean>;
   // Null when there is no card tab.
-  // withFrame: the receipt card shows the game view, from frame().
-  drawCard<K extends CardKind>(kind: K, data: CardDataMap[K], opts?: { withFrame?: boolean }): Promise<Uint8Array | null>;
+  // frame: a PNG of the game view for the receipt card, at most CARD_FRAME_MAX_BYTES.
+  drawCard<K extends CardKind>(kind: K, data: CardDataMap[K], frame?: Uint8Array | null): Promise<Uint8Array | null>;
   logout(): Promise<boolean>;
   // In-process: log out and stop the parts. Socket client: stop polling; gamelink keeps the session.
   close(): Promise<void>;
@@ -241,10 +241,9 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
     async setJobActive(active) { prx.setJobActive(active); },
     actionsInFlight: () => prx.actionsInFlight(),
     waitIdle: timeoutMs => prx.waitIdle(timeoutMs),
-    async drawCard(kind, data, opts) {
+    async drawCard(kind, data, frame) {
       if (!cards) return null;
-      const view = opts?.withFrame ? await frame().catch(() => null) : null;
-      return cards.draw(kind, data, view);
+      return cards.draw(kind, data, frame && isCardFrame(frame) ? frame : null);
     },
     async logout() {
       supervisor.stop();

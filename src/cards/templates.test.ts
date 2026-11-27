@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CARD_KINDS, CARD_PAGE_HTML, CARD_PAGE_SCRIPT, CardDataError, cardIconIds, isCardKind, levelProgress, validateCardData, xpForLevel } from './templates';
+import { CARD_FRAME_MAX_BYTES, CARD_KINDS, CARD_PAGE_HTML, isCardFrame, CARD_PAGE_SCRIPT, CardDataError, cardIconIds, isCardKind, levelProgress, validateCardData, xpForLevel } from './templates';
 import { SAMPLE_CARDS } from './samples';
 
 describe('validateCardData', () => {
@@ -20,6 +20,21 @@ describe('validateCardData', () => {
     expect(() => validateCardData('level_up', { skill: 'A', level: 2.5, xp: 1 })).toThrow(/integer/);
     expect(() => validateCardData('level_up', { skill: 'A', level: 2, xp: Number.NaN })).toThrow(/finite/);
     expect(() => validateCardData('status', { hp: 11, maxHp: 10, goal: 'g', skills: [] })).toThrow(/hp/);
+  });
+
+  test('receipt: accepts only done, stopped or failed as the end', () => {
+    const base = { instruction: 'i', summary: 's', turns: 3, costUsd: 0 };
+    expect(validateCardData('instruction_receipt', { ...base, ended: 'failed' }).ended).toBe('failed');
+    expect(() => validateCardData('instruction_receipt', { ...base, ended: 'crashed' })).toThrow(/ended/);
+  });
+
+  test('isCardFrame takes only a PNG of at most CARD_FRAME_MAX_BYTES', () => {
+    const png = (n: number) => { const b = new Uint8Array(n); b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); return b; };
+    expect(isCardFrame(png(100))).toBe(true);
+    expect(isCardFrame(png(CARD_FRAME_MAX_BYTES))).toBe(true);
+    expect(isCardFrame(png(CARD_FRAME_MAX_BYTES + 1))).toBe(false);
+    expect(isCardFrame(new Uint8Array([0xff, 0xd8, 0xff, 0, 0, 0, 0, 0]))).toBe(false);
+    expect(isCardFrame(new Uint8Array(3))).toBe(false);
   });
 
   test('accepts a fractional cost', () => {

@@ -15,7 +15,7 @@ import type { JobCgroup } from '../box/cgroup';
 import { createJobRunner } from '../box/job-runner';
 import { fileSeedRecord, seedStore } from '../box/seed';
 import { cardChannel, logThreadHost, postChannel } from '../discord/adapters';
-import type { XpChartCard } from '../cards/templates';
+import { isCardFrame, type XpChartCard } from '../cards/templates';
 import { AdventureLog, logLine } from '../discord/adventure-log';
 import { Gallery } from '../discord/gallery';
 import { MainPosts, xpGains, type CardSubject } from '../discord/posts';
@@ -33,7 +33,7 @@ import { formatWorldState } from '../../vendor/rs-sdk/sdk/formatter';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
 import type { BotConfig, GuildConfig } from './config';
 import {
-  ADMIT_TEXT, buildReceipt, cardFor, createItemIdBook, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
+  ADMIT_TEXT, buildReceipt, endedOf, RECEIPT_SUMMARY_MAX, cardFor, createItemIdBook, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
   retryBackoff, scriptFromProgress, tabLine, wakeContextText, type Receipt, type createKeyedLock,
 } from './helpers';
 
@@ -160,10 +160,10 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   // The look tool: the newest stored frame, or a new capture when the store has none that is fresh.
   const frame = (): Promise<Uint8Array | null> => link.frame();
 
-  async function draw(subject: CardSubject, opts?: { withFrame?: boolean }): Promise<Uint8Array | null> {
+  async function draw(subject: CardSubject, frame?: Uint8Array | null): Promise<Uint8Array | null> {
     const req = cardFor(subject, prevEvents, lastReceipt, new Date(), itemIds.get);
     if (!req) return null;
-    return link.drawCard(req.kind, req.data as never, opts);
+    return link.drawCard(req.kind, req.data as never, frame);
   }
 
   function view() {
@@ -327,25 +327,30 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       db.finishInstruction(row.id, result.stopReason === 'aborted' ? 'stopped' : 'done', result.summary.slice(0, 2_000), result.usd);
 
       const endState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
+      const ended = endedOf(result.stopReason);
       lastReceipt = buildReceipt({
-        by: wake === 'instruction' ? row.user : `${wake} wake`, instruction: row.text, summary: result.summary, turns: result.turns, costUsd: result.usd,
+        by: wake === 'instruction' ? row.user : `${wake} wake`, ended, instruction: row.text, summary: result.summary, turns: result.turns, costUsd: result.usd,
         durationMs: Date.now() - startedAt, changes: receiptChanges(startState, endState),
       }, clean);
-      // One picture: the receipt card holds the game view, the summary and the changes. The card
-      // tab takes the view from the same frame() as here, so a null here means a card without one.
+      // One picture: the receipt card holds the game view, the summary and the changes. A frame
+      // that is too large for the card goes to Discord as its own picture.
       const files: AttachmentBuilder[] = [];
-      const view = await frame();
-      const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }, { withFrame: view !== null }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
+      const shot = (await frame()) ?? result.lastFrame;
+      const view = shot && isCardFrame(shot) ? shot : null;
+      const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }, view).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
       if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
-      const png = receiptPng && view ? null : view ?? result.lastFrame;
+      const png = receiptPng && view ? null : shot;
       if (png) files.push(new AttachmentBuilder(Buffer.from(png), { name: 'frame.png' }));
       frames.stop();
       const b = budget.status();
       const period = `$${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)} spent this period`;
-      // The card shows the summary, the turns and the cost. Without a card the text holds them.
-      const text = receiptPng
-        ? `**Done** (${from}): ${row.text}\n-# ${period}`
-        : `**Done** (${from}): ${row.text}\n${result.summary}\n-# ${result.turns} turns, $${result.usd.toFixed(2)} · ${period}`;
+      // The card shows the summary, the turns and the cost. The text keeps the summary when there
+      // is no card, when the card cut it, or when the instruction did not end normally.
+      const fullOnCard = receiptPng !== null && ended === 'done' && clean(result.summary).length <= RECEIPT_SUMMARY_MAX;
+      const head = `**${ended === 'done' ? 'Done' : ended === 'stopped' ? 'Stopped' : 'Failed'}** (${from}): ${row.text}`;
+      const text = fullOnCard
+        ? `${head}\n-# ${period}`
+        : `${head}\n${result.summary}\n-# ${result.turns} turns, $${result.usd.toFixed(2)} · ${period}`;
       const done = { content: clean(text), components: [], files, allowedMentions: { parse: [] as [] } };
       if (msg) await msg.edit(done).catch(err => log(`edit failed: ${errText(err)}`));
       else await ch.send(done).catch(() => {});

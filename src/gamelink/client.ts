@@ -171,8 +171,8 @@ async function connectGuild(opts: ClientOptions, name: string, account: string):
       }
       throw last;
     },
-    async drawCard<K extends CardKind>(kind: K, data: CardDataMap[K], opts?: { withFrame?: boolean }) {
-      return bytesOf(await post('card', { kind, data, ...(opts?.withFrame ? { withFrame: true } : {}) }));
+    async drawCard<K extends CardKind>(kind: K, data: CardDataMap[K], frame?: Uint8Array | null) {
+      return bytesOf(await post('card', { kind, data, ...(frame ? { frame: Buffer.from(frame).toString('base64') } : {}) }));
     },
     async logout() {
       const r = await (await post('logout')).json() as { ok?: unknown };

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadBotConfig, loadGameConfig } from '../bot/config';
-import { CardDataError } from '../cards/templates';
+import { CARD_FRAME_MAX_BYTES, CardDataError } from '../cards/templates';
 import { connectGameLink } from './client';
 import { readTokenFile, reconnectAll, relogAll, type GameLink, type GuildLink, type LocalGameLink, type LocalGuildLink } from './link';
 import { LockError, SERVICE_IDLE_TIMEOUT_S, acquireLock, lockPathFor, serveGameLink, type LockDeps, type ServiceHandle } from './service';
@@ -30,9 +30,9 @@ function fakeGuild() {
     startFrames: () => { framesOn = true; calls.push('frames:start'); },
     stopFrames: () => { framesOn = false; calls.push('frames:stop'); },
     setJobActive: async a => { calls.push(`job:${a}`); },
-    drawCard: async kind => {
+    drawCard: async (kind, _data, frame) => {
       if ((kind as string) === 'status') throw new CardDataError('bad data');
-      calls.push(`card:${kind}`);
+      calls.push(frame ? `card:${kind}:frame:${frame.length}` : `card:${kind}`);
       return PNG;
     },
     logout: async () => { calls.push('logout'); return true; },
@@ -110,6 +110,16 @@ describe('gamelink socket', () => {
     expect(c.framesActive()).toBe(true);
     // The first job:false is the reset at connect: a crashed bot may have left the flag on.
     expect(calls).toEqual(['job:false', 'job:true', 'job:false', 'card:death', 'logout', 'frames:start']);
+  });
+
+  test('a card takes a PNG frame; anything else is refused before the draw', async () => {
+    const c = client.guilds.get('main')!;
+    const before = calls.length;
+    const frame = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
+    expect([...(await c.drawCard('instruction_receipt', {} as never, frame))!]).toEqual([...PNG]);
+    await expect(c.drawCard('instruction_receipt', {} as never, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))).rejects.toThrow(/HTTP 400/);
+    await expect(c.drawCard('instruction_receipt', {} as never, new Uint8Array(CARD_FRAME_MAX_BYTES + 1).fill(0x89))).rejects.toThrow(/HTTP 400/);
+    expect(calls.slice(before)).toEqual(['card:instruction_receipt:frame:10']);
   });
 
   test('status carries the tab reason and the actions in flight; waitIdle goes over the socket, capped at 30 s', async () => {

@@ -51,6 +51,8 @@ export interface ReceiptItem {
 export interface InstructionReceiptCard {
   /** Who asked, or the kind of wake. The card shows it as the speaker of the instruction. */
   by?: string;
+  /** How the instruction ended. Absent means done. */
+  ended?: 'done' | 'stopped' | 'failed';
   instruction: string;
   summary: string;
   turns: number;
@@ -109,6 +111,17 @@ export const CARD_SIZES: Readonly<Record<CardKind, { width: number; height: numb
 export const CARD_MIN_HEIGHT = 120;
 
 export const CARD_DEVICE_SCALE = 2;
+
+/** The largest game frame that the receipt card takes. In base64 it stays below the 1 MB request
+ *  limit of the gamelink interface. A larger frame goes to Discord as its own picture. */
+export const CARD_FRAME_MAX_BYTES = 700_000;
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** True for a PNG of at most CARD_FRAME_MAX_BYTES. */
+export function isCardFrame(b: Uint8Array): boolean {
+  return b.length >= 8 && b.length <= CARD_FRAME_MAX_BYTES && PNG_SIGNATURE.every((v, i) => b[i] === v);
+}
 
 export class CardDataError extends Error {}
 
@@ -240,6 +253,10 @@ export function validateCardData<K extends CardKind>(kind: K, data: unknown): Ca
       };
       const by = optStr(o, 'by', LIMITS.name, w);
       if (by) r.by = by;
+      if (o.ended !== undefined) {
+        if (o.ended !== 'done' && o.ended !== 'stopped' && o.ended !== 'failed') throw new CardDataError(`${w}.ended: not done, stopped or failed`);
+        r.ended = o.ended;
+      }
       const dur = optNum(o, 'durationMs', w, 0, 30 * 86_400_000);
       if (dur !== undefined) r.durationMs = dur;
       const sk = rows(o, 'skills', LIMITS.receiptRows, w, (k, kw) => ({
@@ -329,7 +346,7 @@ background:repeating-linear-gradient(45deg,rgba(255,255,255,.025) 0 2px,transpar
 border:2px solid #000;box-shadow:inset 0 0 0 2px #6e6352,inset 0 0 0 4px #221d17}
 .head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:2px 4px 0}
 .kicker{font-size:17px;color:#ff981f;white-space:nowrap}
-.card.death .kicker{color:#ff3a2a}
+.card.death .kicker,.kicker.red{color:#ff3a2a}
 .meta{font-size:13px;color:#c9b98f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .well{background:#2b251e;border:1px solid #14110d;box-shadow:inset 1px 1px 0 #000,1px 1px 0 #5c5244;padding:8px 10px;display:flex;flex-direction:column;gap:7px;min-width:0}
 .label{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:#ff981f}
@@ -339,7 +356,7 @@ border:2px solid #000;box-shadow:inset 0 0 0 2px #6e6352,inset 0 0 0 4px #221d17
 .sub{color:#ffffff;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px}
 .sub.o{color:#ff981f}
 .clamp{overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;overflow-wrap:anywhere;white-space:pre-wrap}
-.clamp2{-webkit-line-clamp:2}.clamp3{-webkit-line-clamp:3}.clamp8{-webkit-line-clamp:8}
+.clamp2{-webkit-line-clamp:2}.clamp3{-webkit-line-clamp:3}.clamp11{-webkit-line-clamp:11}
 .view{line-height:0;border:2px solid #000;box-shadow:0 0 0 2px #6e6352,0 0 0 3px #14110d;margin:3px 3px 1px;align-self:center}
 .view img{width:512px;height:334px;image-rendering:pixelated;display:block}
 .chat{background:linear-gradient(#e2d5b3,#d3c39b);border:2px solid #000;box-shadow:inset 0 0 0 2px #a8946a;color:#000;text-shadow:none;padding:7px 11px 8px;font-size:14px;line-height:1.38;display:flex;flex-direction:column;gap:3px}
@@ -530,11 +547,13 @@ export const CARD_PAGE_SCRIPT = `
       if (d.durationMs !== undefined) { var m = Math.round(d.durationMs / 60000); meta.push(m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : Math.max(1, m) + ' min'); }
       meta.push(fmt(d.turns) + (d.turns === 1 ? ' turn' : ' turns'));
       meta.push('$' + Number(d.costUsd).toFixed(2));
-      head(c, 'Request complete', meta.join(DOT));
+      head(c, d.ended === 'failed' ? 'Request failed' : d.ended === 'stopped' ? 'Request stopped' : 'Request complete', meta.join(DOT));
+      if (d.ended === 'failed' || d.ended === 'stopped') c.firstChild.firstChild.classList.add('red');
       if (frame) { var v = el('div','view'); v.appendChild(img(frame, 'Game view')); c.appendChild(v); }
       var chat = el('div','chat');
       chat.appendChild(line('clamp clamp3', [[(d.by || 'Request') + ': ', 'who'], [d.instruction, 'said']]));
-      chat.appendChild(el('div','game clamp clamp8',d.summary));
+      // 11 lines hold the 600 characters that the summary may have.
+      chat.appendChild(el('div','game clamp clamp11',d.summary));
       c.appendChild(chat);
       var MAX = 8;
       var list = [];

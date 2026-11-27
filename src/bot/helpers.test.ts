@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  buildReceipt, cardFor, retryBackoff, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createItemIdBook, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
+  buildReceipt, endedOf, cardFor, retryBackoff, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createItemIdBook, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
   scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
 } from './helpers';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
@@ -212,6 +212,18 @@ describe('buildReceipt', () => {
     expect(r.skills).toBeUndefined();
     expect(r.inventory).toEqual([{ name: 'Logs', before: 0, after: 2 }]);
     expect(r.by).toBeUndefined();
+  });
+
+  test('keeps how the instruction ended, but not a normal end', () => {
+    const base = { instruction: 'i', summary: 's', turns: 1, costUsd: 0, durationMs: 1, changes: { skills: [], inventory: [] } };
+    expect(buildReceipt({ ...base, ended: 'done' }, t => t).ended).toBeUndefined();
+    expect(buildReceipt({ ...base, ended: 'failed' }, t => t).ended).toBe('failed');
+    expect(endedOf('finished')).toBe('done');
+    expect(endedOf('no_tools')).toBe('done');
+    expect(endedOf('error')).toBe('failed');
+    expect(endedOf('refusal')).toBe('failed');
+    expect(endedOf('aborted')).toBe('stopped');
+    expect(endedOf('time_cap')).toBe('stopped');
   });
 
   test('cleans the name of the person who asked', () => {
