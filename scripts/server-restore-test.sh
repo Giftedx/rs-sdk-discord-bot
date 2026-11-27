@@ -31,7 +31,7 @@ fi
 [ -f "$archive" ] || die "$archive is not a file"
 say "archive $archive ($(stat -c %s "$archive") bytes)"
 
-# The archive holds only secrets/ and data/; refuse absolute paths and "..".
+# The archive holds secrets/, data/ and, in split mode, rs-gamelink-etc/; refuse absolute paths and "..".
 if tar -tzf "$archive" | grep -qE '(^/|(^|/)\.\.(/|$))'; then
   die "the archive holds an absolute path or '..'; not extracted"
 fi
@@ -46,6 +46,14 @@ if [ -d "$tmp/secrets" ]; then
   say "secrets/: $(find "$tmp/secrets" -type f | wc -l) files, $(du -sb "$tmp/secrets" | cut -f1) bytes"
 else
   say "FAILED secrets/ is not in the archive"; fail=1
+fi
+# Split mode: the game account is in /etc/rs-gamelink, and the backup must hold it.
+if [ -d "${GAMELINK_ETC:-/etc/rs-gamelink}" ]; then
+  if [ -f "$tmp/rs-gamelink-etc/account.env" ]; then
+    say "rs-gamelink-etc/: $(find "$tmp/rs-gamelink-etc" -type f | wc -l) files"
+  else
+    say "FAILED rs-gamelink-etc/account.env is not in the archive (split mode)"; fail=1
+  fi
 fi
 
 db="$tmp/$DB_REL"

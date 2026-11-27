@@ -5,6 +5,7 @@
 # The archive holds:
 #   secrets/   the game account and the bot settings, with the tokens
 #   data/      the notes, the scripts and the database of the bot
+#   rs-gamelink-etc/  /etc/rs-gamelink in split mode: the game account and the socket token
 # Each SQLite database (*.db, *.sqlite, *.sqlite3) is copied with "sqlite3 .backup", which
 # gives a consistent copy while the bot runs. If sqlite3 is not installed, the script copies
 # the file as it is. That copy can be inconsistent if the bot writes at the same time; the
@@ -52,6 +53,12 @@ for part in secrets data; do
     log "warning: $APP_DIR/$part does not exist; not in the backup"
   fi
 done
+# Split mode keeps the game account and the socket token in /etc/rs-gamelink.
+GAMELINK_ETC="${GAMELINK_ETC:-/etc/rs-gamelink}"
+if [ -d "$GAMELINK_ETC" ]; then
+  cp -a "$GAMELINK_ETC" "$stage/rs-gamelink-etc"
+  parts+=("rs-gamelink-etc")
+fi
 [ "${#parts[@]}" -gt 0 ] || die "nothing to back up"
 
 # Replace the plain copy of each database with a consistent one.
@@ -63,6 +70,12 @@ if [ -d "$APP_DIR/data" ]; then
       rm -f "$stage/$rel"
       sqlite3 "$db" ".backup '$stage/$rel'"
       log "database $rel: sqlite3 .backup"
+    elif [ -x "${BUN:-/usr/local/bin/bun}" ]; then
+      rm -f "$stage/$rel"
+      # VACUUM INTO writes one consistent copy, also while the bot writes the database.
+      DB_SRC="$db" DB_DST="$stage/$rel" "${BUN:-/usr/local/bin/bun}" --no-env-file -e \
+        'const { Database } = require("bun:sqlite"); const d = new Database(process.env.DB_SRC, { readonly: true }); d.run("VACUUM INTO ?", [process.env.DB_DST]); d.close();'
+      log "database $rel: VACUUM INTO (bun:sqlite)"
     else
       log "warning: sqlite3 is not installed; $rel is a plain copy and can be inconsistent"
     fi
