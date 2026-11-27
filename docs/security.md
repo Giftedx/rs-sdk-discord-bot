@@ -125,7 +125,8 @@ Scripts (`scripts/`), milestone 2:
 
 Bot (`src/bot/`, `src/agent/`, `src/box/`):
 
-- **Without `BOX_USER`, a job runs as the same Unix user as the bot.** It can then read the secret files of the bot and `/proc/<pid>/environ` of the bot process, which hold the Discord token, the API key and the game password. The bot logs a warning at start. Set `BOX_USER` on every server ([running-the-bot.md](running-the-bot.md)).
+- **Without `BOX_USER`, a job runs as the same Unix user as the bot.** It can then read the secret files of the bot and `/proc/<pid>/environ` of the bot process, which hold the Discord token, the API key and the game password. So the bot refuses to start without `BOX_USER`, unless `BOT_ALLOW_UNSANDBOXED=1` is set for local development ([running-the-bot.md](running-the-bot.md)).
+- With `DISCORD_ALLOW_EVERYONE=1` in place of `DISCORD_ALLOWED_ROLE_ID`, every member of the channel can give an instruction, and so start AI-written code. The bot refuses to start with neither.
 - With `BOX_USER`, a job runs as a second Unix user through `sudo`. It has no systemd limits for memory, CPU or tasks. It can reach any network host, and it can read every file that is readable by all users.
 - The bot gives the AI the text of a Discord instruction and the output of each job. Game chat is in that output. A hostile instruction or chat text can make the AI act badly inside the action policy, or spend API credit up to the limits.
 - The spend record is an estimate from token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.

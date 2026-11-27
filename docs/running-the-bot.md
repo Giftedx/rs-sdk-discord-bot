@@ -27,7 +27,8 @@ The bot is one process: `src/bot/main.ts`. It opens the game tab, keeps the acco
 | `RS_ALLOW_DEMO` | for the demo world | | Must be `1` when the game server is the demo world. |
 | `DISCORD_TOKEN` | yes | | The bot token. |
 | `DISCORD_CHANNEL_ID` | yes | | The one channel where the bot listens and posts. |
-| `DISCORD_ALLOWED_ROLE_ID` | | everyone | Only members with this role can give and stop instructions. |
+| `DISCORD_ALLOWED_ROLE_ID` | yes, or the next row | | Only members with this role can give and stop instructions. |
+| `DISCORD_ALLOW_EVERYONE` | | | `1` lets every member of the channel give and stop instructions. |
 | `ANTHROPIC_API_KEY` | yes | | The API key. |
 | `AI_MODEL` | | `claude-opus-5-5` | The model ID. `claude-sonnet-5-5` costs half as much per token. |
 | `AI_EFFORT` | | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher effort costs more. |
@@ -38,7 +39,8 @@ The bot is one process: `src/bot/main.ts`. It opens the game tab, keeps the acco
 | `GAMELINK_IDLE_GUARD` | | `1` | `0` turns off the reset of the 10-minute idle logout. |
 | `QUEUE_MAX` | | `5` | Instructions that can wait. |
 | `USER_COOLDOWN_S` | | `30` | Seconds between two instructions of one user. |
-| `BOX_USER` | on a server | | Run each job as this Unix user through `sudo`. See "The box user". |
+| `BOX_USER` | yes, or the next row | | Run each job as this Unix user through `sudo`. See "The box user". The bot refuses to start without it. |
+| `BOT_ALLOW_UNSANDBOXED` | | | `1` lets the bot start without `BOX_USER`. Jobs can then read the secrets of the bot. For local development only. |
 | `BOX_BUN_PATH` | | `/usr/local/bin/bun` | The Bun binary that the box user runs. |
 
 The spend is an estimate from the token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
@@ -58,6 +60,8 @@ RS_PASSWORD=x
 RS_GATEWAY_URL=ws://localhost:7780
 RS_BOT_PAGE_URL=http://localhost:8888/bot
 RS_SERVER_HOST=localhost
+BOX_USER=rsbox
+DISCORD_ALLOWED_ROLE_ID=123456789012345678
 EOF
 chmod 600 secrets/bot.env
 bash scripts/dev-stack.sh start

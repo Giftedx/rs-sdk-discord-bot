@@ -51,11 +51,18 @@ export function loadBotConfig(env: Record<string, string | undefined>, rootDir: 
   if (!SNOWFLAKE.test(channelId)) throw new ConfigError('DISCORD_CHANNEL_ID must be a Discord channel ID');
   const role = env.DISCORD_ALLOWED_ROLE_ID || null;
   if (role !== null && !SNOWFLAKE.test(role)) throw new ConfigError('DISCORD_ALLOWED_ROLE_ID must be a Discord role ID');
+  if (role === null && env.DISCORD_ALLOW_EVERYONE !== '1') {
+    throw new ConfigError('Set DISCORD_ALLOWED_ROLE_ID, or set DISCORD_ALLOW_EVERYONE=1 to let every member of the channel give instructions.');
+  }
   const effort = (env.AI_EFFORT || 'medium') as Effort;
   if (!EFFORTS.includes(effort)) throw new ConfigError(`AI_EFFORT must be one of ${EFFORTS.join(', ')}`);
   const model = env.AI_MODEL || 'claude-opus-5-5';
   if (!/^[a-z0-9.-]+$/.test(model)) throw new ConfigError('AI_MODEL must be a model ID');
   const dataRaw = env.DATA_DIR || 'data';
+  // Fail closed: without a box user, AI-written code can read the secrets of the bot.
+  if (!env.BOX_USER && env.BOT_ALLOW_UNSANDBOXED !== '1') {
+    throw new ConfigError('BOX_USER must be set (docs/running-the-bot.md, "The box user"). For local development only, set BOT_ALLOW_UNSANDBOXED=1.');
+  }
   return {
     game,
     discordToken,

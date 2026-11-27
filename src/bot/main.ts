@@ -90,7 +90,7 @@ try {
   await shutdown(1);
 }
 
-if (!cfg.boxUser) log('WARNING: BOX_USER is not set. Jobs run as the bot user and can read its secret files. See docs/running-the-bot.md.');
+if (!cfg.boxUser) log('WARNING: BOT_ALLOW_UNSANDBOXED=1. Jobs run as the bot user and can read its secret files. Use this for local development only.');
 const runner = createJobRunner({
   rootDir: ROOT, scratchDir: join(cfg.dataDir, 'jobs'), account: cfg.game.account.name, bootToken, secrets, proxy: proxy!,
   boxUser: cfg.boxUser, ...(cfg.boxUser ? { bunPath: cfg.boxBunPath } : {}),
