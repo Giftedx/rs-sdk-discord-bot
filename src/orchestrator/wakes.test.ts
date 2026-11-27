@@ -76,11 +76,18 @@ describe('wake scheduler', () => {
     expect(w.tick(input({ now: 5000, state: st({ x: 3222, z: 3218 }) })).some(x => x.type === 'wake')).toBe(false);
   });
 
-  test('a trigger during a running job stops the job instead of a new wake', () => {
+  test('low HP in combat during a running job stops the job instead of a new wake', () => {
     const w = createWakeScheduler();
     w.tick(input({ instructionRunning: true, jobRunning: true }));
-    const a = w.tick(input({ now: 1000, instructionRunning: true, jobRunning: true, state: st({ hp: 5 }) }));
+    const a = w.tick(input({ now: 1000, instructionRunning: true, jobRunning: true, state: st({ hp: 5, inCombat: true }) }));
     expect(types(a)).toEqual(['event', 'abort_job']);
+  });
+
+  test('low HP out of combat does not stop the job: it may be the walk away from danger', () => {
+    const w = createWakeScheduler();
+    w.tick(input({ instructionRunning: true, jobRunning: true }));
+    const a = w.tick(input({ now: 60_000, instructionRunning: true, jobRunning: true, state: st({ hp: 5, inCombat: false }) }));
+    expect(types(a)).toEqual(['event']);
   });
 
   test('watchdog: no progress for 5 minutes while a job runs stops the job', () => {

@@ -180,7 +180,9 @@ export function createWakeScheduler(options: WakeOptions = {}) {
         actions.push({ type: 'event', event: t.kind, text: t.text });
         if (input.instructionRunning) {
           // The AI is awake. Stop the job so the loop reads the new state now.
-          if (input.jobRunning) actions.push({ type: 'abort_job', reason: t.text });
+          // Low HP out of combat stops nothing: the job may be the walk away from danger.
+          const fighting = !!state?.inCombat || (g.lastCombatAt !== null && now - g.lastCombatAt < 10_000);
+          if (input.jobRunning && (t.kind === 'death' || fighting)) actions.push({ type: 'abort_job', reason: t.text });
           continue;
         }
         if (started) continue;
