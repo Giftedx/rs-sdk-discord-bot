@@ -98,7 +98,7 @@ export const CARD_SIZES: Readonly<Record<CardKind, { width: number; height: numb
   death: { width: 600, height: 400 },
   instruction_receipt: { width: 600, height: 620 },
   daily_recap: { width: 600, height: 560 },
-  status: { width: 720, height: 600 },
+  status: { width: 780, height: 600 },
   xp_chart: { width: 600, height: 400 },
 };
 
