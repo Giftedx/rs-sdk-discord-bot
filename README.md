@@ -9,9 +9,7 @@
   <img src="https://img.shields.io/badge/TypeScript-strict-6aa8ff" alt="TypeScript">
 </p>
 
-# Channel Plays
-
-**A Discord bot that lets a whole channel play one game character together.**
+**Channel Plays is a Discord bot that lets a whole channel play one game character together.**
 
 You ask in plain words, such as "get 40 fishing". An AI writes the code that plays the game, runs it, and posts how it went. Everyone in the channel watches the same character grow.
 
