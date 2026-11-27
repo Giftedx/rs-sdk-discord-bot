@@ -36,6 +36,56 @@ describe('loadBotConfig', () => {
     expect(() => loadBotConfig({ ...base, DISCORD_CHANNEL_ID: 'general' }, '/r')).toThrow(/DISCORD_CHANNEL_ID/);
     expect(() => loadBotConfig({ ...base, AI_EFFORT: 'huge' }, '/r')).toThrow(/AI_EFFORT/);
     expect(() => loadBotConfig({ ...base, AI_MAX_TURNS: '0' }, '/r')).toThrow(/AI_MAX_TURNS/);
+    expect(() => loadBotConfig({ ...base, SPEND_RESET_DAY: '29' }, '/r')).toThrow(/SPEND_RESET_DAY/);
+    expect(() => loadBotConfig({ ...base, DISCORD_RECAP_HOUR_UTC: '24' }, '/r')).toThrow(/DISCORD_RECAP_HOUR_UTC/);
+    expect(() => loadBotConfig({ ...base, ESCALATION_MODEL: 'Bad Model' }, '/r')).toThrow(/ESCALATION_MODEL/);
+  });
+  test('the single-guild form gives one guild in DATA_DIR', () => {
+    const c = loadBotConfig({ ...base, DATA_DIR: '/d' }, '/r');
+    expect(c.guilds).toHaveLength(1);
+    expect(c.guilds[0]).toMatchObject({ name: 'main', channelId: base.DISCORD_CHANNEL_ID, dataDir: '/d', boxUser: 'rsbox' });
+    expect(c.spendResetDay).toBe(1);
+    expect(c.watchdogMs).toBe(300_000);
+    expect(c.recapHourUtc).toBeUndefined();
+    expect(c.postsPerHour).toBe(4);
+    expect(c.jobLimits).toEqual({ memoryBytes: 1024 * 1_048_576, pids: 256, cpuPercent: 100 });
+  });
+});
+
+describe('GUILDS_FILE', () => {
+  const { RS_ACCOUNT: _a, RS_PASSWORD: _p, DISCORD_CHANNEL_ID: _c, DISCORD_ALLOWED_ROLE_ID: _r, ...common } = base;
+  const entries = [
+    { name: 'alpha', channelId: '323456789012345678', allowedRoleId: '423456789012345678', account: 'acca', passwordEnv: 'PW_ALPHA' },
+    { name: 'beta', channelId: '523456789012345678', allowEveryone: true, account: 'accb', passwordEnv: 'PW_BETA', dataSubdir: 'b', boxUser: 'rsbox2' },
+  ];
+  const env = { ...common, GUILDS_FILE: 'guilds.json', PW_ALPHA: 'secret-a', PW_BETA: 'secret-b', DATA_DIR: '/d', PROXY_PORT: '7800' };
+  const load = (list: unknown, e: Record<string, string | undefined> = env) => loadBotConfig(e, '/r', () => JSON.stringify(list));
+
+  test('one guild per entry, with its own port, data dir, account and password', () => {
+    const c = load(entries);
+    expect(c.guilds.map(g => [g.name, g.game.proxyPort, g.game.account.name, g.game.account.password, g.boxUser, g.allowedRoleId]))
+      .toEqual([['alpha', 7800, 'acca', 'secret-a', 'rsbox', '423456789012345678'], ['beta', 7801, 'accb', 'secret-b', 'rsbox2', null]]);
+    expect(c.guilds[0]!.dataDir.replace(/\\/g, '/')).toMatch(/\/d\/alpha$/);
+    expect(c.guilds[1]!.dataDir.replace(/\\/g, '/')).toMatch(/\/d\/b$/);
+    expect(c.channelId).toBe('323456789012345678');
+  });
+  test('the password comes only from the named variable, and errors never print it', () => {
+    const { PW_BETA: _, ...noPw } = env;
+    let msg = '';
+    try { load(entries, noPw); } catch (err) { msg = (err as Error).message; }
+    expect(msg).toMatch(/entry 2: .*passwordEnv/);
+    expect(msg).not.toContain('secret-a');
+    expect(() => load([{ ...entries[0], password: 'x', passwordEnv: 'bad name' }])).toThrow(/passwordEnv/);
+  });
+  test('refuses duplicates, bad entries and a missing file', () => {
+    expect(() => load([entries[0], { ...entries[1], account: 'acca' }])).toThrow(/same account/);
+    expect(() => load([entries[0], { ...entries[1], channelId: entries[0]!.channelId }])).toThrow(/same channelId/);
+    expect(() => load([{ ...entries[0], allowedRoleId: undefined }])).toThrow(/allowEveryone/);
+    expect(() => load([{ ...entries[0], name: 'Bad Name' }])).toThrow(/name must match/);
+    expect(() => load([{ ...entries[0], dataSubdir: '../x' }])).toThrow(/dataSubdir/);
+    expect(() => load([])).toThrow(/at least one/);
+    expect(() => loadBotConfig(env, '/r', () => '{not json')).toThrow(/JSON list/);
+    expect(() => loadBotConfig(env, '/r', () => { throw new Error('ENOENT'); })).toThrow(/cannot be read/);
   });
 });
 

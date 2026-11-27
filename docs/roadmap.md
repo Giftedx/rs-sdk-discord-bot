@@ -5,12 +5,12 @@ The work has seven milestones. Each milestone builds on the milestone before it.
 | Milestone | Delivers | State |
 |---|---|---|
 | 1. Base and measurements | The configuration loader, the action policy, the proxy, the game tab module, the local stack script, the proxy proof, the measurement tool, the idle test, and the server bootstrap with its AppArmor profile. | Done |
-| 2. Gamelink service | Gamelink as a long-running service: it restarts a game tab that left the game, keeps an idle account logged in, stores a frame every 5 s, and has authenticated local interfaces. | Partly built: the supervisor, logout, and a frame on demand, in one process with the bot. No separate service and no local interfaces. |
-| 3. Box | The runner for AI-written code under systemd sandboxing, the built-in protections (eat at low HP, leave combat), the knowledge pack and the seed scripts. | Partly built: the job runner with an optional box user, and the rs-sdk learnings as the knowledge pack. No systemd limits, built-in protections or seed scripts. |
-| 4. Orchestrator | The Discord intake, the queue, the agent loop, the tools, the notes, and the spend control. | Built in a thin form: one guild, one account, one process (`src/bot/`, `src/agent/`). No database and no timers or triggers. |
-| 5. Discord output | The events, the status card, the adventure log and the posts in the main channel. | Partly built: one message per instruction, edited with progress, with a frame at the end. |
-| 6. Drawn cards | The card tab and the drawn cards. | Not started |
-| 7. Deployment | The systemd units, the firewall, the backup, and the check on a live server. | Partly built: one systemd unit for the bot. Not run on a live server yet. |
+| 2. Gamelink service | Gamelink as a long-running service: it restarts a game tab that left the game, keeps an idle account logged in, stores a frame every 5 s, and has authenticated local interfaces. | Partly built, in one process with the bot: the supervisor, logout, the frame store, the browser profile on tmpfs and the allow-list browser environment. No separate service and no local interfaces. |
+| 3. Box | The runner for AI-written code under systemd sandboxing, the built-in protections (eat at low HP, leave combat), the knowledge pack and the seed scripts. | Mostly built: the job runner with a box user, the job cgroup limits (need `Delegate=yes`; not tested on a real unit), the protections (eat and run-away paths have unit tests only), the knowledge pack and 7 seed scripts (run on the local stack). No separate box process per account. |
+| 4. Orchestrator | The Discord intake, the queue, the agent loop, the tools, the notes, and the spend control. | Built: several guilds in one process, the SQLite database (queue with recovery, spend per call, events, snapshots, timers), wakes on timers, low HP, death and the watchdog, the daily allowance, and the tools `set_timer`, `post`, `set_goal` and `escalate`. Checked with unit tests and the local smoke test; not yet run with a real model and Discord after these changes. |
+| 5. Discord output | The events, the status card, the adventure log and the posts in the main channel. | Built and wired, unit tests only: the events, the status card, the adventure log, the posts and the daily recap. Not run against a real Discord server yet. |
+| 6. Drawn cards | The card tab and the drawn cards. | Built: five card kinds, drawn in a real browser in the browser tests and the smoke test. Attached to posts and receipts; not yet seen in Discord. |
+| 7. Deployment | The systemd units, the firewall, the backup, and the check on a live server. | Partly built: the bot unit with `Delegate=yes`, the firewall script, the backup and the revision check with their units. None of them has run on a live server yet. |
 
 No milestone has a date.
 
@@ -23,4 +23,3 @@ The code of milestone 1 has known limits. [security.md](security.md) lists each 
 - `inGame()` is true while the map still loads. The map is ready at `sceneState === 2`.
 - The security helpers are in `scripts/`, not in `src/`.
 - The box listener of the proxy has no backpressure limit.
-- AI-written code would run as the same Unix user as the proxy. The box with its own user is not built.

@@ -110,9 +110,10 @@ Configuration (`src/shared/config.ts`), milestone 2:
 Game tab (`src/gamelink/game-tab.ts`), milestone 2:
 
 - `inGame()` is not a readiness signal. It is true while the client still loads the map. See [measurements.md](measurements.md).
-- The browser environment is a deny list of four names (`RS_PASSWORD`, `DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`). It must become an allow list.
+- Closed: the browser environment is now an allow list (`BROWSER_ENV_ALLOW` in `src/gamelink/game-tab.ts`), and the four secret names stay out of it.
 - `close()` does not log the account out. The bot calls `logout()` before `close()` when it stops.
-- A crash dump of Chromium can hold the password. The crash reporter is not turned off.
+- The crash reporter is off (`--disable-crash-reporter`, `--disable-breakpad`). This was checked only by a clean start, not by a search for crash dumps.
+- The bot puts the browser profile in a new directory under `/dev/shm` (mode 700) and removes it when the browser closes, so no profile with the password stays on disk. Without `/dev/shm` the profile goes to the temp directory, and the bot logs a warning.
 - The request interception turns the browser cache off, so each reload downloads the client again.
 
 Scripts (`scripts/`), milestone 2:
@@ -121,20 +122,27 @@ Scripts (`scripts/`), milestone 2:
 - The security helpers `boxChildCommand`, `boxChildEnv`, `makeRedact` and `newBootToken` are in `scripts/run-helpers.ts`. They have tests and are in the type check, but later code in `src/` cannot import them from there cleanly.
 - `scripts/proxy-proof.ts` exits with code 0 when no action was sent. Its field `passwordInChildEnv` reports on the environment that the script built, not on the running child.
 - `scripts/measure.ts` calls `keepAlive()` every 60 s in every mode, mode `demo` included.
-- The scripts set no profile directory for Chromium, and they do not write the commit and the Chrome path into their result files.
+- The measurement scripts set no profile directory for Chromium, and they do not write the commit and the Chrome path into their result files. The bot and `scripts/bot-smoke.ts` use the tmpfs profile.
 
 Bot (`src/bot/`, `src/agent/`, `src/box/`):
 
 - **Without `BOX_USER`, a job runs as the same Unix user as the bot.** It can then read the secret files of the bot and `/proc/<pid>/environ` of the bot process, which hold the Discord token, the API key and the game password. So the bot refuses to start without `BOX_USER`, unless `BOT_ALLOW_UNSANDBOXED=1` is set for local development ([running-the-bot.md](running-the-bot.md)).
 - With `DISCORD_ALLOW_EVERYONE=1` in place of `DISCORD_ALLOWED_ROLE_ID`, every member of the channel can give an instruction, and so start AI-written code. The bot refuses to start with neither.
-- With `BOX_USER`, a job runs as a second Unix user through `sudo`. It has no systemd limits for memory, CPU or tasks. It can reach any network host, and it can read every file that is readable by all users.
+- With `BOX_USER`, a job runs as a second Unix user through `sudo`. It can read every file that is readable by all users.
+- Job limits: when the bot unit has `Delegate=yes`, the bot moves each job into one cgroup with memory, process and CPU limits for all jobs together (`src/box/cgroup.ts`). Without delegation the bot logs one line and the jobs have no limits. Not yet tested on a real systemd unit: the move of the `sudo` child into the job cgroup. A grandchild can start before the move.
+- Network: `scripts/server-firewall.sh` lets each box user in `BOX_USERS` reach only the proxy ports on `127.0.0.1`. A box user that is not in that list has no network limit. A box user can reach the proxy ports of the other guilds too, but it needs their boot token to log in.
+- Guilds that share a box user run their jobs one at a time, because the runner kills every process of the box user after a job. The jobs of one guild can see the processes of another guild that has the same box user only between these jobs.
+- All text from the AI and the game goes through `sanitizeForDiscord` with no pings before Discord: the status card, the goal, the adventure log, the `post` lines of the AI, the posts and the instruction messages. Drawn cards put untrusted text into their page with `textContent` only, and the card page loads nothing from the network (CSP `default-src 'none'; img-src data:` and request interception).
+- The queue, the spend, the events, the snapshots and the timers are in `DATA_DIR/bot.sqlite`, which the box user must not read. Keep `DATA_DIR` at mode 755 with the database at 600, or keep the box user out of `DATA_DIR` except for the job folders.
+- A timer or a trigger starts the AI with no human author. The daily allowance (the cap divided by the days of the period) and a limit of 6 wakes per hour and guild bound the spend of these wakes.
 - The bot gives the AI the text of a Discord instruction and the output of each job. Game chat is in that output. A hostile instruction or chat text can make the AI act badly inside the action policy, or spend API credit up to the limits.
 - The spend record is an estimate from token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
 - Bun on Windows has no box user. Run the bot on Linux.
 
 Box, milestone 3:
 
-- The real box does not exist: no systemd unit, no limits, no network rules. The job runner with `BOX_USER` is the current stand-in. The box stand-in of the scripts runs as the same Unix user as the proxy, with no sandbox.
+- The box is the job runner with `BOX_USER`, the job cgroup and the firewall script. It has no separate systemd unit. The box stand-in of the scripts runs as the same Unix user as the proxy, with no sandbox.
+- The protections (eat, run away) run inside the job, as code of the box user. A job can turn them off. Their eat and run-away paths have unit tests only.
 - If the box stand-in connects before the proxy has its gateway connection, the proxy refuses it, and the SDK does not try again.
 - The boot token changes at each start of the proxy. A box must start again to get it.
 
@@ -144,7 +152,8 @@ Bootstrap (`scripts/server-bootstrap.sh`), milestone 7:
 - Phase `install` clones from a bare repository on your server only. It cannot clone from a URL.
 - The script has no phase that removes its changes, and none that removes an old Chrome version. [deploy-server.md](deploy-server.md) lists the commands.
 - Bun and the code belong to `rsbot`, so a process of `rsbot` can change the code that runs next.
-- The script installs no firewall.
+- The bootstrap installs no firewall. `scripts/server-firewall.sh` and `deploy/systemd/rsbox-egress.service` add the box egress rules, but they have not run on a server yet.
+- `scripts/server-backup.sh` with its timer backs up the SQLite files. The restore has not been tested.
 - The Chromium sandbox ran from a login shell only, not under a systemd unit with hardening options.
 
 Continuous integration:

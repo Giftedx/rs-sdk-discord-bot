@@ -3,6 +3,9 @@
 // run_script, finish. The jobs run real rs-sdk code through the proxy in a child process.
 // Then the script checks the job flag between jobs and logs out through the page.
 // Usage (local stack only): RS_ACCOUNT=smokelocal RS_PASSWORD=x bun scripts/bot-smoke.ts
+// It also checks the parts that main.ts wires around the loop: the browser profile on tmpfs,
+// the seed scripts, the frame store behind the look tool, the SQLite spend record and a
+// snapshot, and a drawn receipt card.
 // stdout gets one JSON line. Exit code 0 when every check passed.
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,9 +13,16 @@ import { join } from 'node:path';
 import type { Browser } from 'puppeteer';
 import { createJobRunner } from '../src/box/job-runner';
 import { runInstruction, type AgentDeps } from '../src/agent/loop';
-import { createSpendTracker } from '../src/agent/spend';
 import { createStore } from '../src/agent/store';
-import { launchBrowser, openGameTab, type GameTab } from '../src/gamelink/game-tab';
+import { seedStore } from '../src/box/seed';
+import { isPng } from '../src/cards/icons';
+import { launchBrowserWithProfile, type ProfiledBrowser } from '../src/gamelink/browser-profile';
+import { openCardTab, type CardTab } from '../src/gamelink/card-tab';
+import { createFrameStore } from '../src/gamelink/frame-store';
+import { openGameTab, type GameTab } from '../src/gamelink/game-tab';
+import { createBudget } from '../src/orchestrator/budget';
+import { openDb } from '../src/orchestrator/db';
+import { compactState } from '../src/orchestrator/wakes';
 import { createActionPolicy } from '../src/gamelink/policy';
 import { startProxy, type ProxyHandle } from '../src/gamelink/proxy';
 import { createSupervisor, type Supervisor } from '../src/gamelink/supervisor';
@@ -29,7 +39,8 @@ chmodSync(dataDir, 0o711);
 mkdirSync(RAW, { recursive: true });
 
 const checks: Record<string, boolean | string> = {};
-let browser: Browser | null = null;
+let pb: ProfiledBrowser | null = null;
+let cards: CardTab | null = null;
 let tab: GameTab | null = null;
 let sup: Supervisor | null = null;
 let proxy: ProxyHandle | null = null;
@@ -42,7 +53,9 @@ const r = await bot.chopTree(tree);
 return 'chop: ' + r.message;`;
 
 try {
-  browser = await launchBrowser(config.chromePath ? { executablePath: config.chromePath } : {});
+  pb = await launchBrowserWithProfile(config.chromePath ? { executablePath: config.chromePath } : {});
+  checks.profileOnTmpfs = pb.profile.onTmpfs;
+  const browser: Browser = pb.browser;
   tab = await openGameTab({ browser, botPageUrl: config.botPageUrl, account: config.account.name, password: config.account.password, fps: config.fps });
   const t = tab;
   sup = createSupervisor({ tab, idleGuard: true, log, checkMs: 1_000 });
@@ -79,6 +92,14 @@ try {
     [{ type: 'tool_use', id: 'a5', name: 'run_script', input: { name: 'chop-one', timeout_s: 120 } }],
     [{ type: 'tool_use', id: 'a6', name: 'finish', input: { summary: 'smoke done' } }],
   ];
+  const store = createStore(dataDir);
+  checks.seedScripts = seedStore(store, join(ROOT, 'seed')).length === 7 && store.listScripts().length === 7;
+  const db = openDb(join(dataDir, 'bot.sqlite'));
+  const budget = createBudget(db, 1, { context: () => ({ guild: 'smoke', instructionId: 1 }) });
+  const frames = createFrameStore({ source: t, log, intervalMs: 2_000 });
+  frames.start();
+  await waitUntil('a stored frame', () => frames.latest() !== null, 30_000);
+  db.addSnapshot('smoke', compactState(lastState));
   const toolResults: string[] = [];
   const deps: AgentDeps = {
     model: 'scripted', effort: 'low',
@@ -89,15 +110,25 @@ try {
       return { id: 'x', type: 'message', role: 'assistant', model: 'scripted', content, stop_reason: 'tool_use', usage: { input_tokens: 0, output_tokens: 0 } } as never;
     },
     runJob: (code, ms, signal) => runner.run(code, ms, signal),
-    store: createStore(dataDir), knowledge: [], apiReference: '',
+    store, knowledge: [], apiReference: '',
     gameState: () => (lastState ? formatWorldState(lastState, Date.now() - lastAt, { brief: true }) : 'none'),
-    frame: () => t.frame('view'),
-    spend: createSpendTracker(join(dataDir, 'spend.json'), 1),
+    frame: async () => frames.latest()?.png ?? null,
+    spend: budget,
     maxTurns: 10, maxInstructionUsd: 1, onProgress: line => log(`progress: ${line}`),
   };
   const result = await runInstruction(deps, 'chop a tree', 'smoke', new AbortController().signal);
   writeFileSync(join(RAW, 'bot-smoke-tool-results.json'), JSON.stringify(toolResults, null, 2));
   if (result.lastFrame) writeFileSync(join(RAW, 'bot-smoke.png'), result.lastFrame);
+
+  frames.stop();
+  checks.frameStoreFrames = frames.all().length >= 2;
+  checks.spendRows = (db.raw.query('SELECT COUNT(*) AS n FROM spend WHERE guild = ?').get('smoke') as { n: number }).n === result.turns;
+  checks.snapshot = db.latestSnapshot('smoke') !== null;
+  db.close();
+  cards = await openCardTab(browser, { iconHost: new URL(config.botPageUrl).origin });
+  const receipt = await cards.draw('instruction_receipt', { instruction: 'chop a tree', summary: result.summary, turns: result.turns, costUsd: result.usd });
+  writeFileSync(join(RAW, 'bot-smoke-receipt.png'), receipt);
+  checks.receiptCard = isPng(receipt);
 
   checks.finished = result.stopReason === 'finished';
   checks.gameStateHasPlayer = (toolResults[0] ?? '').includes('Position') || (toolResults[0] ?? '').includes('HP');
@@ -134,7 +165,8 @@ try {
 } finally {
   sup?.stop();
   await proxy?.stop().catch(() => {});
+  await cards?.close().catch(() => {});
   await tab?.close().catch(() => {});
-  await browser?.close().catch(() => {});
+  await pb?.close().catch(() => {});
 }
 process.exit(exitCode);

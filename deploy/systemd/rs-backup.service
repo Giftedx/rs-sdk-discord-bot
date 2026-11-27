@@ -1,0 +1,11 @@
+# Daily backup of the secrets and the data of the bot. rs-backup.timer starts it.
+# scripts/server-backup.sh has the restore steps.
+[Unit]
+Description=Backup of rs-discord-bot secrets and data
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rs-discord-bot/scripts/server-backup.sh
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes

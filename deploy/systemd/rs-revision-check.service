@@ -1,0 +1,17 @@
+# Checks whether the game server serves a new client revision. rs-revision-check.timer
+# starts it. A change logs "REVISION CHANGED": journalctl -u rs-revision-check
+[Unit]
+Description=Check of the game server client revision
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rsbot
+WorkingDirectory=/opt/rs-discord-bot
+ExecStart=/opt/rs-discord-bot/scripts/server-revision-check.sh
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/rs-discord-bot/data

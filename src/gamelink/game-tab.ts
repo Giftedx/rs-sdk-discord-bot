@@ -12,6 +12,9 @@ export const CHROMIUM_ARGS: readonly string[] = [
   '--disable-background-timer-throttling',
   '--disable-renderer-backgrounding',
   '--disable-backgrounding-occluded-windows',
+  // No crash dumps: a dump of the renderer can hold the password of the login page.
+  '--disable-crash-reporter',
+  '--disable-breakpad',
 ];
 
 export type FrameMode = 'view' | 'full';
@@ -47,17 +50,28 @@ const CANVAS_WIDTH = 765;
 const CANVAS_HEIGHT = 503;
 const CANVAS_WAIT_MS = 4_500;
 
-// Environment variables that hold secrets. The browser does not need them.
+// Environment variables that hold secrets. The allow list below never passes them.
 export const SECRET_ENV_NAMES: readonly string[] = ['RS_PASSWORD', 'DISCORD_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
 
-// The browser environment: the current environment without secrets, and with the
+// The only variables of the current environment that the browser gets.
+export const BROWSER_ENV_ALLOW: readonly string[] = [
+  'PATH', 'HOME', 'TMPDIR', 'TZ', 'LANG', 'LANGUAGE',
+  'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'FONTCONFIG_PATH',
+];
+
+function allowedEnvName(name: string): boolean {
+  if (SECRET_ENV_NAMES.includes(name)) return false;
+  return BROWSER_ENV_ALLOW.includes(name) || name.startsWith('LC_');
+}
+
+// The browser environment: an allow list of the current environment, and the
 // accessibility bridge and the D-Bus session bus off. Without the last two, Chromium
 // makes the user's systemd start dbus-daemon and at-spi-bus-launcher, which
 // stay after the browser stops.
 export function browserLaunchEnv(base: Record<string, string | undefined> = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
-    if (v !== undefined && !SECRET_ENV_NAMES.includes(k)) env[k] = v;
+    if (v !== undefined && allowedEnvName(k)) env[k] = v;
   }
   env.NO_AT_BRIDGE = '1';
   env.DBUS_SESSION_BUS_ADDRESS = 'disabled:';

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { boxKillCommand, createJobRunner, jobChildEnv, jobCommand, redactAll, tail, wrapJobCode } from './job-runner';
@@ -11,6 +11,16 @@ describe('job runner helpers', () => {
     expect(src).toContain('const { bot, sdk } = ctx;');
     expect(src).toContain('await bot.chopTree();');
     expect(src).toContain('{ timeout: 60000 }');
+    expect(src).not.toContain('startProtections');
+  });
+
+  test('wrapJobCode with a protections path starts and stops the protections around the body', () => {
+    const src = wrapJobCode('return 1;', '/r/runner.ts', 1_000, 'C:\\r\\protections.ts');
+    expect(src).toContain('import { startProtections } from "C:/r/protections.ts";');
+    const start = src.indexOf('const protections = startProtections(bot, sdk);');
+    expect(start).toBeGreaterThan(0);
+    expect(src.indexOf('return 1;')).toBeGreaterThan(start);
+    expect(src).toContain('finally { protections.stop(); }');
   });
 
   test('the job environment holds the boot token and no secret', () => {
@@ -43,7 +53,10 @@ describe('job runner', () => {
     const root = mkdtempSync(join(tmpdir(), 'jobroot-'));
     mkdirSync(join(root, 'vendor', 'rs-sdk', 'sdk'), { recursive: true });
     writeFileSync(join(root, 'vendor', 'rs-sdk', 'sdk', 'runner.ts'),
-      'export async function runScript(fn: any) { console.log("pw=" + process.env.PASSWORD); await fn({ bot: {}, sdk: {} }); }\n');
+      'export async function runScript(fn: any) { console.log("pw=" + process.env.PASSWORD); const r = await fn({ bot: {}, sdk: {} }); console.log("result=" + r); }\n');
+    // The real protections file, so the test covers its import into a job.
+    mkdirSync(join(root, 'src', 'box'), { recursive: true });
+    copyFileSync(join(import.meta.dir, 'protections.ts'), join(root, 'src', 'box', 'protections.ts'));
     return root;
   }
 
@@ -61,6 +74,17 @@ describe('job runner', () => {
     expect(r.output).not.toContain('boot-token-1234');
     expect(flags).toEqual([true, false]);
     expect(runner.isRunning()).toBe(false);
+  });
+
+  test('the body can turn the protections off and its return value passes through', async () => {
+    const root = fakeRoot();
+    const runner = createJobRunner({
+      rootDir: root, scratchDir: join(root, 'scratch'), account: 'abc', bootToken: 'boot-token-1234',
+      secrets: [], proxy: { port: 1, setJobActive: () => {} },
+    });
+    const r = await runner.run('protections.off(); return JSON.stringify(protections.status());', 10_000);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain('result={"enabled":false,"eats":0,"flees":0}');
   });
 
   test('abort stops the job', async () => {

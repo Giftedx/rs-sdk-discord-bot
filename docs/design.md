@@ -109,7 +109,9 @@ Who will hold which secret:
 
 ### 5.1 Orchestrator
 
-**Planned.** One process will serve all guilds.
+**Built, in one process with gamelink** (`src/bot/main.ts`, `src/bot/guild.ts`, `src/orchestrator/`). One process serves all guilds of `GUILDS_FILE`, or one guild from the single-guild settings. The database is built (`src/orchestrator/db.ts`, bun:sqlite, `DATA_DIR/bot.sqlite`, migrations on `PRAGMA user_version`): it holds the queue with recovery after a restart, the spend of each model call with its guild and instruction, the events, a state snapshot every 30 s while the account is in the game, and the timers. Events come from a comparison of state snapshots (`src/events/diff.ts`). Each guild has its own job runner, not a box process, so the steps below that name the box are still planned. Guilds that share a box user run one job at a time.
+
+The rest of this section is the planned form:
 
 - It will hold the Discord token and the API key. The design names no AI provider.
 - It will receive each instruction and put it in the queue of that guild.
@@ -136,6 +138,8 @@ In the design, one gamelink process serves all accounts on the server.
 - It reads `gameClient.ingame` (`inGame()`), reloads the page (`reload()`), and resets the idle timer of the client (`keepAlive()`).
 - It blocks `POST /api/screenshot`.
 
+**Built in the bot:** the supervisor (`src/gamelink/supervisor.ts`) reloads a tab that left the game and keeps an idle account logged in. The bot logs the account out before it closes a tab. The browser profile is in a new directory on `/dev/shm` that the bot removes at the end (`src/gamelink/browser-profile.ts`). The browser environment is an allow list. One browser holds the game tabs of all guilds.
+
 **Game tab. Planned:**
 
 - Chromium will run as its own systemd unit, with its profile on a memory file system. Gamelink will attach to it, so a restart of gamelink does not log the account out.
@@ -144,9 +148,9 @@ In the design, one gamelink process serves all accounts on the server.
 - Gamelink will log the account out before it closes a tab.
 - Outbound network access will be limited to the game host.
 
-**Picture rig. Partly built.** `frame('view')` returns the game view at 2 times the size with sharp pixels, 1024 by 668. `frame('full')` returns the complete canvas, 765 by 503. The rig copies the canvas to a second canvas and never draws on the game canvas. Planned: a loop that will store one `view` frame every 5 seconds while an instruction runs, and keep the last 12.
+**Picture rig. Partly built.** `frame('view')` returns the game view at 2 times the size with sharp pixels, 1024 by 668. `frame('full')` returns the complete canvas, 765 by 503. The rig copies the canvas to a second canvas and never draws on the game canvas. The frame store (`src/gamelink/frame-store.ts`) is **Built**: while an instruction runs and the tab is in the game, it stores one `view` frame every 5 seconds and keeps the last 12. The `look` tool and the status card use the newest stored frame.
 
-**Card tab. Planned.** A second tab will draw each drawn card from a template and data. It will write text with `textContent` only, because item names and player names are untrusted.
+**Card tab. Built** (`src/gamelink/card-tab.ts`, `src/cards/`). A second tab draws each drawn card (level-up, death, instruction receipt, daily recap, status) from a template and data. It writes text with `textContent` only, because item names and player names are untrusted. The card page loads nothing from the network. Item icons come from the sprite route of the game host (`/sprite/item/{id}.png`). The bot fetches them, checks that each one is a PNG of at most 64 KB, keeps them in memory, and gives them to the page as `data:` URLs. The engine has no skill icons.
 
 **Proxy. Built** (`src/gamelink/proxy.ts`), for one account in one process:
 
@@ -162,7 +166,9 @@ In the design, one gamelink process serves all accounts on the server.
 
 ### 5.3 Box
 
-**Planned.** One process per account. Today `scripts/box-standin.ts` and the child process of `scripts/proxy-proof.ts` stand in for it. This box stand-in runs as the same Unix user as the proxy, with no sandbox.
+**Partly built.** The job runner (`src/box/job-runner.ts`) runs each job as `BOX_USER` through `sudo`, with the built-in protections (`src/box/protections.ts`) at the top of each job: at HP 40% or less the job eats the food that heals most; at 25% or less with no food it runs 10 tiles away from the attacker, at most once every 4 s. `protections.off()` turns them off. With `Delegate=yes`, all jobs share one cgroup with memory, process and CPU limits (`src/box/cgroup.ts`). `scripts/server-firewall.sh` limits the network of the box user to the proxy port. The 7 seed scripts in `seed/` (skip-tutorial, walk-to, bank-deposit-all, chop-and-bank, fish-and-cook, mine-and-bank, kill-chickens) go into the saved scripts of each guild at the start. Known SDK issue on the local stack: `bot.mineRock` can return "rejected" while the mining goes on; `mine-and-bank` waits for the ore.
+
+Planned: one process per account. Today `scripts/box-standin.ts` and the child process of `scripts/proxy-proof.ts` stand in for it. This box stand-in runs as the same Unix user as the proxy, with no sandbox.
 
 - The box will run Bun with the rs-sdk `sdk/` code. Its gateway URL will point at the proxy.
 - The box will hold no secret. It will not have the game password.
@@ -174,7 +180,9 @@ In the design, one gamelink process serves all accounts on the server.
 
 ## 6. The agent loop
 
-**Planned.**
+**Built** (`src/agent/loop.ts`, `src/orchestrator/wakes.ts`, `src/orchestrator/budget.ts`): the wake rules below (an instruction, a timer, low HP below 30% with a re-arm at 40%, a death, and the watchdog that stops a job with no progress for `WATCHDOG_MINUTES`), at most 6 timer and trigger wakes per hour and guild, the daily allowance (the cap divided by the days of the period from `SPEND_RESET_DAY`), and the tools `set_timer`, `post`, `set_goal` and `escalate`. `queue_done` is not built; `finish` covers it. The trigger state and the wake counts are in memory.
+
+The planned text follows:
 
 The AI will not run all day. The orchestrator will make a wake only for one of these:
 
@@ -225,7 +233,9 @@ Stated limits: the policy checks the action type, the `::` prefix and the chat r
 
 ## 8. Discord behaviour
 
-**Planned.** The bot will use three places: the status card, the adventure log, and rare posts in the main channel.
+**Built** (`src/discord/`, wired in `src/bot/guild.ts`): the status card with **Stop** and **Status** buttons, the adventure log thread, the posts in the main channel with drawn cards, the daily recap, and the receipt card on the message of each instruction. All text goes through `sanitizeForDiscord` with no pings. These parts have unit tests; they have not run against a real Discord server yet. Slash commands are not built.
+
+The planned text follows. The bot will use three places: the status card, the adventure log, and rare posts in the main channel.
 
 - **Instructions.** A user will write `@bot get 40 woodcutting` or use a slash command. The bot will confirm with a reaction. One instruction will run at a time, and the others will wait in a queue with a size limit. One instruction will have a time limit and a spend limit.
 - **Status card.** One pinned message per guild. It will show a frame, the goal, the current step, the HP, the queue and the budget. It will have buttons, and **Stop** will end the current instruction. While an instruction runs, the bot will edit the card on a timer. If the account waits, the bot will not edit it.
@@ -238,6 +248,6 @@ Rule for all pictures: this repository holds no game art. The bot will get icons
 
 ## 9. Operations
 
-**Partly built.** `scripts/server-bootstrap.sh` prepares a server ([deploy-server.md](deploy-server.md)). Planned: systemd units for the orchestrator, gamelink, Chromium and one box per account, a firewall, a backup of the passwords, the notes and the database, and a check for a new revision of the game server.
+**Partly built.** `scripts/server-bootstrap.sh` prepares a server ([deploy-server.md](deploy-server.md)). Built but not yet run on a server: the bot unit with `Delegate=yes`, the box egress firewall (`scripts/server-firewall.sh`, `rsbox-egress.service`), the backup of the database (`scripts/server-backup.sh` with a timer), and a check for a new revision of the game server (`scripts/server-revision-check.sh` with a timer). [running-the-bot.md](running-the-bot.md) has the install steps. Planned: separate systemd units for gamelink, Chromium and one box per account, and a backup of the passwords.
 
 Development uses the local stack ([development.md](development.md)).

@@ -98,3 +98,72 @@ describe('runInstruction', () => {
     expect(JSON.stringify((calls[1] as { messages: unknown[] }).messages.at(-1))).toContain('"type":"image"');
   });
 });
+
+describe('optional tools and wake kinds', () => {
+  const names = (c: unknown) => (c as { tools: { name: string }[] }).tools.map(t => t.name);
+
+  test('optional tools are offered only when deps support them', async () => {
+    const plain = deps([reply([{ type: 'text', text: 'ok' }], 'end_turn')]);
+    await runInstruction(plain.d, 'x', 'bob', new AbortController().signal);
+    expect(names(plain.calls[0])).not.toContain('set_timer');
+    expect(names(plain.calls[0])).not.toContain('escalate');
+
+    const full = deps([reply([{ type: 'text', text: 'ok' }], 'end_turn')], { setTimer: () => {}, post: () => {}, setGoal: () => {}, escalationModel: 'claude-fable-5-2' });
+    await runInstruction(full.d, 'x', 'bob', new AbortController().signal);
+    expect(names(full.calls[0])).toEqual(expect.arrayContaining(['set_timer', 'post', 'set_goal', 'escalate']));
+  });
+
+  test('set_timer, post and set_goal call their callbacks; bad minutes is an error', async () => {
+    const timers: [number, string][] = [];
+    const posts: string[] = [];
+    const goals: string[] = [];
+    const { d, calls } = deps([
+      reply([
+        { type: 'tool_use', id: 't1', name: 'set_timer', input: { minutes: 30, note: 'check the fishing job' } },
+        { type: 'tool_use', id: 't2', name: 'set_timer', input: { minutes: 5000, note: 'too far' } },
+        { type: 'tool_use', id: 't3', name: 'post', input: { text: 'Level 10 fishing!' } },
+        { type: 'tool_use', id: 't4', name: 'set_goal', input: { text: 'Train fishing to 20' } },
+      ]),
+      reply([{ type: 'tool_use', id: 't5', name: 'finish', input: { summary: 's' } }]),
+    ], { setTimer: (m, n) => { timers.push([m, n]); }, post: t => { posts.push(t); }, setGoal: t => { goals.push(t); } });
+    const r = await runInstruction(d, 'x', 'bob', new AbortController().signal);
+    expect(r.stopReason).toBe('finished');
+    expect(timers).toEqual([[30, 'check the fishing job']]);
+    expect(posts).toEqual(['Level 10 fishing!']);
+    expect(goals).toEqual(['Train fishing to 20']);
+    const results = (calls[1] as { messages: { content: { tool_use_id: string; is_error?: boolean }[] }[] }).messages.at(-1)!.content;
+    expect(results.find(x => x.tool_use_id === 't2')!.is_error).toBe(true);
+    expect(results.find(x => x.tool_use_id === 't1')!.is_error).toBeUndefined();
+  });
+
+  test('escalate switches the model once', async () => {
+    const { d, calls } = deps([
+      reply([{ type: 'tool_use', id: 't1', name: 'escalate', input: { reason: 'stuck' } }]),
+      reply([{ type: 'tool_use', id: 't2', name: 'escalate', input: { reason: 'again' } }]),
+      reply([{ type: 'tool_use', id: 't3', name: 'finish', input: { summary: 's' } }]),
+    ], { escalationModel: 'claude-fable-5-2' });
+    const r = await runInstruction(d, 'x', 'bob', new AbortController().signal);
+    const models = calls.map(c => (c as { model: string }).model);
+    expect(models).toEqual(['claude-opus-5-5', 'claude-fable-5-2', 'claude-fable-5-2']);
+    expect(r.escalated).toBe(true);
+    expect(r.model).toBe('claude-fable-5-2');
+    expect(JSON.stringify((calls[2] as { messages: unknown[] }).messages.at(-1))).toContain('already escalated');
+  });
+
+  test('a timer wake says so in the first message', async () => {
+    const { d, calls } = deps([reply([{ type: 'text', text: 'ok' }], 'end_turn')]);
+    await runInstruction(d, 'check the job', 'timer', new AbortController().signal, 'timer');
+    const first = (calls[0] as { messages: { content: string }[] }).messages[0]!.content;
+    expect(first).toContain('A timer that you set fired');
+    expect(first).toContain('check the job');
+  });
+
+  test('a job stopped by the orchestrator shows the reason', async () => {
+    const { d, calls } = deps([
+      reply([{ type: 'tool_use', id: 't1', name: 'run_code', input: { code: 'x' } }]),
+      reply([{ type: 'text', text: 'ok' }], 'end_turn'),
+    ], { runJob: async () => ({ exitCode: -1, output: '', timedOut: false, aborted: true, durationMs: 1, stopReason: 'no progress' }) as never });
+    await runInstruction(d, 'x', 'bob', new AbortController().signal);
+    expect(JSON.stringify((calls[1] as { messages: unknown[] }).messages.at(-1))).toContain('Job stopped by the orchestrator: no progress.');
+  });
+});

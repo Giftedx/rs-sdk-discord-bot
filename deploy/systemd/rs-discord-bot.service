@@ -19,6 +19,8 @@ RestartSec=30
 # The bot logs out of the game on SIGTERM; give it time.
 TimeoutStopSec=40
 KillMode=mixed
+# The bot puts each job in a child cgroup of this unit, to limit its memory, tasks and CPU.
+Delegate=yes
 # No NoNewPrivileges=yes: the job runner uses sudo to run each job as the box user.
 PrivateTmp=yes
 ProtectSystem=full

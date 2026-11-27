@@ -16,7 +16,7 @@ export interface AgentDeps {
   model: string;
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   callModel(params: Params, signal: AbortSignal): Promise<Message>;
-  runJob(code: string, timeoutMs: number, signal: AbortSignal): Promise<JobResult>;
+  runJob(code: string, timeoutMs: number, signal: AbortSignal): Promise<AgentJobResult>;
   store: Store;
   knowledge: KnowledgeChunk[];
   apiReference: string;
@@ -26,12 +26,29 @@ export interface AgentDeps {
   maxTurns: number;
   maxInstructionUsd: number;
   onProgress(line: string): void;
+  /** When set, the AI gets set_timer. Minutes are 1..1440. */
+  setTimer?(minutes: number, note: string): void | Promise<void>;
+  /** When set, the AI gets post (a line in the adventure log). */
+  post?(text: string): void | Promise<void>;
+  /** When set, the AI gets set_goal (the goal text of the status card). */
+  setGoal?(text: string): void | Promise<void>;
+  /** When set, the AI gets escalate: the rest of the instruction uses this model. */
+  escalationModel?: string;
 }
+
+/** Why this run started. Timer and trigger wakes have no human author. */
+export type WakeKind = 'instruction' | 'timer' | 'trigger';
+
+/** A job result can say why the orchestrator stopped it, for example the watchdog. */
+export type AgentJobResult = JobResult & { stopReason?: string };
 
 export interface InstructionResult {
   summary: string;
   turns: number;
   usd: number;
+  /** The model of the last turn. It differs from deps.model after escalate. */
+  model: string;
+  escalated: boolean;
   stopReason: 'finished' | 'no_tools' | 'turn_cap' | 'spend_cap' | 'month_cap' | 'aborted' | 'refusal' | 'error';
   lastFrame: Uint8Array | null;
 }
@@ -54,7 +71,7 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: 'run_script',
     description: 'Run a saved script as one job and wait for it to end.',
-    input_schema: obj({ name: { type: 'string' }, timeout_s: { type: 'integer' } }, ['name']),
+    input_schema: obj({ name: { type: 'string' }, timeout_s: { type: 'integer', description: `Seconds, 10 to ${MAX_JOB_S}. Default ${DEFAULT_JOB_S}.` } }, ['name']),
   },
   {
     name: 'save_script',
@@ -71,6 +88,47 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
   { name: 'look', description: 'See the newest picture of the game view.', input_schema: obj({}, []) },
   { name: 'finish', description: 'End the instruction. Give a short summary for the Discord channel: what you did and the result.', input_schema: obj({ summary: { type: 'string' } }, ['summary']) },
 ];
+
+const MAX_TEXT = 2000;
+
+export const OPTIONAL_TOOLS: Record<'set_timer' | 'post' | 'set_goal' | 'escalate', Anthropic.Beta.BetaTool> = {
+  set_timer: {
+    name: 'set_timer',
+    description: 'Wake yourself later, after this instruction ends. The note becomes the instruction of that wake, so write what to check or do. Use it to check on a long plan.',
+    input_schema: obj({ minutes: { type: 'integer', description: '1 to 1440' }, note: { type: 'string' } }, ['minutes', 'note']),
+  },
+  post: {
+    name: 'post',
+    description: 'Write one short line to the adventure log channel: a level-up, a find, a death, a finished goal.',
+    input_schema: obj({ text: { type: 'string' } }, ['text']),
+  },
+  set_goal: {
+    name: 'set_goal',
+    description: 'Set the current goal text on the status card. Keep it short.',
+    input_schema: obj({ text: { type: 'string' } }, ['text']),
+  },
+  escalate: {
+    name: 'escalate',
+    description: 'Switch the rest of this instruction to a stronger, more expensive model. Use it only when you are stuck on a hard problem. Works once per instruction.',
+    input_schema: obj({ reason: { type: 'string' } }, ['reason']),
+  },
+};
+
+/** The tools of one run: the base tools plus each optional tool that deps support. */
+export function toolsFor(deps: Pick<AgentDeps, 'setTimer' | 'post' | 'setGoal' | 'escalationModel'>): Anthropic.Beta.BetaTool[] {
+  const out = [...TOOLS];
+  if (deps.setTimer) out.push(OPTIONAL_TOOLS.set_timer);
+  if (deps.post) out.push(OPTIONAL_TOOLS.post);
+  if (deps.setGoal) out.push(OPTIONAL_TOOLS.set_goal);
+  if (deps.escalationModel) out.push(OPTIONAL_TOOLS.escalate);
+  return out;
+}
+
+export function firstMessage(instruction: string, user: string, wake: WakeKind): string {
+  if (wake === 'timer') return `A timer that you set fired. No Discord user is waiting. Your note:\n${instruction}`;
+  if (wake === 'trigger') return `A game trigger fired. No Discord user gave this instruction. Check game_state and keep the account safe first:\n${instruction}`;
+  return `Instruction from Discord user "${user.replace(/"/g, "'")}":\n${instruction}`;
+}
 
 export function systemPrompt(apiReference: string): string {
   return `You play one shared RuneScape-style game account on an rs-sdk game server. People in a Discord channel give you instructions. You act in the game only through jobs: TypeScript code that runs against the rs-sdk \`bot\` and \`sdk\` objects.
@@ -96,6 +154,9 @@ Job code format: the body of an async function. Example:
   const r = await bot.chopTree(tree);
   return r.message;
 
+Protections: each job runs built-in protections. At HP 40% or less they eat the food that heals most; at 25% or less with no food they run 10 tiles away from the attacker. The job body can call protections.off(), protections.on() and protections.status(). Turn them off only when the instruction needs it, for example a fight to the death.
+Saved seed scripts (skip-tutorial, walk-to, bank-deposit-all, chop-and-bank, fish-and-cook, mine-and-bank, kill-chickens) are in the script list. On a new account, run bank-deposit-all first: the starter kit fills the inventory. The gather seed scripts stop by themselves after at most 13 minutes: run them with timeout_s 900.
+
 rs-sdk API reference:
 ${apiReference}`;
 }
@@ -107,22 +168,28 @@ const clampTimeout = (s: unknown) => {
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 
-function formatJob(r: JobResult): string {
-  const head = r.aborted ? 'Job stopped by the user.' : r.timedOut ? 'Job hit its time limit and was killed.' : `Job ended with exit code ${r.exitCode} after ${Math.round(r.durationMs / 1000)} s.`;
+const cleanText = (v: unknown, what: string) => {
+  const t = str(v).trim();
+  if (!t) throw new Error(`${what} is empty.`);
+  return t.slice(0, MAX_TEXT);
+};
+
+function formatJob(r: AgentJobResult): string {
+  const head = r.stopReason ? `Job stopped by the orchestrator: ${r.stopReason}.` : r.aborted ? 'Job stopped by the user.' : r.timedOut ? 'Job hit its time limit and was killed.' : `Job ended with exit code ${r.exitCode} after ${Math.round(r.durationMs / 1000)} s.`;
   return `${head}\n${r.output}`;
 }
 
-export async function runInstruction(deps: AgentDeps, instruction: string, user: string, signal: AbortSignal): Promise<InstructionResult> {
-  const messages: MessageParam[] = [{
-    role: 'user',
-    content: `Instruction from Discord user "${user.replace(/"/g, "'")}":\n${instruction}`,
-  }];
+export async function runInstruction(deps: AgentDeps, instruction: string, user: string, signal: AbortSignal, wake: WakeKind = 'instruction'): Promise<InstructionResult> {
+  const messages: MessageParam[] = [{ role: 'user', content: firstMessage(instruction, user, wake) }];
   const system = systemPrompt(deps.apiReference);
+  const tools = toolsFor(deps);
+  let model = deps.model;
+  let escalated = false;
   let usd = 0;
   let turns = 0;
   let lastFrame: Uint8Array | null = null;
   const done = (summary: string, stopReason: InstructionResult['stopReason']): InstructionResult =>
-    ({ summary, turns, usd, stopReason, lastFrame });
+    ({ summary, turns, usd, model, escalated, stopReason, lastFrame });
 
   while (true) {
     if (signal.aborted) return done('Stopped by a user.', 'aborted');
@@ -134,10 +201,10 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
     let response: Message;
     try {
       response = await deps.callModel({
-        model: deps.model,
+        model,
         max_tokens: 16_000,
         system,
-        tools: TOOLS,
+        tools,
         messages,
         output_config: { effort: deps.effort },
         cache_control: { type: 'ephemeral' },
@@ -146,7 +213,7 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
       if (signal.aborted) return done('Stopped by a user.', 'aborted');
       return done(`The AI call failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
-    usd += deps.spend.add(response.model ?? deps.model, response.usage);
+    usd += deps.spend.add(response.model ?? model,response.usage);
 
     if (response.stop_reason === 'refusal') return done('The AI declined this instruction.', 'refusal');
     // Append the content unchanged: thinking blocks must go back as they came.
@@ -201,6 +268,33 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
             content = [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from(png).toString('base64') } }];
             break;
           }
+          case 'set_timer': {
+            if (!deps.setTimer) throw new Error('set_timer is not available.');
+            const m = input.minutes;
+            if (typeof m !== 'number' || !Number.isInteger(m) || m < 1 || m > 1440) throw new Error('minutes must be a whole number from 1 to 1440.');
+            await deps.setTimer(m, cleanText(input.note, 'The note'));
+            deps.onProgress(`Set a timer for ${m} min.`);
+            content = `Timer set for ${m} minutes from now.`;
+            break;
+          }
+          case 'post':
+            if (!deps.post) throw new Error('post is not available.');
+            await deps.post(cleanText(input.text, 'The text'));
+            content = 'Posted.';
+            break;
+          case 'set_goal':
+            if (!deps.setGoal) throw new Error('set_goal is not available.');
+            await deps.setGoal(cleanText(input.text, 'The goal'));
+            content = 'Goal set.';
+            break;
+          case 'escalate':
+            if (!deps.escalationModel) throw new Error('escalate is not available.');
+            if (escalated) throw new Error('You already escalated in this instruction.');
+            escalated = true;
+            model = deps.escalationModel;
+            deps.onProgress(`Switched to a stronger model: ${str(input.reason).slice(0, 200) || 'no reason given'}.`);
+            content = 'The next turns use the stronger model.';
+            break;
           case 'finish':
             finished = str(input.summary) || 'Done.';
             content = 'Finished.';

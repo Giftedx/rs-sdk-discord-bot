@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { browserLaunchOptions, ChromePathError, CHROMIUM_ARGS } from './game-tab';
+import { browserLaunchEnv, browserLaunchOptions, ChromePathError, CHROMIUM_ARGS } from './game-tab';
 
 const CHROME = '/opt/rs-chrome/148.0.7778.97/chrome-linux64/chrome';
 const exists = (paths: string[]) => (p: string) => paths.includes(p);
@@ -40,4 +40,21 @@ test('the browser environment keeps no password', () => {
 
 test('userDataDir passes through', () => {
   expect(browserLaunchOptions({ userDataDir: '/tmp/u' }, { env: {}, fileExists: exists([]) }).userDataDir).toBe('/tmp/u');
+});
+
+test('the browser environment is an allow list', () => {
+  const env = browserLaunchEnv({
+    PATH: '/bin', HOME: '/h', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', TZ: 'UTC', XDG_RUNTIME_DIR: '/run/user/1',
+    DISCORD_TOKEN: 'tok', ANTHROPIC_API_KEY: 'key', RS_ACCOUNT: 'acc', BOX_USER: 'box', SSH_AUTH_SOCK: '/s',
+    NODE_OPTIONS: '--require x', LD_PRELOAD: '/x.so', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/b', UNSET: undefined,
+  });
+  expect(env).toEqual({
+    PATH: '/bin', HOME: '/h', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', TZ: 'UTC', XDG_RUNTIME_DIR: '/run/user/1',
+    NO_AT_BRIDGE: '1', DBUS_SESSION_BUS_ADDRESS: 'disabled:',
+  });
+});
+
+test('the crash reporter is off', () => {
+  expect(CHROMIUM_ARGS).toContain('--disable-crash-reporter');
+  expect(CHROMIUM_ARGS).toContain('--disable-breakpad');
 });

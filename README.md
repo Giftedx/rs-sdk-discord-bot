@@ -10,7 +10,7 @@ This is an independent project. It has no affiliation with rs-sdk, with its main
 
 What you can do today:
 
-- Run the Discord bot (`bun run bot`, Linux). People mention the bot with an instruction. The AI writes and runs rs-sdk code, and the bot replies with a summary and a frame of the game. See [docs/running-the-bot.md](docs/running-the-bot.md).
+- Run the Discord bot (`bun run bot`, Linux) for one channel, or for several channels with `GUILDS_FILE`. People mention the bot with an instruction. The AI writes and runs rs-sdk code, and the bot replies with a summary, a drawn receipt card and a frame of the game. See [docs/running-the-bot.md](docs/running-the-bot.md).
 - Run the tests and the type check (Windows or Linux).
 - Start an rs-sdk game server on your own Linux machine and run an unchanged rs-sdk script against it through the proxy, which keeps the game password away from that script.
 - Prepare an Ubuntu 26.04 server on which the same checks run with the Chromium sandbox on.
@@ -18,10 +18,14 @@ What you can do today:
 The bot, built and tested:
 
 - The agent loop on the Anthropic API, with tools for jobs, saved scripts, notes, the knowledge pack, the game state and a frame, and with turn and spend limits (`src/agent/`).
-- The job runner: AI-written code runs in a child process with only the boot token of the proxy, optionally as a second Unix user (`src/box/job-runner.ts`).
-- The supervisor, which keeps the game tab in the game (`src/gamelink/supervisor.ts`).
-- The Discord front end: mentions, a queue, a **Stop** button, `status` (`src/bot/`).
-- A smoke test on the local stack (`scripts/bot-smoke.ts`), and a systemd unit (`deploy/systemd/`).
+- The job runner: AI-written code runs in a child process with only the boot token of the proxy, as a second Unix user, with the built-in protections and, with `Delegate=yes`, cgroup limits (`src/box/`). Seed scripts in `seed/`.
+- The supervisor, which keeps the game tab in the game, the frame store, and the browser profile on tmpfs (`src/gamelink/`).
+- The orchestrator: a SQLite database for the queue, spend, events, snapshots and timers, wakes on timers, low HP, death and a watchdog, and a daily allowance (`src/orchestrator/`).
+- The Discord front end for one or more guilds: mentions, a queue, **Stop** and **Status** buttons, `status`, a pinned status card, an adventure log thread, milestone posts and a daily recap (`src/bot/`, `src/discord/`, `src/events/`).
+- Drawn cards from a second browser tab (`src/cards/`, `src/gamelink/card-tab.ts`).
+- A smoke test on the local stack (`scripts/bot-smoke.ts`), a check of the seed scripts (`scripts/seed-check.ts`), and systemd units and server scripts for the bot, the box firewall, the backup and the revision check (`deploy/systemd/`, `scripts/server-*.sh`).
+
+Not yet run against a real Discord server: the status card, the adventure log, the posts and the multi-guild wiring. Not yet run on a server: the firewall, the backup, the revision check and the cgroup limits.
 
 The base, built and tested:
 

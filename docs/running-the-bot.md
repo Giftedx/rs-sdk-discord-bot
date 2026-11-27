@@ -1,6 +1,8 @@
 # Run the Discord bot
 
-The bot is one process: `src/bot/main.ts`. It opens the game tab, keeps the account in the game, starts the proxy, and connects to Discord. People mention the bot with an instruction. The AI then writes and runs rs-sdk code in a child process, and replies in the channel with a summary and a frame of the game.
+The bot is one process: `src/bot/main.ts`. It serves one Discord channel, or several channels from `GUILDS_FILE`. Each channel ("guild" in the code) has its own game account, game tab, proxy, job runner, saved scripts and queue. All guilds share one browser, one Anthropic client, one SQLite database (`DATA_DIR/bot.sqlite`), one card tab and one spend cap.
+
+People mention the bot with an instruction. The AI then writes and runs rs-sdk code in a child process, and replies in the channel with a summary, a drawn receipt card and a frame of the game. The bot also keeps a pinned status card, an adventure log thread and milestone posts in the channel. It can wake the AI on a timer that the AI set, on low HP and after a death.
 
 ## What you need
 
@@ -14,7 +16,7 @@ The bot is one process: `src/bot/main.ts`. It opens the game tab, keeps the acco
 1. Open the Discord developer portal and make a new application.
 2. On the **Bot** page, reset the token and copy it. This is `DISCORD_TOKEN`. Keep it secret.
 3. The bot needs no privileged intent. Messages that mention the bot include their text without the Message Content intent.
-4. On the **OAuth2** page, make an invite URL with the scope `bot` and these permissions: View Channels, Send Messages, Read Message History, Add Reactions, Attach Files.
+4. On the **OAuth2** page, make an invite URL with the scope `bot` and these permissions: View Channels, Send Messages, Read Message History, Add Reactions, Attach Files, Manage Messages (to pin the status card), Create Public Threads and Send Messages in Threads (for the adventure log).
 5. Open the URL and add the bot to your Discord server.
 6. In Discord, turn on Developer Mode. Right-click the channel for the bot and copy its ID. This is `DISCORD_CHANNEL_ID`.
 
@@ -22,11 +24,12 @@ The bot is one process: `src/bot/main.ts`. It opens the game tab, keeps the acco
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `RS_ACCOUNT`, `RS_PASSWORD` | yes | | The game account. See [.env.example](../.env.example). |
+| `RS_ACCOUNT`, `RS_PASSWORD` | yes, without `GUILDS_FILE` | | The game account. See [.env.example](../.env.example). |
 | `RS_SERVER_HOST`, `RS_GATEWAY_URL`, `RS_BOT_PAGE_URL` | | demo world | The game server. |
 | `RS_ALLOW_DEMO` | for the demo world | | Must be `1` when the game server is the demo world. |
 | `DISCORD_TOKEN` | yes | | The bot token. |
-| `DISCORD_CHANNEL_ID` | yes | | The one channel where the bot listens and posts. |
+| `DISCORD_CHANNEL_ID` | yes, without `GUILDS_FILE` | | The one channel where the bot listens and posts. |
+| `GUILDS_FILE` | | | A JSON file with one entry per channel. With it, the bot ignores `RS_ACCOUNT`, `RS_PASSWORD`, `DISCORD_CHANNEL_ID`, `DISCORD_ALLOWED_ROLE_ID` and `DISCORD_ALLOW_EVERYONE`. See "Several channels". |
 | `DISCORD_ALLOWED_ROLE_ID` | yes, or the next row | | Only members with this role can give and stop instructions. |
 | `DISCORD_ALLOW_EVERYONE` | | | `1` lets every member of the channel give and stop instructions. |
 | `ANTHROPIC_API_KEY` | yes | | The API key. |
@@ -34,14 +37,25 @@ The bot is one process: `src/bot/main.ts`. It opens the game tab, keeps the acco
 | `AI_EFFORT` | | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher effort costs more. |
 | `AI_MAX_TURNS` | | `25` | Model calls per instruction. |
 | `AI_MAX_INSTRUCTION_USD` | | `2` | Spend limit per instruction, in USD. |
-| `AI_MONTHLY_CAP_USD` | | `30` | At this spend in one calendar month (UTC), the bot takes no new instructions. |
-| `DATA_DIR` | | `data` | Saved scripts, notes, the spend record and job files. |
+| `AI_MONTHLY_CAP_USD` | | `30` | At this spend in one period (UTC), the bot takes no new instructions. The cap is for all guilds together. |
+| `SPEND_RESET_DAY` | | `1` | Day of the month (1 to 28) when the spend period starts. The daily allowance for timer and trigger wakes is the cap divided by the days of the period. |
+| `ESCALATION_MODEL` | | unset | A model ID. When set, the AI gets the `escalate` tool and can move the rest of one instruction to this model, once. |
+| `WATCHDOG_MINUTES` | | `5` | The watchdog stops a job that changes no XP, position or inventory for this time. |
+| `DATA_DIR` | | `data` | The database `bot.sqlite` (queue, spend, events, snapshots, timers) and, per guild, the saved scripts, notes and job files. |
 | `GAMELINK_IDLE_GUARD` | | `1` | `0` turns off the reset of the 10-minute idle logout. |
 | `QUEUE_MAX` | | `5` | Instructions that can wait. |
 | `USER_COOLDOWN_S` | | `30` | Seconds between two instructions of one user. |
 | `BOX_USER` | yes, or the next row | | Run each job as this Unix user through `sudo`. See "The box user". The bot refuses to start without it. |
 | `BOT_ALLOW_UNSANDBOXED` | | | `1` lets the bot start without `BOX_USER`. Jobs can then read the secrets of the bot. For local development only. |
 | `BOX_BUN_PATH` | | `/usr/local/bin/bun` | The Bun binary that the box user runs. |
+| `JOB_MEMORY_MB` | | `1024` | Memory limit of all jobs together, when the job cgroup is available. |
+| `JOB_PIDS` | | `256` | Process limit of all jobs together. |
+| `JOB_CPU_PERCENT` | | `100` | CPU limit of all jobs together, in percent of one CPU. Needs the `cpu` controller. |
+| `DISCORD_POSTS_PER_HOUR` | | `4` | Milestone posts per hour and guild, the recap included. `0` turns them off. |
+| `DISCORD_RECAP_HOUR_UTC` | | unset | Hour (0 to 23, UTC) of the daily recap post. Unset: no recap. |
+| `DISCORD_LOG_THREAD` | | `adventure-log` | Name of the adventure log thread. |
+| `DISCORD_CARDS` | | `1` | `0` turns the drawn cards off. |
+| `PROXY_PORT` | | `7790` | Loopback port of the proxy. With `GUILDS_FILE`, guild number *n* (from 0) uses `PROXY_PORT` + *n*. |
 
 The spend is an estimate from the token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
 
@@ -74,11 +88,23 @@ In the channel, write `@bot help`.
 
 ## 4. Use it in Discord
 
-- `@bot <instruction>`: for example `@bot chop trees until 10 woodcutting`. The bot adds a reaction: a check mark when it starts at once, an hourglass when the instruction waits.
-- `@bot status`: what runs, the queue, the spend this month, and the game state.
-- `@bot stop` or the **Stop** button: ends the current instruction and kills its job.
+- `@bot <instruction>`: for example `@bot chop trees until 10 woodcutting`. The bot adds a reaction: a check mark when nothing runs, an hourglass when the instruction waits.
+- `@bot status`, or the **Status** button of the status card: what runs, the goal, the queue, the timers, the spend and the game state.
+- `@bot stop` or a **Stop** button: ends the current instruction and kills its job.
 
-The bot posts one message for each instruction. It edits that message with progress, then puts the summary, the cost and a frame of the game in it.
+The bot posts one message for each instruction. It edits that message with progress, then puts the summary, the cost, a drawn receipt card and a frame of the game in it.
+
+Other output in the channel:
+
+- **Status card**: one pinned message that the bot edits every 15 s while an instruction runs. It shows the goal, the current step, the HP, the queue length, the spend and a recent frame.
+- **Adventure log**: a thread (`DISCORD_LOG_THREAD`) with level-ups, item gains, deaths, receipts, wake events and the `post` lines of the AI, sent in batches.
+- **Posts**: a message for each 10 levels of a skill, for a death and for the daily recap, with a drawn card. At most `DISCORD_POSTS_PER_HOUR` per hour.
+
+Wakes: the AI can set a timer (1 to 1440 minutes) with a note. The bot also wakes the AI when the HP falls below 30% and after a death. Each wake is an instruction in the queue with no human author. At most 6 timer and trigger wakes per hour and guild, and only while the daily allowance has room.
+
+The queue is in the database. After a restart, an instruction that ran at the stop goes back to the queue and starts again.
+
+Every job runs the built-in protections: at HP 40% or less the job eats the food that heals most, and at 25% or less with no food it runs away. The AI can turn them off in a job with `protections.off()`. At the start, the bot adds the seed scripts from `seed/` to the saved scripts of each guild. It does not overwrite a script with the same name.
 
 ## The box user
 
@@ -118,9 +144,47 @@ journalctl -u rs-discord-bot -f
 
 To stop the bot, run `sudo systemctl stop rs-discord-bot`. The bot logs the account out of the game before it exits.
 
+## Several channels
+
+Put one entry per channel in a JSON file, and set `GUILDS_FILE` to its path. The file holds no password: `passwordEnv` names the environment variable that holds the password of that account.
+
+```json
+[
+  { "name": "alpha", "channelId": "123456789012345678", "allowedRoleId": "223456789012345678",
+    "account": "alphabot", "passwordEnv": "RS_PASSWORD_ALPHA" },
+  { "name": "beta", "channelId": "323456789012345678", "allowEveryone": true,
+    "account": "betabot", "passwordEnv": "RS_PASSWORD_BETA", "dataSubdir": "beta", "boxUser": "rsbox2" }
+]
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `name` | yes | Key of the guild in the database and the log. `^[a-z0-9_-]{1,32}$`. |
+| `channelId` | yes | The channel of this guild. |
+| `allowedRoleId` or `allowEveryone: true` | yes | Who can give and stop instructions. |
+| `account` | yes | The game account of this guild. Each guild needs its own account. |
+| `passwordEnv` | yes | The name of the environment variable with the password. Put the variable in `secrets/bot.env`. |
+| `dataSubdir` | | Folder under `DATA_DIR` for the scripts, notes and jobs. Default: `name`. |
+| `boxUser` | | The box user of this guild. Default: `BOX_USER`. |
+
+All guilds use the same game server settings (`RS_SERVER_HOST` and the URLs). Each guild gets its own proxy port: `PROXY_PORT` + its index.
+
+The job runner kills every process of the box user after a job. So guilds that share a box user run their jobs one at a time. To run jobs of several guilds at the same time, give each guild its own box user, with its own sudoers line.
+
+## Deploy scripts
+
+These files are in `scripts/` and `deploy/systemd/`. They run as root on the server. Set the exec bit in git once: `git update-index --chmod=+x scripts/server-firewall.sh scripts/server-backup.sh scripts/server-revision-check.sh`.
+
+| What | Install | Notes |
+|---|---|---|
+| Box egress firewall | `sudo BOX_USERS=rsbox scripts/server-firewall.sh apply 7790`, then install and enable `rsbox-egress.service` | Each box user can reach only `127.0.0.1` on the proxy ports. IPv6 is closed for them. Modes: `apply [PORTS]`, `egress [PORTS]`, `status`, `undo [--ufw]`. PORTS is one port, a range or a list (`7790`, `7790-7795`, `7790,7792`). With `GUILDS_FILE`, list every box user in `BOX_USERS` and give the range `PROXY_PORT` to `PROXY_PORT` + guilds - 1. Edit `BOX_USERS` and `PROXY_PORTS` in `rsbox-egress.service` to match. |
+| Backup | install `rs-backup.service` and `rs-backup.timer`, then `systemctl enable --now rs-backup.timer` | Backs up the SQLite files under `data/` with `sqlite3 .backup` (install `sqlite3`). Env: `APP_DIR`, `BACKUP_DIR` (default `/var/backups/rs-discord-bot`), `KEEP` (default 14). The script header has the restore steps. |
+| Revision check | install `rs-revision-check.service` and `.timer`, enable the timer | Logs `REVISION CHANGED` when the bot page of the game server changes: `journalctl -u rs-revision-check`. |
+| Job limits | `rs-discord-bot.service` has `Delegate=yes` | The bot makes one cgroup for all jobs and sets `JOB_MEMORY_MB`, `JOB_PIDS` and `JOB_CPU_PERCENT`. Without delegation it logs one line and runs jobs with no limits. |
+
 ## 6. Smoke test without Discord
 
-`scripts/bot-smoke.ts` runs the agent loop with a scripted model on the local stack. It runs real rs-sdk code through the proxy, takes a frame, saves and runs a script, and logs out. It needs no Discord token and no API key, and it costs nothing.
+`scripts/bot-smoke.ts` runs the agent loop with a scripted model on the local stack. It runs real rs-sdk code through the proxy, takes a frame from the frame store, saves and runs a script, and logs out. It also checks the browser profile on tmpfs, the seed scripts, the spend rows and a snapshot in SQLite, and a drawn receipt card. It needs no Discord token and no API key, and it costs nothing.
 
 ```bash
 bash scripts/dev-stack.sh start
@@ -132,6 +196,7 @@ The last line of stdout is JSON. Each value under `checks` must be `true`.
 
 ## Limits of this version
 
-- Without `BOX_USER`, AI-written code can read the secrets of the bot. With `BOX_USER`, a job has no memory, CPU or network limits. [security.md](security.md) lists these gaps.
-- One account and one channel per process.
-- No pinned status card, adventure log or drawn cards yet.
+- Without `BOX_USER`, AI-written code can read the secrets of the bot. With `BOX_USER`, the job limits need `Delegate=yes`, and the network limit needs the firewall script. [security.md](security.md) lists the gaps.
+- The status card, adventure log, posts and the Discord adapters have unit tests only. They have not run against a real Discord server yet.
+- The wake rate limit, the trigger state, the recap history and the hourly post count are in memory. A restart resets them.
+- All guilds use one game server.

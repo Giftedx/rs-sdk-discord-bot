@@ -1,0 +1,25 @@
+# Egress rules of the box user: rsbox can reach only the proxy on 127.0.0.1:7790.
+# iptables rules do not persist over a reboot, so this unit adds them again at boot.
+# Install:
+#   sudo install -m 644 deploy/systemd/rsbox-egress.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rsbox-egress.service
+# If PROXY_PORT in secrets/bot.env is not 7790, change the port below too.
+[Unit]
+Description=Egress rules of the box users of the bot
+Wants=network-pre.target
+Before=network-pre.target rs-discord-bot.service
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Edit these two lines to match the bot: every box user, and every proxy port
+# (PROXY_PORT, or the range PROXY_PORT to PROXY_PORT + guilds - 1 with GUILDS_FILE).
+Environment=BOX_USERS=rsbox
+Environment=PROXY_PORTS=7790
+ExecStart=/opt/rs-discord-bot/scripts/server-firewall.sh egress ${PROXY_PORTS}
+ExecStop=/opt/rs-discord-bot/scripts/server-firewall.sh undo
+
+[Install]
+WantedBy=multi-user.target

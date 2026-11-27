@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Backup of the bot server. Run as root; deploy/systemd/rs-backup.timer runs it daily.
+#
+# It writes one tar.gz to BACKUP_DIR (default /var/backups/rs-discord-bot) with mode 600.
+# The archive holds:
+#   secrets/   the game account and the bot settings, with the tokens
+#   data/      the notes, the scripts and the database of the bot
+# Each SQLite database (*.db, *.sqlite, *.sqlite3) is copied with "sqlite3 .backup", which
+# gives a consistent copy while the bot runs. If sqlite3 is not installed, the script copies
+# the file as it is. That copy can be inconsistent if the bot writes at the same time; the
+# script logs a warning. Install sqlite3 to remove this risk.
+# The script keeps the newest KEEP archives (default 14) and deletes the older ones.
+#
+# Restore:
+#   1. sudo systemctl stop rs-discord-bot.service
+#   2. Look at the archive: sudo tar -tzf /var/backups/rs-discord-bot/rs-discord-bot-<time>.tar.gz
+#   3. Extract it into the app directory:
+#        sudo tar -xzpf /var/backups/rs-discord-bot/rs-discord-bot-<time>.tar.gz -C /opt/rs-discord-bot
+#      This replaces secrets/ and data/. Databases are in data/ at their usual paths.
+#   4. Make sure that the owner is correct:
+#        sudo chown -R rsbot:rsbot /opt/rs-discord-bot/data
+#        sudo chown -R root:rsbot /opt/rs-discord-bot/secrets   (use the owner that
+#        scripts/server-bootstrap.sh gave; tar -p keeps the modes)
+#   5. If a "*-wal" or "*-shm" file of an old database is next to a restored database, delete it.
+#   6. sudo systemctl start rs-discord-bot.service
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/rs-discord-bot}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/rs-discord-bot}"
+KEEP="${KEEP:-14}"
+
+log() { echo "rs-backup: $*"; }
+die() { echo "rs-backup: $*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "run this script as root"
+[[ "$KEEP" =~ ^[1-9][0-9]*$ ]] || die "KEEP must be a positive number"
+[ -d "$APP_DIR" ] || die "$APP_DIR does not exist"
+
+umask 077
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+
+stage="$(mktemp -d "$BACKUP_DIR/.stage.XXXXXX")"
+trap 'rm -rf "$stage"' EXIT
+
+parts=()
+for part in secrets data; do
+  if [ -d "$APP_DIR/$part" ]; then
+    cp -a "$APP_DIR/$part" "$stage/$part"
+    parts+=("$part")
+  else
+    log "warning: $APP_DIR/$part does not exist; not in the backup"
+  fi
+done
+[ "${#parts[@]}" -gt 0 ] || die "nothing to back up"
+
+# Replace the plain copy of each database with a consistent one.
+if [ -d "$APP_DIR/data" ]; then
+  while IFS= read -r -d '' db; do
+    rel="${db#"$APP_DIR"/}"
+    rm -f "$stage/$rel-wal" "$stage/$rel-shm" "$stage/$rel-journal"
+    if command -v sqlite3 >/dev/null; then
+      rm -f "$stage/$rel"
+      sqlite3 "$db" ".backup '$stage/$rel'"
+      log "database $rel: sqlite3 .backup"
+    else
+      log "warning: sqlite3 is not installed; $rel is a plain copy and can be inconsistent"
+    fi
+  done < <(find "$APP_DIR/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0)
+fi
+
+name="rs-discord-bot-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+tmp="$BACKUP_DIR/.$name.part"
+tar -czf "$tmp" -C "$stage" "${parts[@]}"
+chmod 600 "$tmp"
+mv "$tmp" "$BACKUP_DIR/$name"
+log "wrote $BACKUP_DIR/$name ($(stat -c %s "$BACKUP_DIR/$name") bytes)"
+
+# The names sort by time, so the oldest are first.
+mapfile -t all < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'rs-discord-bot-*.tar.gz' -printf '%f\n' | sort)
+excess=$(( ${#all[@]} - KEEP ))
+for (( i = 0; i < excess; i++ )); do
+  rm -f "$BACKUP_DIR/${all[$i]}"
+  log "deleted old backup ${all[$i]}"
+done

@@ -28,6 +28,8 @@ export interface JobRunnerOptions {
   boxUser?: string | null;    // run jobs as this Unix user through sudo
   sudoPath?: string;          // default /usr/bin/sudo
   pkillPath?: string;         // default /usr/bin/pkill
+  protections?: boolean;      // default true: run src/box/protections.ts inside each job
+  onSpawn?(pid: number): void; // called right after the spawn, for example to move the child into a cgroup
 }
 
 export const BOX_ENV_NAMES = ['BOT_USERNAME', 'PASSWORD', 'GATEWAY_URL', 'SHOW_CHAT', 'AUTO_LAUNCH_BROWSER', 'TELEMETRY', 'BUN_RUNTIME_TRANSPILER_CACHE_PATH'];
@@ -56,13 +58,30 @@ export const MAX_JOB_MS = 15 * 60_000;
 export const OUTPUT_TAIL_CHARS = 6_000;
 const KILL_GRACE_MS = 3_000;
 
-export function wrapJobCode(body: string, runnerPath: string, timeoutMs: number): string {
+// With protectionsPath, the job imports startProtections() and runs it during the body.
+// The body sees `protections` and can call protections.off().
+export function wrapJobCode(body: string, runnerPath: string, timeoutMs: number, protectionsPath?: string): string {
   const spec = JSON.stringify(runnerPath.replace(/\\/g, '/'));
+  if (!protectionsPath) {
+    return [
+      `import { runScript } from ${spec};`,
+      `await runScript(async (ctx) => {`,
+      `  const { bot, sdk } = ctx;`,
+      body,
+      `}, { timeout: ${Math.floor(timeoutMs)} });`,
+      '',
+    ].join('\n');
+  }
+  const prot = JSON.stringify(protectionsPath.replace(/\\/g, '/'));
   return [
     `import { runScript } from ${spec};`,
+    `import { startProtections } from ${prot};`,
     `await runScript(async (ctx) => {`,
     `  const { bot, sdk } = ctx;`,
+    `  const protections = startProtections(bot, sdk);`,
+    `  try {`,
     body,
+    `  } finally { protections.stop(); }`,
     `}, { timeout: ${Math.floor(timeoutMs)} });`,
     '',
   ].join('\n');
@@ -98,6 +117,7 @@ export function jobChildEnv(opts: { account: string; bootToken: string; proxyPor
 
 export function createJobRunner(opts: JobRunnerOptions) {
   const runnerPath = resolve(opts.rootDir, 'vendor', 'rs-sdk', 'sdk', 'runner.ts');
+  const protectionsPath = opts.protections === false ? undefined : resolve(opts.rootDir, 'src', 'box', 'protections.ts');
   let count = 0;
   let running = false;
 
@@ -125,7 +145,7 @@ export function createJobRunner(opts: JobRunnerOptions) {
       let timedOut = false;
       let aborted = false;
       try {
-        writeFileSync(file, wrapJobCode(body, runnerPath, limit), { mode: 0o644 });
+        writeFileSync(file, wrapJobCode(body, runnerPath, limit, protectionsPath), { mode: 0o644 });
         if (opts.boxUser) chmodSync(file, 0o644);
         const env = jobChildEnv({ account: opts.account, bootToken: opts.bootToken, proxyPort: opts.proxy.port, secrets: opts.secrets });
         if (opts.boxUser) { env.PATH = '/usr/bin:/bin'; env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = '0'; }
@@ -133,6 +153,7 @@ export function createJobRunner(opts: JobRunnerOptions) {
         const child = Bun.spawn(jobCommand(opts, file), {
           cwd: opts.rootDir, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
         });
+        try { opts.onSpawn?.(child.pid); } catch { /* a failed move only loses the limits */ }
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const stopChild = () => {
           child.kill('SIGTERM');

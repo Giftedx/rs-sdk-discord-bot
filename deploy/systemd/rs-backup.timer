@@ -1,0 +1,13 @@
+# Install:
+#   sudo install -m 644 deploy/systemd/rs-backup.service deploy/systemd/rs-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rs-backup.timer
+[Unit]
+Description=Daily backup of rs-discord-bot
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
