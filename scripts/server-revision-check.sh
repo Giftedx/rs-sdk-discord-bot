@@ -7,7 +7,7 @@
 # line that starts with "REVISION CHANGED" (in the journal: journalctl -u rs-revision-check).
 # A new revision can break the vendored rs-sdk; check the bot before you let it play.
 #
-# URL of the bot page: RS_BOT_PAGE_URL, else https://<RS_SERVER_HOST>/bot. The script reads
+# URL of the bot page: RS_BOT_PAGE_URL, else https://<RS_SERVER_HOST>/bot, else the demo world (the default of the bot). The script reads
 # these from the environment, else from ENV_FILE (default /opt/rs-discord-bot/secrets/bot.env).
 # It reads only these two names from the file. It does not log the URL query, and it puts no
 # secret on a command line.
@@ -39,8 +39,8 @@ read_env() {
 url="${RS_BOT_PAGE_URL:-$(read_env RS_BOT_PAGE_URL)}"
 if [ -z "$url" ]; then
   host="${RS_SERVER_HOST:-$(read_env RS_SERVER_HOST)}"
-  [ -n "$host" ] || die "set RS_BOT_PAGE_URL or RS_SERVER_HOST"
-  url="https://$host/bot"
+  # Same default as src/shared/config.ts: the rs-sdk demo world.
+  url="https://${host:-rs-sdk.maxbittker.com}/bot"
 fi
 case "$url" in
   https://*|http://*) ;;
