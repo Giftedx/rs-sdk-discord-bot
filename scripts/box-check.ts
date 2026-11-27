@@ -31,6 +31,8 @@ const runner = createJobRunner({
   rootDir: fakeRoot, scratchDir: join(fakeRoot, 'jobs'), account: 'check', bootToken: 'box-check-token-0000',
   secrets: [], proxy: { port: 1, setJobActive: a => { flags.push(a); } }, boxUser,
   bunPath: process.env.BOX_BUN_PATH || '/usr/local/bin/bun',
+  // The stand-in runner has no real bot or sdk, so the protections have nothing to read.
+  protections: false,
 });
 
 const tryRead = (path: string) => `try { return 'READ ' + require('node:fs').readFileSync(${JSON.stringify(path)}, 'utf8').length; } catch (e) { return 'DENIED ' + e.code; }`;
