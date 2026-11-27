@@ -211,6 +211,7 @@ Do these steps on your own machine, in a clone of this repository, with the new 
 
 4. If the commit changed a file in `deploy/systemd/`, copy that file to `/etc/systemd/system/` again and run `sudo systemctl daemon-reload`.
    If the commit changed `scripts/server-firewall.sh` or `scripts/server-backup.sh`, install their root-owned copies again ("Deploy scripts" below).
+   If the commit changed `CHROME_VERSION` in `scripts/server-bootstrap.sh`, run phase `chrome`. It writes the new path to `server.env` only. In split mode, also set the same `RS_CHROME_PATH` in `/etc/rs-gamelink/gamelink.env`, because `rsgame` cannot read `server.env`.
    If the commit changed `BUN_VERSION` in `scripts/server-bootstrap.sh`, run phase `prepare` first. Then, with `rs-discord-bot` stopped, copy the new Bun to the path that `rsgame` and the box user run: `sudo install -m 755 -o root -g root /home/rsbot/.bun/bin/bun /usr/local/bin/bun`.
 5. Restart the services. Stop the bot first, so that it stops its parts while gamelink still answers. The bot then waits up to 2 minutes for the new gamelink socket.
 
