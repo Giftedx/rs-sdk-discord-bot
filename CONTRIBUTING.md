@@ -15,7 +15,8 @@ bunx tsc --noEmit
 bun test
 ```
 
-- The CI workflow has two jobs. Job `check` runs the same two commands and skips the tests that launch Chromium. Job `browser-tests` runs all tests with the Chromium sandbox on. If you change `src/gamelink/game-tab.ts`, also run the full `bun test` on your own machine and say so in the pull request.
+- If you change a shell script, also run `shellcheck scripts/*.sh`.
+- The CI workflow has two jobs. Job `check` runs the same two commands and `shellcheck`, and skips the tests that launch Chromium. Job `browser-tests` runs all tests with the Chromium sandbox on. If you change `src/gamelink/game-tab.ts`, also run the full `bun test` on your own machine and say so in the pull request.
 - A change in behaviour needs a test.
 - Use the local stack for development. Do not test against the demo world or a different remote game server that someone else runs.
 

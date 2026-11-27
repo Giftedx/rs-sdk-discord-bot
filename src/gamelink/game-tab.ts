@@ -102,6 +102,7 @@ export interface BrowserLaunchOpts {
 export interface BrowserLaunchDeps {
   env: Record<string, string | undefined>;
   fileExists: (path: string) => boolean;
+  platform?: NodeJS.Platform;
 }
 
 // The puppeteer launch options. A Chrome path that is set but has no file is an error:
@@ -122,7 +123,9 @@ export function browserLaunchOptions(
   return {
     headless: true,
     // DevTools over a pipe, not a loopback port: code of a job cannot connect to the browser.
-    pipe: true,
+    // Bun on Windows cannot open the extra pipes, and the launch hangs, so Windows uses a
+    // loopback port. Windows has no box user either, so the bot is for Linux only.
+    pipe: (deps.platform ?? process.platform) !== 'win32',
     args: [...CHROMIUM_ARGS],
     env: browserLaunchEnv(deps.env),
     ...(opts.userDataDir ? { userDataDir: opts.userDataDir } : {}),

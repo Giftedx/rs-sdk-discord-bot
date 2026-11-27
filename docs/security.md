@@ -146,6 +146,7 @@ Bot (`src/bot/`, `src/agent/`, `src/box/`):
 - The bot reads every message of its channel and sends it, with the 8 messages before it, to the small model (`SMALL_MODEL`) to decide if it is for the bot. A message written to look like it talks to the bot can start a request. The small model has no tools; its answer only picks the kind of message.
 - The spend record is an estimate from token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
 - Bun on Windows has no box user. Run the bot on Linux.
+- On Windows, Chromium opens DevTools on a loopback port, not on a pipe, because Bun on Windows cannot open the pipe. Any local process can connect to that port. Use Windows for the tests only.
 
 Box, milestone 3:
 

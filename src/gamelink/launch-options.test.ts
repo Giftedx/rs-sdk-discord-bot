@@ -5,12 +5,17 @@ const CHROME = '/opt/rs-chrome/148.0.7778.97/chrome-linux64/chrome';
 const exists = (paths: string[]) => (p: string) => paths.includes(p);
 
 test('no Chrome path: puppeteer picks its default', () => {
-  const o = browserLaunchOptions({}, { env: { HOME: '/h' }, fileExists: exists([]) });
+  const o = browserLaunchOptions({}, { env: { HOME: '/h' }, fileExists: exists([]), platform: 'linux' });
   expect(o.executablePath).toBeUndefined();
   expect(o.headless).toBe(true);
   expect(o.pipe).toBe(true);
   expect(o.args).toEqual([...CHROMIUM_ARGS]);
   expect(o.env).toEqual({ HOME: '/h', NO_AT_BRIDGE: '1', DBUS_SESSION_BUS_ADDRESS: 'disabled:' });
+});
+
+test('DevTools uses a pipe on Linux and a loopback port on Windows', () => {
+  expect(browserLaunchOptions({}, { env: {}, fileExists: exists([]), platform: 'linux' }).pipe).toBe(true);
+  expect(browserLaunchOptions({}, { env: {}, fileExists: exists([]), platform: 'win32' }).pipe).toBe(false);
 });
 
 test('RS_CHROME_PATH gives the executable path when the file exists', () => {
