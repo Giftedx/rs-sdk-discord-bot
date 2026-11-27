@@ -2,9 +2,17 @@ import { describe, expect, test } from 'bun:test';
 import { copyFileSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { boxKillCommand, createJobRunner, jobChildEnv, jobCommand, redactAll, tail, wrapJobCode } from './job-runner';
+import { boxKillCommand, createJobRunner, DEFAULT_MAX_JOB_MS, jobChildEnv, jobCommand, jobLimitMs, MAX_JOB_MS, redactAll, tail, wrapJobCode } from './job-runner';
 
 describe('job runner helpers', () => {
+  test('the job limit is 15 min by default and at most 60 min', () => {
+    expect(DEFAULT_MAX_JOB_MS).toBe(15 * 60_000);
+    expect(MAX_JOB_MS).toBe(60 * 60_000);
+    expect(jobLimitMs(30 * 60_000)).toBe(15 * 60_000);
+    expect(jobLimitMs(30 * 60_000, 40 * 60_000)).toBe(30 * 60_000);
+    expect(jobLimitMs(90 * 60_000, 120 * 60_000)).toBe(60 * 60_000);
+    expect(jobLimitMs(10)).toBe(1_000);
+  });
   test('wrapJobCode puts the body inside runScript with bot and sdk', () => {
     const src = wrapJobCode('await bot.chopTree();', 'C:\\x\\runner.ts', 60_000);
     expect(src).toContain('import { runScript } from "C:/x/runner.ts";');

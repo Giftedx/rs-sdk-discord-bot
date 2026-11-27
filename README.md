@@ -21,11 +21,11 @@ The bot, built and tested:
 - The job runner: AI-written code runs in a child process with only the boot token of the proxy, as a second Unix user, with the built-in protections and, with `Delegate=yes`, cgroup limits (`src/box/`). Seed scripts in `seed/`.
 - The supervisor, which keeps the game tab in the game, the frame store, and the browser profile on tmpfs (`src/gamelink/`).
 - The orchestrator: a SQLite database for the queue, spend, events, snapshots and timers, wakes on timers, low HP, death and a watchdog, and a daily allowance (`src/orchestrator/`).
-- The Discord front end for one or more guilds: plain-language talk (a small model decides which messages are for the bot), a queue, a **Status** button, a pinned status card, an adventure log thread, milestone posts and a daily recap (`src/bot/`, `src/discord/`, `src/events/`).
+- The Discord front end for one or more guilds: plain-language talk (a small model decides which messages are for the bot), a queue with thumbs-up votes, a **Status** button, a pinned status card, a first-person adventure log thread, a gallery thread, milestone posts and a daily recap with an XP chart (`src/bot/`, `src/discord/`, `src/events/`).
 - Drawn cards from a second browser tab (`src/cards/`, `src/gamelink/card-tab.ts`).
-- A smoke test on the local stack (`scripts/bot-smoke.ts`), a check of the seed scripts (`scripts/seed-check.ts`), and systemd units and server scripts for the bot, the box firewall, the backup and the revision check (`deploy/systemd/`, `scripts/server-*.sh`).
+- A smoke test on the local stack (`scripts/bot-smoke.ts`), a check of the seed scripts (`scripts/seed-check.ts`), and systemd units and server scripts for the bot, the box and game firewalls, the backup and its restore test, the Chrome prune and the revision check (`deploy/systemd/`, `scripts/server-*.sh`).
 
-Not yet run against a real Discord server: the multi-guild wiring. Built in the latest round and not yet run live: the wiki search, diary and personality of the AI, the time limit per instruction, the budget share per guild with the small-model mode at 80%, the deferred and backed-off game login, the wait for actions in flight after each job, the new status card lines and post cards, and the tighter bot unit. [docs/roadmap.md](docs/roadmap.md) has the details.
+Not yet run against a real Discord server: the multi-guild wiring. Built in the latest round and not yet run live: the wiki search, diary and personality of the AI, the time limit per instruction, the budget share per guild with the small-model mode at 80%, the deferred and backed-off game login, the wait for actions in flight after each job, the new status card lines and post cards, and the tighter bot unit. Built in the latest round and not yet run live: the direct gateway port, the portrait, the gallery, the XP chart, queue votes, silent posts, the full-inventory and daily review wakes, the job time limit, known-good scripts, the wiki body index, and the game egress rules. [docs/roadmap.md](docs/roadmap.md) has the details.
 
 The base, built and tested:
 
@@ -41,9 +41,7 @@ The base, built and tested:
 
 Not built yet:
 
-- A full sandbox for AI-written code: systemd limits and network rules.
-- The pinned status card, the adventure log and the drawn cards.
-- More than one account or guild per process.
+- A systemd unit of its own for the box, with `RestrictNamespaces=` and no view of `/opt/rs-chrome` (see "Design goals that are not built" in [docs/security.md](docs/security.md)).
 
 [docs/roadmap.md](docs/roadmap.md) lists the milestones and their state.
 

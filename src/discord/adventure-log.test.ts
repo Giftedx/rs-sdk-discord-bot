@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { AdventureLog, LOG_THREAD_NAME, type LogThread, type LogThreadHost } from './adventure-log';
+import { AdventureLog, LOG_THREAD_NAME, logLine, type LogThread, type LogThreadHost } from './adventure-log';
 import { FakeTimers } from './fake-timers';
 
 class FakeHost implements LogThreadHost {
@@ -87,5 +87,96 @@ describe('AdventureLog', () => {
     host.fail = false;
     await timers.advance(10_000);
     expect(host.messages).toEqual(['a']);
+  });
+});
+
+class EditHost implements LogThreadHost {
+  messages: { id: string; content: string; silent?: boolean }[] = [];
+  edits = 0;
+  private thread: LogThread = {
+    send: async (content, opts) => {
+      const id = String(this.messages.length + 1);
+      this.messages.push({ id, content, silent: opts?.silent });
+      return id;
+    },
+    edit: async (id, content) => {
+      this.edits++;
+      this.messages.find((m) => m.id === id)!.content = content;
+    },
+  };
+  async findThread() {
+    return this.thread;
+  }
+  async createThread() {
+    return this.thread;
+  }
+}
+
+describe('AdventureLog append and silent', () => {
+  function edit(o: { silent?: boolean } = {}) {
+    const host = new EditHost();
+    const timers = new FakeTimers();
+    const log = new AdventureLog({ host, secrets: [], timers, log: () => {}, ...o });
+    return { host, timers, log };
+  }
+
+  test('a batch within 2 minutes is appended to the last message by an edit', async () => {
+    const { host, timers, log } = edit();
+    log.add('a');
+    await timers.advance(0);
+    log.add('b');
+    await timers.advance(10_000);
+    expect(host.messages.map((m) => m.content)).toEqual(['a\nb']);
+    expect(host.edits).toBe(1);
+  });
+
+  test('a new message after 2 minutes', async () => {
+    const { host, timers, log } = edit();
+    log.add('a');
+    await timers.advance(0);
+    await timers.advance(120_000);
+    log.add('b');
+    await timers.advance(10_000);
+    expect(host.messages.map((m) => m.content)).toEqual(['a', 'b']);
+  });
+
+  test('a new message when the text does not fit in 1900 characters', async () => {
+    const { host, timers, log } = edit();
+    for (let i = 0; i < 6; i++) log.add('x'.repeat(299));
+    await timers.advance(0);
+    expect(host.messages[0]!.content.length).toBe(6 * 300 - 1);
+    log.add('y'.repeat(200));
+    await timers.advance(10_000);
+    expect(host.messages).toHaveLength(2);
+    expect(host.messages[1]!.content).toBe('y'.repeat(200));
+    expect(host.messages.every((m) => m.content.length <= 1900)).toBe(true);
+  });
+
+  test('silent by default; silent false notifies', async () => {
+    const a = edit();
+    a.log.add('a');
+    await a.timers.advance(0);
+    expect(a.host.messages[0]!.silent).toBe(true);
+    const b = edit({ silent: false });
+    b.log.add('a');
+    await b.timers.advance(0);
+    expect(b.host.messages[0]!.silent).toBe(false);
+  });
+});
+
+describe('logLine', () => {
+  test('first person lines', () => {
+    expect(logLine({ kind: 'level_up', skill: 'Woodcutting', from: 29, level: 30 })).toBe('I reached Woodcutting 30.');
+    expect(logLine({ kind: 'total_level', total: 250 })).toBe('I reached total level 250.');
+    expect(logLine({ kind: 'item_gain', items: [{ name: 'Logs', count: 3 }] })).toBe('I got 3 x Logs.');
+    expect(logLine({ kind: 'death', killer: 'Goblin', lost: [{ name: 'Coins', count: 5 }] })).toBe('I died. Probably killed by Goblin (a guess). I lost 5 x Coins.');
+    expect(logLine({ kind: 'death' })).toBe('I died.');
+  });
+
+  test('a finished request names the member', () => {
+    const e = { kind: 'instruction_done', instruction: 'chop oaks', outcome: 'done' } as const;
+    expect(logLine(e, 'Sam')).toBe('I finished a request for Sam (done): chop oaks');
+    expect(logLine(e)).toBe('I finished a request (done): chop oaks');
+    expect(logLine(e, `  ${'n'.repeat(60)}\n`)).toContain(`for ${'n'.repeat(40)} (done)`);
   });
 });

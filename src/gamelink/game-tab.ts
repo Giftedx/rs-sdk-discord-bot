@@ -18,7 +18,16 @@ export const CHROMIUM_ARGS: readonly string[] = [
   '--disable-breakpad',
 ];
 
-export type FrameMode = 'view' | 'full';
+export type FrameMode = 'view' | 'full' | 'portrait';
+
+// The game view is 512x334 at (4,4) of the canvas; the client draws the player at its centre.
+export const VIEW_RECT = { x: 4, y: 4, w: 512, h: 334 } as const;
+export const PORTRAIT_SIZE = 128;   // source pixels, square; the PNG is 2x
+export function portraitRect(): { x: number; y: number; w: number; h: number } {
+  const cx = VIEW_RECT.x + VIEW_RECT.w / 2;
+  const cy = VIEW_RECT.y + VIEW_RECT.h / 2;
+  return { x: cx - PORTRAIT_SIZE / 2, y: cy - PORTRAIT_SIZE / 2, w: PORTRAIT_SIZE, h: PORTRAIT_SIZE };
+}
 
 export class TabNotReadyError extends Error {}
 export class RigCheckError extends Error {}
@@ -130,13 +139,19 @@ export function buildBotUrl(botPageUrl: string, account: string, password: strin
   return `${botPageUrl}?bot=${e(account)}&password=${e(password)}&fps=${e(String(fps))}&minimal`;
 }
 
-function isScreenshotPost(method: string, url: string): boolean {
-  if (method !== 'POST') return false;
-  try {
-    return new URL(url).pathname === '/api/screenshot';
-  } catch {
-    return false;
-  }
+// The engine answers only POST on this path (server/engine/src/web/pages/api.ts), so a block of
+// every method on it blocks exactly the screenshot upload. The CDP block list has no method filter.
+export const SCREENSHOT_BLOCK_URLS: readonly string[] = ['*/api/screenshot', '*/api/screenshot?*'];
+
+export interface CdpSender {
+  send(method: 'Network.enable' | 'Network.setBlockedURLs', params?: Record<string, unknown>): Promise<unknown>;
+}
+
+/** Blocks the screenshot upload in the browser by the CDP block list. It keeps the browser cache
+ *  on, which page.setRequestInterception turns off. */
+export async function blockScreenshotUpload(session: CdpSender): Promise<void> {
+  await session.send('Network.enable');
+  await session.send('Network.setBlockedURLs', { urls: [...SCREENSHOT_BLOCK_URLS] });
 }
 
 const FRAME_DEADLINE_MS = 5_000;
@@ -156,15 +171,9 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
   const page: Page = await opts.browser.newPage();
   const url = buildBotUrl(opts.botPageUrl, opts.account, opts.password, opts.fps);
   try {
-    await page.setRequestInterception(true);
-    page.on('request', req => {
-      if (req.isInterceptResolutionHandled()) return;
-      if (isScreenshotPost(req.method(), req.url())) {
-        void req.abort('blockedbyclient').catch(() => {});
-      } else {
-        void req.continue().catch(() => {});
-      }
-    });
+    await blockScreenshotUpload(await page.createCDPSession() as unknown as CdpSender);
+    // A worker has its own target and network: it gets the same block list.
+    page.on('workercreated', w => { void blockScreenshotUpload(w.client as unknown as CdpSender).catch(() => {}); });
     await page.goto('about:blank');
     if (!opts.deferLogin) await gotoRedacted(page, opts.botPageUrl, url);
   } catch (err) {
@@ -270,11 +279,16 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
     await waitForCanvas();
     let dataUrl: string;
     try {
-      dataUrl = await page.evaluate((m: FrameMode) => {
+      dataUrl = await page.evaluate((m: FrameMode, p: { x: number; y: number; w: number; h: number }) => {
         const src = document.getElementById('canvas') as HTMLCanvasElement;
         const out = document.createElement('canvas');
         const ctx = out.getContext('2d')!;
-        if (m === 'view') {
+        if (m === 'portrait') {
+          out.width = p.w * 2;
+          out.height = p.h * 2;
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(src, p.x, p.y, p.w, p.h, 0, 0, p.w * 2, p.h * 2);
+        } else if (m === 'view') {
           out.width = 1024;
           out.height = 668;
           ctx.imageSmoothingEnabled = false;
@@ -285,7 +299,7 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
           ctx.drawImage(src, 0, 0);
         }
         return out.toDataURL('image/png');
-      }, mode);
+      }, mode, portraitRect());
     } catch {
       throw new TabNotReadyError('The page changed or closed while the frame was read.');
     }

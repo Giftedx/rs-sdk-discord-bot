@@ -19,7 +19,7 @@ RemainAfterExit=yes
 Environment=BOX_USERS=rsbox
 Environment=PROXY_PORTS=7790
 ExecStart=/opt/rs-discord-bot/scripts/server-firewall.sh egress ${PROXY_PORTS}
-ExecStop=/opt/rs-discord-bot/scripts/server-firewall.sh undo
+ExecStop=/opt/rs-discord-bot/scripts/server-firewall.sh undo box
 
 [Install]
 WantedBy=multi-user.target

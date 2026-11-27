@@ -17,7 +17,7 @@ import { startProxy, type ProxyHandle } from '../src/gamelink/proxy';
 import { launchBrowser, openGameTab, type GameTab } from '../src/gamelink/game-tab';
 import { availableParallelism } from 'node:os';
 import { browserCompanions, clockTicksPerSecond, readMeminfoKb, readProcInfo, readTreesPss, sampleTrees, type Sample } from '../src/measure/proc';
-import { RAW, ROOT, boxChildCommand, boxChildEnv, loadModeConfig, makeRedact, newBootToken, parseMode, sleep, waitUntil } from './run-helpers';
+import { RAW, ROOT, boxChildCommand, boxChildEnv, loadModeConfig, makeRedact, newBootToken, parseMode, provenance, sleep, waitUntil } from './run-helpers';
 
 const log = (line: string) => console.error(`[measure] ${line}`);
 
@@ -334,6 +334,7 @@ try {
 
   const tapSpanS = tap.length > 1 ? (tap[tap.length - 1]!.at - tap[0]!.at) / 1000 : 0;
   const output = {
+    provenance: await provenance(browser, config.chromePath),
     mode,
     quick,
     startedAt: startedAt.toISOString(),

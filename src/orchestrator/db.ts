@@ -100,6 +100,11 @@ const MIGRATIONS: string[] = [
      created_at INTEGER NOT NULL
    );
    CREATE INDEX timers_due ON timers (due);`,
+  // Queue votes: a waiting row runs in the order of COALESCE(rank, id). message_id is the Discord
+  // message that asked for it, so a reaction on that message finds the row.
+  `ALTER TABLE instructions ADD COLUMN rank INTEGER;
+   ALTER TABLE instructions ADD COLUMN message_id TEXT;
+   CREATE INDEX instructions_message ON instructions (message_id);`,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -146,7 +151,7 @@ export function openDb(path: string, now: () => number = Date.now) {
       return r ? toInstruction(r) : null;
     },
     nextWaiting(guild: string): InstructionRow | null {
-      const r = db.query('SELECT * FROM instructions WHERE guild = ? AND status = \'waiting\' ORDER BY id LIMIT 1').get(guild) as Raw | null;
+      const r = db.query('SELECT * FROM instructions WHERE guild = ? AND status = \'waiting\' ORDER BY COALESCE(rank, id), id LIMIT 1').get(guild) as Raw | null;
       return r ? toInstruction(r) : null;
     },
     runningInstruction(guild: string): InstructionRow | null {
@@ -154,7 +159,34 @@ export function openDb(path: string, now: () => number = Date.now) {
       return r ? toInstruction(r) : null;
     },
     listQueue(guild: string): InstructionRow[] {
-      return (db.query('SELECT * FROM instructions WHERE guild = ? AND status IN (\'waiting\',\'running\') ORDER BY id').all(guild) as Raw[]).map(toInstruction);
+      return (db.query('SELECT * FROM instructions WHERE guild = ? AND status IN (\'waiting\',\'running\') ORDER BY status = \'waiting\', COALESCE(rank, id), id').all(guild) as Raw[]).map(toInstruction);
+    },
+    /** Links a waiting row to the Discord message that asked for it. */
+    setMessageId(id: number, messageId: string): void {
+      db.query('UPDATE instructions SET message_id = ? WHERE id = ?').run(messageId, id);
+    },
+    /** The waiting row that this Discord message asked for, or null. */
+    waitingByMessage(guild: string, messageId: string): number | null {
+      const r = db.query('SELECT id FROM instructions WHERE guild = ? AND status = \'waiting\' AND message_id = ?').get(guild, messageId) as { id: number } | null;
+      return r?.id ?? null;
+    },
+    /** The ids of the waiting rows, first to run first. */
+    waitingOrder(guild: string): number[] {
+      return (db.query('SELECT id FROM instructions WHERE guild = ? AND status = \'waiting\' ORDER BY COALESCE(rank, id), id').all(guild) as { id: number }[]).map(r => r.id);
+    },
+    /** Stores a new order of waiting rows. The rows share out the sort keys they hold, so rows queued later stay after them. */
+    setWaitingOrder(guild: string, ids: number[]): void {
+      db.transaction(() => {
+        const keys = ids.map(id => db.query('SELECT COALESCE(rank, id) AS k FROM instructions WHERE id = ? AND guild = ? AND status = \'waiting\'').get(id, guild) as { k: number } | null);
+        if (keys.some(k => k === null)) return;
+        const sorted = keys.map(k => k!.k).sort((a, b) => a - b);
+        ids.forEach((id, i) => db.query('UPDATE instructions SET rank = ? WHERE id = ?').run(sorted[i]!, id));
+      })();
+    },
+    /** The created_at of the newest instruction of this wake kind, or null. For the daily review wake. */
+    lastWakeAt(guild: string, wake: string): number | null {
+      const r = db.query('SELECT MAX(created_at) AS t FROM instructions WHERE guild = ? AND wake = ?').get(guild, wake) as { t: number | null };
+      return r.t ?? null;
     },
     countWaiting(guild: string): number {
       return (db.query('SELECT COUNT(*) AS n FROM instructions WHERE guild = ? AND status = \'waiting\'').get(guild) as { n: number }).n;

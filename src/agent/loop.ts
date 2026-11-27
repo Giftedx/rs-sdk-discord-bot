@@ -40,6 +40,8 @@ export interface AgentDeps {
   maxInstructionMs?: number;
   /** The clock in ms. Default Date.now. */
   now?(): number;
+  /** The longest job in minutes (AI_MAX_JOB_MIN), 1..60. Default 15. */
+  maxJobMin?: number;
 }
 
 export interface RunOptions {
@@ -48,7 +50,12 @@ export interface RunOptions {
 }
 
 /** Why this run started. Timer and trigger wakes have no human author. */
-export type WakeKind = 'instruction' | 'timer' | 'trigger';
+export type WakeKind = 'instruction' | 'timer' | 'trigger' | 'review';
+/** Every wake kind, for a check of the wake column of the queue. */
+export const WAKE_KINDS: readonly WakeKind[] = ['instruction', 'timer', 'trigger', 'review'];
+/** The instruction of the daily review wake. That wake starts on the escalation model and has no game tools. */
+export const REVIEW_TEXT = 'Daily review. Read your notes and your diary. Tidy the notes: merge repeats, remove what is wrong or old, keep places, working scripts and goals. Do not run jobs or any game action. Add one diary line, then finish.';
+const GAME_TOOLS = new Set(['run_code', 'run_script', 'look']);
 
 /** A job result can say why the orchestrator stopped it, for example the watchdog. */
 export type AgentJobResult = JobResult & { stopReason?: string };
@@ -65,31 +72,44 @@ export interface InstructionResult {
 }
 
 const DEFAULT_JOB_S = 300;
-const MAX_JOB_S = 900;
+export const DEFAULT_MAX_JOB_MIN = 15;
+export const MAX_JOB_MIN = 60;
+
+/** AI_MAX_JOB_MIN: a whole number of minutes, 1..60, default 15. Throws on a bad value. */
+export function parseMaxJobMin(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return DEFAULT_MAX_JOB_MIN;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_JOB_MIN) throw new Error(`AI_MAX_JOB_MIN must be a whole number from 1 to ${MAX_JOB_MIN}`);
+  return n;
+}
+
+const maxJobS = (min: number | undefined) => Math.min(Math.max(Math.round(min ?? DEFAULT_MAX_JOB_MIN), 1), MAX_JOB_MIN) * 60;
+const timeoutDoc = (maxS: number) => ({ type: 'integer', description: `Seconds, 10 to ${maxS}. Default ${Math.min(DEFAULT_JOB_S, maxS)}.` });
 
 const obj = (properties: Record<string, unknown>, required: string[]) =>
   ({ type: 'object' as const, properties, required, additionalProperties: false });
 
-export const TOOLS: Anthropic.Beta.BetaTool[] = [
+/** The base tools. maxS is the longest job in seconds. */
+export function baseTools(maxS = maxJobS(undefined)): Anthropic.Beta.BetaTool[] { return [
   {
     name: 'run_code',
     description: 'Run new TypeScript in the game as one job and wait for it to end. The code is the body of an async function with `bot` (BotActions) and `sdk` (BotSDK) in scope. Await every promise. `return` a value to see it under "Result". The output ends with a short state summary. Use for short tasks and to test code before you save it.',
     input_schema: obj({
       code: { type: 'string' },
-      timeout_s: { type: 'integer', description: `Seconds, 10 to ${MAX_JOB_S}. Default ${DEFAULT_JOB_S}.` },
+      timeout_s: timeoutDoc(maxS),
     }, ['code']),
   },
   {
     name: 'run_script',
-    description: 'Run a saved script as one job and wait for it to end.',
-    input_schema: obj({ name: { type: 'string' }, timeout_s: { type: 'integer', description: `Seconds, 10 to ${MAX_JOB_S}. Default ${DEFAULT_JOB_S}.` } }, ['name']),
+    description: 'Run a saved script as one job and wait for it to end. A run with exit code 0 and no Error in the output marks the script known good; a failed run clears the mark.',
+    input_schema: obj({ name: { type: 'string' }, timeout_s: timeoutDoc(maxS) }, ['name']),
   },
   {
     name: 'save_script',
     description: 'Save code that works, for reuse in later instructions. Same format as run_code.',
     input_schema: obj({ name: { type: 'string', description: 'lower case, digits, - and _' }, description: { type: 'string' }, code: { type: 'string' } }, ['name', 'description', 'code']),
   },
-  { name: 'list_scripts', description: 'List the saved scripts.', input_schema: obj({}, []) },
+  { name: 'list_scripts', description: 'List the saved scripts. "[known good <time>]" marks a script whose last run went well.', input_schema: obj({}, []) },
   { name: 'read_script', description: 'Read one saved script.', input_schema: obj({ name: { type: 'string' } }, ['name']) },
   { name: 'delete_script', description: 'Delete one saved script.', input_schema: obj({ name: { type: 'string' } }, ['name']) },
   { name: 'search_knowledge', description: 'Search the game knowledge pack: rs-sdk learnings (banking, combat, fishing, mining, walking and more) and the wiki (items, NPCs, shops, quests, skills; an item page lists who sells and drops it). Search by name, such as "bronze axe" or "chicken".', input_schema: obj({ query: { type: 'string' } }, ['query']) },
@@ -100,7 +120,9 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
   { name: 'game_state', description: 'Read the current game state: position, HP, skills, inventory, nearby things, recent messages.', input_schema: obj({}, []) },
   { name: 'look', description: 'See the newest picture of the game view.', input_schema: obj({}, []) },
   { name: 'finish', description: 'End the instruction. Give a short summary for the Discord channel: what you did and the result.', input_schema: obj({ summary: { type: 'string' } }, ['summary']) },
-];
+]; }
+
+export const TOOLS: Anthropic.Beta.BetaTool[] = baseTools();
 
 const MAX_TEXT = 2000;
 
@@ -128,8 +150,8 @@ export const OPTIONAL_TOOLS: Record<'set_timer' | 'post' | 'set_goal' | 'escalat
 };
 
 /** The tools of one run: the base tools plus each optional tool that deps support. */
-export function toolsFor(deps: Pick<AgentDeps, 'setTimer' | 'post' | 'setGoal' | 'escalationModel'>): Anthropic.Beta.BetaTool[] {
-  const out = [...TOOLS];
+export function toolsFor(deps: Pick<AgentDeps, 'setTimer' | 'post' | 'setGoal' | 'escalationModel' | 'maxJobMin'>): Anthropic.Beta.BetaTool[] {
+  const out = baseTools(maxJobS(deps.maxJobMin));
   if (deps.setTimer) out.push(OPTIONAL_TOOLS.set_timer);
   if (deps.post) out.push(OPTIONAL_TOOLS.post);
   if (deps.setGoal) out.push(OPTIONAL_TOOLS.set_goal);
@@ -140,6 +162,7 @@ export function toolsFor(deps: Pick<AgentDeps, 'setTimer' | 'post' | 'setGoal' |
 export function firstMessage(instruction: string, user: string, wake: WakeKind, context = ''): string {
   const head = context.trim() ? `${context.trim()}\n\n` : '';
   if (wake === 'timer') return `${head}A timer that you set fired. No Discord user is waiting. Your note:\n${instruction}`;
+  if (wake === 'review') return `${head}The daily review time came. No Discord user is waiting. No game actions in this wake:\n${instruction}`;
   if (wake === 'trigger') return `${head}A game trigger fired. No Discord user gave this instruction. Check game_state and keep the account safe first:\n${instruction}`;
   return `${head}Instruction from Discord user "${user.replace(/"/g, "'")}":\n${instruction}`;
 }
@@ -193,10 +216,19 @@ rs-sdk API reference:
 ${apiReference}`;
 }
 
-const clampTimeout = (s: unknown) => {
-  const n = typeof s === 'number' && Number.isFinite(s) ? s : DEFAULT_JOB_S;
-  return Math.min(Math.max(Math.round(n), 10), MAX_JOB_S) * 1000;
+const clampTimeout = (s: unknown, maxS: number) => {
+  const n = typeof s === 'number' && Number.isFinite(s) ? s : Math.min(DEFAULT_JOB_S, maxS);
+  return Math.min(Math.max(Math.round(n), 10), maxS) * 1000;
 };
+
+/** A job of a saved script went well: exit code 0, not stopped, and no "Error" (also TypeError and so on) in the output. */
+export function jobWentWell(r: AgentJobResult): boolean {
+  return r.exitCode === 0 && !r.timedOut && !r.aborted && !r.stopReason && !/Error\b/.test(r.output);
+}
+/** A failure clears the known-good mark. A stop by a user or the orchestrator says nothing about the script. */
+const jobFailed = (r: AgentJobResult) => !r.aborted && !r.stopReason && !jobWentWell(r);
+
+const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 
@@ -216,15 +248,18 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
   const startedAt = now();
   const messages: MessageParam[] = [{ role: 'user', content: firstMessage(instruction, user, wake, wakeContextBlock(deps)) }];
   const system = systemPrompt(deps.apiReference);
-  const fromStart = !!(options.escalateFromStart && deps.escalationModel);
+  const fromStart = !!((options.escalateFromStart || wake === 'review') && deps.escalationModel);
   // After an escalation from the start, the escalate tool has nothing left to do.
-  const tools = toolsFor(deps).filter(t => !(fromStart && t.name === 'escalate'));
+  // A review wake gets no tool that acts in the game.
+  const tools = toolsFor(deps).filter(t => !(fromStart && t.name === 'escalate') && !(wake === 'review' && GAME_TOOLS.has(t.name)));
+  const allowed = new Set(tools.map(t => t.name));
+  const maxS = maxJobS(deps.maxJobMin);
   let model = fromStart ? deps.escalationModel! : deps.model;
   let escalated = fromStart;
   const limitMs = deps.maxInstructionMs;
   const leftMs = () => (limitMs === undefined ? Infinity : limitMs - (now() - startedAt));
   // A job never runs past the time cap of the instruction.
-  const jobTimeout = (s: unknown) => Math.min(clampTimeout(s), Math.max(1_000, leftMs()));
+  const jobTimeout = (s: unknown) => Math.min(clampTimeout(s, maxS), Math.max(1_000, leftMs()));
   let usd = 0;
   let turns = 0;
   let lastFrame: Uint8Array | null = null;
@@ -281,6 +316,7 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
       let content: ToolResult['content'];
       let isError = false;
       try {
+        if (!allowed.has(use.name)) throw new Error(`${use.name} is not available in this wake.`);
         switch (use.name) {
           case 'run_code': {
             deps.onProgress('Running new code.');
@@ -291,7 +327,10 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
             const name = str(input.name);
             const body = deps.store.readScript(name);
             deps.onProgress(`Running saved script \`${name}\`.`);
-            content = formatJob(await deps.runJob(body, jobTimeout(input.timeout_s), signal));
+            const r = await deps.runJob(body, jobTimeout(input.timeout_s), signal);
+            if (jobWentWell(r)) deps.store.markScriptRun(name, true);
+            else if (jobFailed(r)) deps.store.markScriptRun(name, false);
+            content = formatJob(r);
             break;
           }
           case 'save_script':
@@ -301,7 +340,7 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
             break;
           case 'list_scripts': {
             const list = deps.store.listScripts();
-            content = list.length ? list.map(s => `${s.name}: ${s.description}`).join('\n') : 'No saved scripts.';
+            content = list.length ? list.map(s => `${s.name}: ${s.description}${s.knownGoodAt !== undefined ? ` [known good ${stamp(s.knownGoodAt)} UTC]` : ''}`).join('\n') : 'No saved scripts.';
             break;
           }
           case 'read_script': content = deps.store.readScript(str(input.name)); break;

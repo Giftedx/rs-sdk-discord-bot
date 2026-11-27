@@ -1,0 +1,12 @@
+# Runs rsgame-egress.service each hour, so the rules follow the addresses of the game host.
+# Install: see rsgame-egress.service.
+[Unit]
+Description=Hourly refresh of the egress rules of the game user
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

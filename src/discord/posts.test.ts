@@ -151,6 +151,21 @@ describe('MainPosts merge and recap from the events table', () => {
     expect(sent[0]).toBe('The account died. Probably killed by Giant rat. Lost: 1 x Bronze axe.');
   });
 
+  test('a death post attaches the portrait after the card; a level-up does not', async () => {
+    const timers = new FakeTimers(T0);
+    const got: { png?: Uint8Array; extra?: Uint8Array[] }[] = [];
+    const posts = new MainPosts({
+      channel: { send: async (_c, png, opts) => void got.push({ png, extra: opts?.extra }) },
+      secrets: [], timers, log: () => {}, mergeWindowSec: 0,
+      draw: async () => new Uint8Array([1]),
+      portrait: async () => new Uint8Array([2]),
+    });
+    await posts.onEvent({ kind: 'death' });
+    await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 9, level: 10 });
+    expect(got[0]).toEqual({ png: new Uint8Array([1]), extra: [new Uint8Array([2])] });
+    expect(got[1]!.extra).toBeUndefined();
+  });
+
   test('recap from stored events survives a restart and has XP per skill', async () => {
     const timers = new FakeTimers(T0);
     const sent: string[] = [];
@@ -200,5 +215,28 @@ describe('MainPosts merge and recap from the events table', () => {
       { time: 2, skills: { A: { level: 2, xp: 150 }, B: { level: 1, xp: 0 } } },
       { time: 1, skills: { A: { level: 1, xp: 50 }, B: { level: 1, xp: 0 } } },
     ])).toEqual({ A: 100 });
+  });
+
+  test('the recap carries the XP chart; main posts notify unless silent', async () => {
+    const timers = new FakeTimers(T0);
+    const calls: { png?: Uint8Array; extra?: Uint8Array[]; silent?: boolean }[] = [];
+    const charts: string[][] = [];
+    const chart = new Uint8Array([7]);
+    const make = (silent?: boolean, drawChart = async (d: { series: { name: string }[] }) => { charts.push(d.series.map((s) => s.name)); return chart; }) => new MainPosts({
+      channel: { send: async (_c, png, o) => void calls.push({ png, ...o }) },
+      secrets: [], timers, log: () => {}, silent,
+      eventsSince: () => [{ time: T0 - 1, type: 'death' }],
+      xpSamplesSince: (since) => [
+        { time: since, skills: { Mining: { level: 1, xp: 0 } } },
+        { time: T0, skills: { Mining: { level: 5, xp: 400 } } },
+      ],
+      drawChart,
+      draw: async () => new Uint8Array([1]),
+    });
+    expect(await make().postRecap()).toBe(true);
+    expect(charts).toEqual([['Total', 'Mining']]);
+    expect(calls[0]).toEqual({ png: new Uint8Array([1]), extra: [chart], silent: false });
+    expect(await make(true, async () => { throw new Error('tab gone'); }).postRecap()).toBe(true);
+    expect(calls[1]).toEqual({ png: new Uint8Array([1]), silent: true });
   });
 });

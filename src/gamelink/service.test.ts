@@ -1,15 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadBotConfig, loadGameConfig } from '../bot/config';
 import { CardDataError } from '../cards/templates';
 import { connectGameLink } from './client';
-import { readTokenFile, type GameLink, type GuildLink } from './link';
-import { serveGameLink, type ServiceHandle } from './service';
+import { readTokenFile, reconnectAll, relogAll, type GameLink, type GuildLink, type LocalGameLink, type LocalGuildLink } from './link';
+import { LockError, acquireLock, lockPathFor, serveGameLink, type LockDeps, type ServiceHandle } from './service';
 
 const TOKEN = 'a'.repeat(40);
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+const PORTRAIT = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9]);
 
 function fakeGuild() {
   const calls: string[] = [];
@@ -20,10 +21,11 @@ function fakeGuild() {
     tabReason: () => 'Connecting to server...',
     actionsInFlight: () => 2,
     waitIdle: async ms => { calls.push(`idle:${ms}`); return ms > 0; },
-    proxyStatus: () => ({ connected: true, lastError: null, reconnects: 0 }),
+    proxyStatus: () => ({ connected: true, lastError: null, reconnects: 0, gateway: 'direct' }),
     state: () => ({ state: { player: { hp: 7 } }, at: Date.now() - 1_000 }),
     latestFrame: () => ({ at: 1234, png: PNG }),
     frame: async () => PNG,
+    portrait: async () => { calls.push('portrait'); return PORTRAIT; },
     framesActive: () => framesOn,
     startFrames: () => { framesOn = true; calls.push('frames:start'); },
     stopFrames: () => { framesOn = false; calls.push('frames:stop'); },
@@ -101,6 +103,13 @@ describe('gamelink socket', () => {
     expect(bad.status).toBe(400);
   });
 
+  test('portrait goes over the socket; the status carries the gateway route', async () => {
+    const c = client.guilds.get('main')!;
+    expect([...(await c.portrait())!]).toEqual([...PORTRAIT]);
+    expect(calls).toContain('portrait');
+    expect(c.proxyStatus().gateway).toBe('direct');
+  });
+
   const raw = (path: string, auth?: string) =>
     fetch(`http://gamelink${path}`, { unix: sock, method: 'POST', headers: auth ? { authorization: auth } : {}, body: '{"active":true}' } as RequestInit);
 
@@ -147,5 +156,108 @@ describe('split-mode configuration', () => {
     expect(readTokenFile('/t', () => `${TOKEN}\n`)).toBe(TOKEN);
     expect(() => readTokenFile('/t', () => 'short')).toThrow(/at least 32/);
     expect(() => readTokenFile('/t', () => { throw new Error('ENOENT'); })).toThrow(/cannot be read/);
+  });
+});
+
+function fakeLockFs(pid: number, running: number[]) {
+  const files = new Map<string, string>();
+  const deps: LockDeps = {
+    pid,
+    alive: p => running.includes(p),
+    create(path, text) {
+      if (files.has(path)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+      files.set(path, text);
+    },
+    read(path) {
+      const t = files.get(path);
+      if (t === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return t;
+    },
+    remove: path => { files.delete(path); },
+  };
+  return { files, deps };
+}
+
+describe('gamelink lock file', () => {
+  const path = lockPathFor(join('run', 'gamelink', 'gl.sock'));
+
+  test('sits beside the socket', () => {
+    expect(path).toBe(join('run', 'gamelink', 'gamelink.lock'));
+  });
+
+  test('a second gamelink refuses to start while the first runs; release frees the lock', () => {
+    const fs = fakeLockFs(100, [100, 200]);
+    const release = acquireLock(path, fs.deps);
+    expect(fs.files.get(path)).toBe('100\n');
+    expect(() => acquireLock(path, { ...fs.deps, pid: 200 })).toThrow(LockError);
+    release();
+    expect(fs.files.has(path)).toBe(false);
+    acquireLock(path, { ...fs.deps, pid: 200 });
+    expect(fs.files.get(path)).toBe('200\n');
+  });
+
+  test('takes over a stale lock whose pid does not run, or that holds no pid', () => {
+    const fs = fakeLockFs(300, [300]);
+    fs.files.set(path, '100\n');
+    acquireLock(path, fs.deps);
+    expect(fs.files.get(path)).toBe('300\n');
+    fs.files.set(path, 'garbage');
+    acquireLock(path, fs.deps);
+    expect(fs.files.get(path)).toBe('300\n');
+  });
+
+  test('release does not remove a lock that another process took over', () => {
+    const fs = fakeLockFs(100, [100]);
+    const release = acquireLock(path, fs.deps);
+    fs.files.set(path, '999\n');
+    release();
+    expect(fs.files.get(path)).toBe('999\n');
+  });
+
+  test('works on a real directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gamelink-lock-'));
+    try {
+      const p = lockPathFor(join(dir, 'gl.sock'));
+      const release = acquireLock(p);
+      expect(() => acquireLock(p, { pid: process.pid + 1, alive: () => true, create: (f, t) => writeFileSync(f, t, { flag: 'wx' }), read: f => readFileSync(f, 'utf8'), remove: f => rmSync(f, { force: true }) })).toThrow(LockError);
+      release();
+      expect(existsSync(p)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('operator signals', () => {
+  function fakeLocal(names: string[], failing: string | null) {
+    const calls: string[] = [];
+    const guilds = new Map<string, LocalGuildLink>();
+    for (const name of names) {
+      const { g } = fakeGuild();
+      guilds.set(name, {
+        ...g, name,
+        relog: async () => { calls.push(`relog:${name}`); if (name === failing) throw new Error('page closed'); return true; },
+        reconnectProxy: () => { calls.push(`reconnect:${name}`); if (name === failing) throw new Error('stopped'); },
+      });
+    }
+    const link: LocalGameLink = { guilds, close: async () => {} };
+    return { link, calls };
+  }
+
+  test('relogAll relogs every guild; one failure does not stop the others', async () => {
+    const { link, calls } = fakeLocal(['a', 'b'], 'a');
+    const lines: string[] = [];
+    await relogAll(link, l => lines.push(l));
+    expect(calls.sort()).toEqual(['relog:a', 'relog:b']);
+    expect(lines).toContain('[a] relog failed: page closed');
+    expect(lines).toContain('[b] logged out; the login follows');
+  });
+
+  test('reconnectAll reconnects every proxy; one failure does not stop the others', () => {
+    const { link, calls } = fakeLocal(['a', 'b'], 'a');
+    const lines: string[] = [];
+    reconnectAll(link, l => lines.push(l));
+    expect(calls).toEqual(['reconnect:a', 'reconnect:b']);
+    expect(lines).toEqual(['[a] proxy reconnect failed: stopped']);
   });
 });

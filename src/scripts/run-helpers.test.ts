@@ -11,9 +11,13 @@ import {
   boxChildCommand,
   boxChildEnv,
   checkDemoAllowed,
+  classifyActionResult,
   loadModeConfig,
   makeRedact,
   newBootToken,
+  provenance,
+  readGitCommit,
+  startCountingRelay,
 } from '../../scripts/run-helpers';
 
 const PASSWORD = 'Abcdefgh12345678';
@@ -88,5 +92,68 @@ test('a box child does not load a .env file from its working directory', async (
     expect(out.trim()).toBe('absent');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readGitCommit reads a loose ref, a packed ref, a detached HEAD and a worktree', () => {
+  const sha = (c: string) => c.repeat(40);
+  const files = (m: Record<string, string>) => (p: string) => m[p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')] ?? null;
+  const root = '/r';
+  expect(readGitCommit(root, {}, files({ '/r/.git/HEAD': 'ref: refs/heads/main\n', '/r/.git/refs/heads/main': `${sha('a')}\n` }))).toBe(sha('a'));
+  expect(readGitCommit(root, {}, files({ '/r/.git/HEAD': 'ref: refs/heads/main', '/r/.git/packed-refs': `# pack\n${sha('b')} refs/heads/main\n` }))).toBe(sha('b'));
+  expect(readGitCommit(root, {}, files({ '/r/.git/HEAD': sha('c') }))).toBe(sha('c'));
+  expect(readGitCommit(root, {}, files({
+    '/r/.git': 'gitdir: /m/.git/worktrees/w\n', '/m/.git/worktrees/w/HEAD': 'ref: refs/heads/x', '/m/.git/worktrees/w/commondir': '../..\n',
+    '/m/.git/refs/heads/x': sha('d'),
+  }))).toBe(sha('d'));
+  expect(readGitCommit(root, { RS_GIT_COMMIT: sha('e') }, files({}))).toBe(sha('e'));
+  expect(readGitCommit(root, {}, files({ '/r/.git/HEAD': 'ref: refs/../../etc/x' }))).toBeNull();
+  expect(readGitCommit(root, {}, files({}))).toBeNull();
+});
+
+test('provenance takes the path of the started browser before the configured one', async () => {
+  const b = { process: () => ({ spawnfile: '/opt/c/1/chrome' }), version: async () => 'Chrome/1' };
+  expect(await provenance(b, '/cfg', 'x')).toEqual({ gitCommit: 'x', chromePath: '/opt/c/1/chrome', chromeVersion: 'Chrome/1' });
+  expect(await provenance(null, '/cfg', null)).toEqual({ gitCommit: null, chromePath: '/cfg', chromeVersion: null });
+});
+
+test('classifyActionResult tells a gateway result from a refusal of the proxy', () => {
+  const r = (result: unknown) => JSON.stringify({ type: 'sdk_action_result', actionId: 1, result });
+  expect(classifyActionResult(r({ success: true, message: 'ok' }))).toBe('gateway');
+  expect(classifyActionResult(r({ success: false, message: 'no path' }))).toBe('gateway');
+  expect(classifyActionResult(r({ success: false, message: 'blocked by policy: logout_component' }))).toBe('proxy');
+  expect(classifyActionResult(r({ success: false, message: 'upstream not connected' }))).toBe('proxy');
+  expect(classifyActionResult(JSON.stringify({ type: 'sdk_state', state: {} }))).toBeNull();
+  expect(classifyActionResult('not json')).toBeNull();
+});
+
+test('the counting relay passes messages both ways and counts the action results', async () => {
+  const target = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    fetch(req, srv) { return req.headers.get('origin') !== null ? new Response('no', { status: 403 }) : srv.upgrade(req) ? undefined : new Response('x'); },
+    websocket: {
+      message(ws, m) {
+        ws.send(JSON.stringify({ type: 'sdk_state', state: { echo: String(m) } }));
+        ws.send(JSON.stringify({ type: 'sdk_action_result', actionId: 1, result: { success: true } }));
+        ws.send(JSON.stringify({ type: 'sdk_action_result', actionId: 2, result: { success: false, message: 'blocked by policy: x' } }));
+      },
+    },
+  });
+  const relay = startCountingRelay(target.port as number);
+  try {
+    const got: string[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${relay.port}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener('open', () => ws.send('hello'));
+      ws.addEventListener('message', ev => { got.push(String(ev.data)); if (got.length === 3) resolve(); });
+      ws.addEventListener('error', () => reject(new Error('socket error')));
+      setTimeout(() => reject(new Error('timeout')), 5_000);
+    });
+    ws.close();
+    expect(JSON.parse(got[0]!).state.echo).toBe('hello');
+    expect(relay.counts()).toEqual({ gateway: 1, proxy: 1 });
+  } finally {
+    await relay.stop();
+    await target.stop(true);
   }
 });

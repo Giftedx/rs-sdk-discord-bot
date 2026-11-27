@@ -1,15 +1,29 @@
 // One thread that gets one line per event. Lines are batched: at most one message per batch interval.
+// A batch is appended to the last message (an edit) while that message is young and the text fits.
+import type { GameEvent } from '../events/diff';
 import { DISCORD_MAX, sanitizeForDiscord } from '../shared/sanitize';
 import { errText, type Handle, type Logger, type Timers } from './types';
 
 export const LOG_THREAD_NAME = 'adventure-log';
 export const LOG_BATCH_MS = 10_000;
 export const LOG_MAX_QUEUE = 500;
+export const LOG_APPEND_MS = 120_000;
+export const LOG_APPEND_MAX = 1_900;
 const LINE_MAX = 300;
+const NAME_MAX = 40;
+
+export interface ThreadSendOptions {
+  /** A PNG to attach. */
+  png?: Uint8Array;
+  /** Sends with MessageFlags.SuppressNotifications. */
+  silent?: boolean;
+}
 
 /** The adapter must send with allowedMentions { parse: [] }. */
 export interface LogThread {
-  send(content: string): Promise<void>;
+  /** Returns the message id. A thread without ids or edit gets a new message for each batch. */
+  send(content: string, opts?: ThreadSendOptions): Promise<string | void>;
+  edit?(id: string, content: string): Promise<void>;
 }
 
 export interface LogThreadHost {
@@ -25,6 +39,38 @@ export interface AdventureLogOptions {
   name?: string;
   batchMs?: number;
   maxQueue?: number;
+  /** Default true: the log does not notify the members. */
+  silent?: boolean;
+  /** A batch is appended to the last message when it is younger than this. 0 turns the append off. */
+  appendWithinMs?: number;
+}
+
+function list(items: { name: string; count: number }[]): string {
+  return items.map((i) => `${i.count} x ${i.name}`).join(', ');
+}
+
+/**
+ * The adventure log line of an event, in the first person.
+ * requester is the display name of the member whose request ended; it is cut to 40 characters.
+ */
+export function logLine(e: GameEvent, requester?: string): string {
+  switch (e.kind) {
+    case 'level_up':
+      return `I reached ${e.skill} ${e.level}.`;
+    case 'total_level':
+      return `I reached total level ${e.total}.`;
+    case 'death': {
+      const killer = e.killer ? ` Probably killed by ${e.killer} (a guess).` : '';
+      const lost = e.lost && e.lost.length > 0 ? ` I lost ${list(e.lost)}.` : '';
+      return `I died.${killer}${lost}`;
+    }
+    case 'item_gain':
+      return `I got ${list(e.items)}.`;
+    case 'instruction_done': {
+      const who = requester?.replace(/\s+/g, ' ').trim().slice(0, NAME_MAX);
+      return `I finished a request${who ? ` for ${who}` : ''} (${e.outcome}): ${e.instruction}`;
+    }
+  }
 }
 
 export class AdventureLog {
@@ -32,15 +78,18 @@ export class AdventureLog {
   private thread: LogThread | null = null;
   private timer: Handle | null = null;
   private lastSent = Number.NEGATIVE_INFINITY;
+  private last: { id: string; content: string; at: number } | null = null;
   private dropped = 0;
   private sending = false;
   private warned = false;
   private readonly batchMs: number;
   private readonly maxQueue: number;
+  private readonly appendMs: number;
 
   constructor(private readonly o: AdventureLogOptions) {
     this.batchMs = o.batchMs ?? LOG_BATCH_MS;
     this.maxQueue = o.maxQueue ?? LOG_MAX_QUEUE;
+    this.appendMs = o.appendWithinMs ?? LOG_APPEND_MS;
   }
 
   get queued(): number {
@@ -71,26 +120,41 @@ export class AdventureLog {
     }, wait);
   }
 
-  /** Sends one message with as many queued lines as fit. Lines that do not fit wait for the next batch. */
+  /** Sends or appends one batch with as many queued lines as fit. Lines that do not fit wait for the next batch. */
   async flush(): Promise<void> {
     if (this.sending || this.queue.length === 0) return;
     this.sending = true;
+    const now = this.o.timers.now();
     const head = this.dropped > 0 ? [`(${this.dropped} older lines were dropped)`] : [];
+    const headSize = head.reduce((n, l) => n + l.length + 1, 0);
+    const last = this.last;
+    const append = last !== null && this.appendMs > 0 && now - last.at < this.appendMs
+      && last.content.length + 1 + headSize + this.queue[0]!.length <= LOG_APPEND_MAX;
+    const limit = append ? LOG_APPEND_MAX - last!.content.length - 1 : DISCORD_MAX;
     const batch: string[] = [];
-    let size = head.reduce((n, l) => n + l.length + 1, 0);
-    while (this.queue.length > 0 && size + this.queue[0]!.length + 1 <= DISCORD_MAX) {
+    let size = headSize;
+    while (this.queue.length > 0 && size + this.queue[0]!.length + (batch.length + head.length > 0 ? 1 : 0) <= limit) {
       const l = this.queue.shift()!;
+      size += l.length + (batch.length + head.length > 0 ? 1 : 0);
       batch.push(l);
-      size += l.length + 1;
     }
+    const text = [...head, ...batch].join('\n');
     try {
       this.thread ??= (await this.o.host.findThread(this.name)) ?? (await this.o.host.createThread(this.name));
-      await this.thread.send([...head, ...batch].join('\n'));
+      if (append && this.thread.edit) {
+        const content = `${last!.content}\n${text}`;
+        await this.thread.edit(last!.id, content);
+        this.last = { id: last!.id, content, at: last!.at };
+      } else {
+        const id = await this.thread.send(text, { silent: this.o.silent ?? true });
+        this.last = typeof id === 'string' && this.thread.edit ? { id, content: text, at: now } : null;
+      }
       this.dropped = 0;
       this.warned = false;
     } catch (err) {
       this.queue.unshift(...batch);
       this.thread = null;
+      this.last = null;
       if (!this.warned) this.o.log(`adventure log: send failed: ${errText(err)}`);
       this.warned = true;
     } finally {

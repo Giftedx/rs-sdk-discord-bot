@@ -31,6 +31,7 @@ export interface JobRunnerOptions {
   pkillPath?: string;         // default /usr/bin/pkill
   protections?: boolean;      // default true: run src/box/protections.ts inside each job
   onSpawn?(pid: number): void; // called right after the spawn, for example to move the child into a cgroup
+  maxJobMs?: number;          // the longest job; default DEFAULT_MAX_JOB_MS, at most MAX_JOB_MS
 }
 
 export const BOX_ENV_NAMES = ['BOT_USERNAME', 'PASSWORD', 'GATEWAY_URL', 'SHOW_CHAT', 'AUTO_LAUNCH_BROWSER', 'TELEMETRY', 'BUN_RUNTIME_TRANSPILER_CACHE_PATH'];
@@ -55,7 +56,15 @@ export interface JobResult {
   durationMs: number;
 }
 
-export const MAX_JOB_MS = 15 * 60_000;
+/** The hard ceiling of one job (AI_MAX_JOB_MIN at most 60). */
+export const MAX_JOB_MS = 60 * 60_000;
+/** The default limit of one job when the options give none. */
+export const DEFAULT_MAX_JOB_MS = 15 * 60_000;
+/** The time limit of one job: timeoutMs, at least 1 s and at most maxJobMs (itself at most MAX_JOB_MS). */
+export function jobLimitMs(timeoutMs: number, maxJobMs = DEFAULT_MAX_JOB_MS): number {
+  const cap = Math.min(Math.max(maxJobMs, 1_000), MAX_JOB_MS);
+  return Math.min(Math.max(timeoutMs, 1_000), cap);
+}
 export const OUTPUT_TAIL_CHARS = 6_000;
 const KILL_GRACE_MS = 3_000;
 
@@ -140,7 +149,7 @@ export function createJobRunner(opts: JobRunnerOptions) {
     async run(body: string, timeoutMs: number, signal?: AbortSignal): Promise<JobResult> {
       if (running) throw new Error('a job is already running');
       running = true;
-      const limit = Math.min(Math.max(timeoutMs, 1_000), MAX_JOB_MS);
+      const limit = jobLimitMs(timeoutMs, opts.maxJobMs);
       const file = join(opts.scratchDir, `job-${++count}.ts`);
       const started = Date.now();
       let timedOut = false;

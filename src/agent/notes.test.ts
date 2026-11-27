@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createKnowledgePack, createStore, createWikiIndex, DEFAULT_PERSONALITY, MAX_DIARY_LINES, searchKnowledge, StoreError } from './store';
+import { createKnowledgePack, createStore, createWikiIndex, DEFAULT_PERSONALITY, loadWikiBodies, MAX_DIARY_LINES, searchKnowledge, StoreError, wikiBodyText } from './store';
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
@@ -78,7 +78,7 @@ describe('wiki knowledge', () => {
   });
 
   const root = join(import.meta.dir, '..', '..');
-  test.skipIf(!existsSync(join(root, 'vendor', 'rs-sdk', 'wiki', 'items')))('the real wiki: indexed, and a query is under 50 ms', () => {
+  test.skipIf(!existsSync(join(root, 'vendor', 'rs-sdk', 'wiki', 'items')))('the real wiki: indexed, and a query is under 50 ms', async () => {
     const pack = createKnowledgePack(root);
     expect(pack.wiki.size).toBeGreaterThan(2000);
     const t0 = performance.now();
@@ -87,5 +87,48 @@ describe('wiki knowledge', () => {
     expect(out).toContain('[wiki/items/bronze-axe.md]');
     expect(out.length).toBeLessThan(5 * 1_600);
     expect(ms).toBeLessThan(50);
+    await pack.bodyReady;
+    expect(pack.wiki.search('shops in port sarim', 10).map(h => h.source)).toContain('wiki/shops/gerrants-fishy-business.md');
+    expect(pack.wiki.search('where to buy a fishing net')[0]!.source).toMatch(/fishing-net\.md$/);
+  });
+});
+
+describe('wiki body index', () => {
+  const item = ['# Small fishing net', '', '## Sources', '', '- Sold by: [Gerrant\'s Fishy Business](../shops/gerrants-fishy-business.md) for 5 gp',
+    '- Dropped by: [Giant rat](../npcs/giant-rat.md) (1/128)', '| **Value** | 5 gp |'].join('\n');
+  const shop = ['# Gerrant\'s Fishy Business', '| **Owner** | [Gerrant](../npcs/gerrant.md) |', '| **Location** | Port Sarim |', '| **Coordinates** | (3013, 3225) |',
+    '| [Small fishing net](../items/small-fishing-net.md) | 5 | 5 gp | 3 gp |'].join('\n');
+
+  test('wikiBodyText keeps only the sold-by, dropped-by, owner and location names', () => {
+    expect(wikiBodyText(item)).toBe("Gerrant's Fishy Business Giant rat");
+    expect(wikiBodyText(shop)).toBe('Gerrant Port Sarim');
+    expect(wikiBodyText('# Goblin\n## Drops\n| Bones | Always |')).toBe('');
+  });
+
+  test('a query finds a page by its body; a title word counts more', async () => {
+    const pages = [
+      { source: 'wiki/items/small-fishing-net.md', file: '/w/items/small-fishing-net.md' },
+      { source: 'wiki/shops/gerrants-fishy-business.md', file: '/w/shops/gerrants-fishy-business.md' },
+      { source: 'wiki/npcs/giant-rat.md', file: '/w/npcs/giant-rat.md' },
+      { source: 'wiki/npcs/port-guard.md', file: '/w/npcs/port-guard.md' },
+    ];
+    const text: Record<string, string> = { '/w/items/small-fishing-net.md': item, '/w/shops/gerrants-fishy-business.md': shop };
+    const idx = createWikiIndex(pages, f => text[f] ?? '');
+    expect(idx.search('items from giant rat').map(h => h.source)).toEqual(['wiki/npcs/giant-rat.md']);
+    const reads: string[] = [];
+    expect(await loadWikiBodies(idx, pages, async f => { reads.push(f); return text[f] ?? ''; })).toBe(2);
+    // Only item and shop pages are read.
+    expect(reads.sort()).toEqual(['/w/items/small-fishing-net.md', '/w/shops/gerrants-fishy-business.md']);
+    expect(idx.bodyWords).toBeGreaterThan(0);
+    expect(idx.search('items from giant rat').map(h => h.source)).toEqual(['wiki/npcs/giant-rat.md', 'wiki/items/small-fishing-net.md']);
+    // "shop" picks the shops folder and is not a title word.
+    expect(idx.search('shops in port sarim').map(h => h.source)[0]).toBe('wiki/shops/gerrants-fishy-business.md');
+  });
+
+  test('a missing page does not stop the body load', async () => {
+    const idx = createWikiIndex([{ source: 'wiki/items/a.md', file: '/a' }, { source: 'wiki/items/b.md', file: '/b' }], f => f);
+    expect(await loadWikiBodies(idx, [{ source: 'wiki/items/a.md', file: '/a' }, { source: 'wiki/items/b.md', file: '/b' }],
+      async f => { if (f === '/a') throw new Error('gone'); return '- Sold by: [Bob](x.md)'; })).toBe(1);
+    expect(idx.search('bob').map(h => h.source)).toEqual(['wiki/items/b.md']);
   });
 });

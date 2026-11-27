@@ -1,0 +1,22 @@
+# Egress rules of the game user: rsgame can reach only loopback, DNS and ports 443 and 7443 of
+# the game host (scripts/server-firewall.sh, "Game egress"). The addresses of the game host can
+# change, so rsgame-egress.timer runs this unit again each hour; a refresh keeps the open
+# connections. iptables rules do not persist over a reboot; this unit adds them at boot.
+# Install:
+#   sudo install -m 644 deploy/systemd/rsgame-egress.service deploy/systemd/rsgame-egress.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rsgame-egress.service rsgame-egress.timer
+# Remove the rules: sudo /opt/rs-discord-bot/scripts/server-firewall.sh undo game
+[Unit]
+Description=Egress rules of the game user of the bot
+Wants=network-online.target
+After=network-online.target
+Before=rs-gamelink.service
+
+[Service]
+Type=oneshot
+# The game host comes from RS_SERVER_HOST in /etc/rs-gamelink/gamelink.env (else the default).
+Environment=GAME_USER=rsgame
+ExecStart=/opt/rs-discord-bot/scripts/server-firewall.sh game-egress-refresh
+
+[Install]
+WantedBy=multi-user.target

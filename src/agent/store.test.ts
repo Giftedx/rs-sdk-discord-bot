@@ -7,6 +7,27 @@ import { costUsd, createSpendTracker } from './spend';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 
 describe('store', () => {
+  test('a good run marks a script known good; a failure, a new save or a delete clears it', () => {
+    let t = Date.UTC(2026, 0, 2, 3, 4);
+    const s = createStore(mkdtempSync(join(tmpdir(), 'store-')), () => new Date(t));
+    s.saveScript('fish', 'Fish', 'return 1;');
+    expect(s.listScripts()).toEqual([{ name: 'fish', description: 'Fish' }]);
+    s.markScriptRun('fish', true);
+    expect(s.listScripts()).toEqual([{ name: 'fish', description: 'Fish', knownGoodAt: t }]);
+    s.markScriptRun('fish', false);
+    expect(s.listScripts()[0]!.knownGoodAt).toBeUndefined();
+    s.markScriptRun('fish', true);
+    s.saveScript('fish', 'Fish', 'return 2;');
+    expect(s.listScripts()[0]!.knownGoodAt).toBeUndefined();
+    s.markScriptRun('fish', true);
+    s.deleteScript('fish');
+    s.saveScript('fish', 'Fish', 'return 3;');
+    expect(s.listScripts()[0]!.knownGoodAt).toBeUndefined();
+    // No script: no mark file.
+    s.markScriptRun('nope', true);
+    expect(s.listScripts().map(x => x.name)).toEqual(['fish']);
+  });
+
   test('saves, lists, reads and deletes a script', () => {
     const s = createStore(mkdtempSync(join(tmpdir(), 'store-')));
     s.saveScript('chop-trees', 'Chop trees\nnear Lumbridge', 'await bot.chopTree();');

@@ -19,6 +19,20 @@ describe('loadBotConfig', () => {
     expect(c.idleGuard).toBe(true);
     expect(c.maxTurns).toBe(25);
   });
+  test('job limit, notes review, gallery thread and silent posts', () => {
+    const c = loadBotConfig(base, '/root');
+    expect(c.maxJobMin).toBe(15);
+    expect(c.notesReviewHourUtc).toBeNull();
+    expect(c.galleryThreadName).toBe('gallery');
+    expect(c.suppressNotifications).toBeUndefined();
+    const d = loadBotConfig({ ...base, AI_MAX_JOB_MIN: '40', NOTES_REVIEW_HOUR_UTC: '0', DISCORD_GALLERY_THREAD: 'pics', DISCORD_SILENT: '1' }, '/r');
+    expect([d.maxJobMin, d.notesReviewHourUtc, d.galleryThreadName, d.suppressNotifications]).toEqual([40, 0, 'pics', true]);
+    expect(loadBotConfig({ ...base, DISCORD_SILENT: '0' }, '/r').suppressNotifications).toBe(false);
+    expect(() => loadBotConfig({ ...base, AI_MAX_JOB_MIN: '61' }, '/r')).toThrow(/AI_MAX_JOB_MIN/);
+    expect(() => loadBotConfig({ ...base, NOTES_REVIEW_HOUR_UTC: '24' }, '/r')).toThrow(/NOTES_REVIEW_HOUR_UTC/);
+    expect(() => loadBotConfig({ ...base, DISCORD_SILENT: 'yes' }, '/r')).toThrow(/DISCORD_SILENT/);
+    expect(() => loadBotConfig({ ...base, DISCORD_GALLERY_THREAD: 'adventure-log' }, '/r')).toThrow(/must differ/);
+  });
   test('the demo world needs RS_ALLOW_DEMO=1', () => {
     expect(() => loadBotConfig({ ...base, RS_SERVER_HOST: '' }, '/r')).toThrow(/RS_ALLOW_DEMO/);
     expect(loadBotConfig({ ...base, RS_SERVER_HOST: '', RS_ALLOW_DEMO: '1' }, '/r').game.serverHost).toBe('rs-sdk.maxbittker.com');

@@ -7,14 +7,17 @@
 // Usage (local stack): RS_ACCOUNT=prooflocal RS_PASSWORD=x bun scripts/proxy-proof.ts local
 // (x is a dummy password: the local stack has the login server off and accepts any password.)
 // Never type a real password on the command line: it stays in the shell history.
-// stdout gets one JSON line. Progress and the child's output tail go to stderr.
+// stdout gets one JSON line, also written to measurements/raw/proof-<mode>.json with the git
+// commit and the Chrome path. Progress and the child's output tail go to stderr.
+// Exit 0 only when the child exits 0, the tap saw a state, and the child got at least one
+// sdk_action_result from the gateway (a refusal of the proxy itself does not count).
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createActionPolicy } from '../src/gamelink/policy';
 import { startProxy, type ProxyHandle } from '../src/gamelink/proxy';
 import { launchBrowser, openGameTab, type GameTab } from '../src/gamelink/game-tab';
 import type { Browser } from 'puppeteer';
-import { RAW, ROOT, boxChildCommand, boxChildEnv, loadModeConfig, makeRedact, newBootToken, parseMode, waitUntil } from './run-helpers';
+import { RAW, ROOT, boxChildCommand, boxChildEnv, loadModeConfig, makeRedact, newBootToken, parseMode, provenance, startCountingRelay, waitUntil, type CountingRelay } from './run-helpers';
 
 const IN_GAME_TIMEOUT_MS = 120_000;
 const UPSTREAM_TIMEOUT_MS = 30_000;
@@ -42,6 +45,7 @@ mkdirSync(RAW, { recursive: true });
 let browser: Browser | null = null;
 let tab: GameTab | null = null;
 let proxy: ProxyHandle | null = null;
+let relay: CountingRelay | null = null;
 let child: ReturnType<typeof Bun.spawn> | null = null;
 let upstreamPoll: ReturnType<typeof setInterval> | null = null;
 let exitCode = 1;
@@ -79,7 +83,9 @@ try {
   log(`proxy listens on 127.0.0.1:${proxy.port}, upstream connected`);
 
   // boxChildEnv throws if the game password is in the child environment.
-  const childEnv = boxChildEnv({ account, bootToken, proxyPort: proxy.port, password });
+  // The child connects through a relay that counts the sdk_action_result messages it gets.
+  relay = startCountingRelay(proxy.port);
+  const childEnv = boxChildEnv({ account, bootToken, proxyPort: relay.port, password });
   const passwordInChildEnv = Object.values(childEnv).some(v => v === password);
 
   log('starting child: bun scripts/proof-script.ts');
@@ -117,7 +123,9 @@ try {
   writeFileSync(join(RAW, `proof-${mode}.png`), png);
   log(`frame written to measurements/raw/proof-${mode}.png`);
 
-  console.log(JSON.stringify({
+  const results = relay.counts();
+  const line = JSON.stringify({
+    ...(await provenance(browser, config.chromePath)),
     mode,
     childExitCode,
     childSawState,
@@ -125,14 +133,20 @@ try {
     upstreamConnects,
     passwordInChildEnv,
     framePngBytes: png.byteLength,
-  }));
-  exitCode = childExitCode === 0 && tapFrames > 0 ? 0 : 1;
+    actionResultsFromGateway: results.gateway,
+    actionResultsFromProxy: results.proxy,
+  });
+  console.log(line);
+  writeFileSync(join(RAW, `proof-${mode}.json`), `${line}\n`);
+  if (results.gateway === 0) log('FAILED the child got no sdk_action_result from the gateway');
+  exitCode = childExitCode === 0 && tapFrames > 0 && results.gateway > 0 ? 0 : 1;
 } catch (error) {
   log(`failed: ${redact(error instanceof Error ? error.message : String(error))}`);
   exitCode = 1;
 } finally {
   if (upstreamPoll) clearInterval(upstreamPoll);
   if (child && child.exitCode === null) { child.kill('SIGKILL'); await child.exited; }
+  await relay?.stop().catch(() => {});
   await proxy?.stop().catch(() => {});
   await tab?.close().catch(() => {});
   await browser?.close().catch(() => {});

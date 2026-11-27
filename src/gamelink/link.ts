@@ -30,6 +30,8 @@ export interface GuildLink {
   latestFrame(): StoredFrame | null;
   // The newest stored frame if it is fresh, else a new capture while the tab is in the game.
   frame(): Promise<Uint8Array | null>;
+  // A PNG of the game view around the player, at 2x with sharp pixels; null out of the game.
+  portrait(): Promise<Uint8Array | null>;
   framesActive(): boolean;
   startFrames(): void;
   stopFrames(): void;
@@ -48,6 +50,33 @@ export interface GuildLink {
 export interface GameLink {
   readonly guilds: ReadonlyMap<string, GuildLink>;
   close(): Promise<void>;
+}
+
+// The in-process link adds the operator actions of gamelink/main.ts (signals, not Discord).
+export interface LocalGuildLink extends GuildLink {
+  // Logs the tab out, then a new supervisor logs it in after reloginDelayMs (SIGHUP).
+  relog(): Promise<boolean>;
+  // Drops the gateway socket of the proxy and connects again (SIGUSR1).
+  reconnectProxy(): void;
+}
+
+export interface LocalGameLink extends GameLink {
+  readonly guilds: ReadonlyMap<string, LocalGuildLink>;
+}
+
+/** SIGHUP: every tab logs out and logs in again. One failing guild does not stop the others. */
+export async function relogAll(link: LocalGameLink, log: (line: string) => void): Promise<void> {
+  await Promise.all([...link.guilds.values()].map(async g => {
+    const out = await g.relog().catch(err => { log(`[${g.name}] relog failed: ${errText(err)}`); return false; });
+    log(`[${g.name}] ${out ? 'logged out; the login follows' : 'logout did not finish; the login follows'}`);
+  }));
+}
+
+/** SIGUSR1: every proxy drops its gateway socket and connects again. */
+export function reconnectAll(link: LocalGameLink, log: (line: string) => void): void {
+  for (const g of link.guilds.values()) {
+    try { g.reconnectProxy(); } catch (err) { log(`[${g.name}] proxy reconnect failed: ${errText(err)}`); }
+  }
 }
 
 export const FRAME_FRESH_MS = 15_000;
@@ -83,14 +112,14 @@ export interface LocalLinkOptions {
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 // Launches one browser for all guilds, with its profile on tmpfs, and starts the parts of each guild.
-export async function openLocalGameLink(opts: LocalLinkOptions): Promise<GameLink> {
+export async function openLocalGameLink(opts: LocalLinkOptions): Promise<LocalGameLink> {
   const swept = sweepStaleProfiles();
   if (swept > 0) opts.log(`removed ${swept} browser profile(s) left by an earlier run`);
   const first = opts.guilds[0]!.game;
   const pb: ProfiledBrowser = await launchBrowserWithProfile(first.chromePath ? { executablePath: first.chromePath } : {});
   opts.log(pb.profile.onTmpfs ? 'browser profile on tmpfs' : 'WARNING: /dev/shm is missing; the browser profile is on disk');
   let cards: CardTab | null = null;
-  const guilds = new Map<string, GuildLink>();
+  const guilds = new Map<string, LocalGuildLink>();
   const closeAll = async () => {
     await Promise.all([...guilds.values()].map(g => g.close().catch(err => opts.log(`[${g.name}] stop failed: ${errText(err)}`))));
     await cards?.close().catch(() => {});
@@ -125,7 +154,7 @@ export async function openLocalGameLink(opts: LocalLinkOptions): Promise<GameLin
   };
 }
 
-async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: LocalGuildSpec, idleGuard: boolean, firstLoginAt: number, log: (line: string) => void): Promise<GuildLink> {
+async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: LocalGuildSpec, idleGuard: boolean, firstLoginAt: number, log: (line: string) => void): Promise<LocalGuildLink> {
   const bootToken = randomBytes(24).toString('base64url');
   let tab: GameTab | null = null;
   let sup: Supervisor | null = null;
@@ -133,6 +162,7 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
   let lastState: unknown = null;
   let lastStateAt = 0;
   let frames: FrameStore | null = null;
+  let newSupervisor: ((startDelayMs: number) => Supervisor) | null = null;
 
   const stopParts = async () => {
     sup?.stop();
@@ -149,12 +179,13 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
     // The source checks that the tab is still in the game after each capture.
     frames = createFrameStore({ source: tab, log });
     const store = frames;
-    sup = createSupervisor({
-      tab, idleGuard, log,
-      startDelayMs: Math.max(0, firstLoginAt - Date.now()),
+    const t = tab;
+    newSupervisor = (startDelayMs: number) => createSupervisor({
+      tab: t, idleGuard, log, startDelayMs,
       // The rig check runs once, after the first login; a failure turns frames off for this tab.
       onInGame: () => { void store.checkRig(); },
     });
+    sup = newSupervisor(Math.max(0, firstLoginAt - Date.now()));
     sup.start();
     proxy = await startProxy({
       upstreamUrl: g.game.gatewayUrl,
@@ -171,7 +202,8 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
     throw err;
   }
   const gameTab = tab;
-  const supervisor = sup;
+  let supervisor = sup;
+  const makeSupervisor = newSupervisor!;
   const prx = proxy;
   const store = frames!;
   let closed = false;
@@ -192,6 +224,10 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
       if (supervisor.status() !== 'in_game' || store.disabled) return f?.png ?? null;
       return gameTab.frame('view').catch(() => f?.png ?? null);
     },
+    async portrait() {
+      if (supervisor.status() !== 'in_game') return null;
+      return gameTab.frame('portrait').catch(() => null);
+    },
     framesActive: () => store.active,
     startFrames: () => store.start(),
     stopFrames: () => store.stop(),
@@ -206,6 +242,18 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
       supervisor.stop();
       return gameTab.logout().catch(() => false);
     },
+    async relog() {
+      if (closed) return false;
+      supervisor.stop();
+      const out = await gameTab.logout().catch(() => false);
+      if (closed) return out;
+      // A new supervisor also clears a refused login; its first login waits reloginDelayMs.
+      supervisor = makeSupervisor(reloginDelayMs());
+      sup = supervisor;
+      supervisor.start();
+      return out;
+    },
+    reconnectProxy: () => prx.reconnect(),
     async close() {
       if (closed) return;
       closed = true;

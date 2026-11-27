@@ -9,14 +9,17 @@ import {
 } from 'discord.js';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { runInstruction, type AgentDeps, type AgentJobResult, type InstructionResult, type WakeKind } from '../agent/loop';
+import { runInstruction, WAKE_KINDS, type AgentDeps, type AgentJobResult, type InstructionResult, type WakeKind } from '../agent/loop';
 import { createStore, type KnowledgeChunk, type KnowledgePack } from '../agent/store';
 import type { JobCgroup } from '../box/cgroup';
 import { createJobRunner } from '../box/job-runner';
 import { fileSeedRecord, seedStore } from '../box/seed';
 import { cardChannel, logThreadHost, postChannel } from '../discord/adapters';
-import { AdventureLog } from '../discord/adventure-log';
+import type { XpChartCard } from '../cards/templates';
+import { AdventureLog, logLine } from '../discord/adventure-log';
+import { Gallery } from '../discord/gallery';
 import { MainPosts, xpGains, type CardSubject } from '../discord/posts';
+import { QueueVotes, type ReactionInput } from '../discord/queue-votes';
 import { StatusCard, STATUS_ID, XP_RATE_WINDOW_MS, type SkillSample } from '../discord/status-card';
 import { classifyMessage, type ChannelLine } from './addressee';
 import { realTimers } from '../discord/types';
@@ -53,7 +56,6 @@ export interface Shared {
 
 const STATE_FRESH_MS = 30_000;
 const SNAPSHOT_MS = 30_000;
-const WAKES: readonly WakeKind[] = ['instruction', 'timer', 'trigger'];
 // The loop checks its time limit before each turn. This backstop stops a model call that hangs.
 const TIME_CAP_GRACE_MS = 5 * 60_000;
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -80,6 +82,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
 
   const runner = createJobRunner({
     rootDir: sh.root, scratchDir: join(g.dataDir, 'jobs'), account: link.account, get bootToken() { return link.bootToken; }, secrets: sh.secrets,
+    maxJobMs: cfg.maxJobMin * 60_000,
     proxy: {
       get port() { return link.proxyPort; },
       // At the end of a job, wait until the gateway answered every action of the job, so the
@@ -114,6 +117,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   let channel: TextChannel | null = null;
   let card: StatusCard | null = null;
   let advLog: AdventureLog | null = null;
+  let gallery: Gallery | null = null;
   let posts: MainPosts | null = null;
   let goal: string | null = null;
   let step: string | null = null;
@@ -138,7 +142,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
 
   function gameState(): string {
     const ps = prx.status();
-    const head = `Game tab: ${tabLine(sup.status(), link.tabReason())}. Gateway connection: ${ps.connected ? 'up' : `down${ps.lastError ? ` (${ps.lastError})` : ''}`}.`;
+    const head = `Game tab: ${tabLine(sup.status(), link.tabReason())}. Gateway connection: ${ps.connected ? `up (${ps.gateway})` : `down${ps.lastError ? ` (${ps.lastError})` : ''}`}.`;
     const last = lastGame();
     if (!last) return `${head}\nNo game state yet.`;
     const text = formatWorldState(last.state, Date.now() - last.at, { brief: true });
@@ -193,9 +197,11 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   const guildSpendSince = (since: number) =>
     (db.raw.query('SELECT COALESCE(SUM(usd), 0) AS s FROM spend WHERE guild = ? AND time >= ?').get(g.name, since) as { s: number }).s;
 
-  function emit(e: GameEvent, ownMessage = false): void {
+  // requester: the person who asked for a finished request, for "for <name>" in the log.
+  function emit(e: GameEvent, ownMessage = false, requester?: string): void {
     db.addEvent(g.name, e.kind, eventText(e), e);
-    advLog?.add(eventText(e));
+    advLog?.add(logLine(e, requester));
+    void gallery?.onEvent(e);
     if (ownMessage) posts?.record(e);
     else void posts?.onEvent(e);
   }
@@ -232,6 +238,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     maxTurns: cfg.maxTurns,
     maxInstructionUsd: cfg.maxInstructionUsd,
     maxInstructionMs: cfg.maxInstructionMs,
+    maxJobMin: cfg.maxJobMin,
     wakeContext,
     onProgress,
     setTimer: (minutes, note) => { db.addTimer(g.name, Date.now() + minutes * 60_000, note); log(`timer set for ${minutes} min`); },
@@ -251,7 +258,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     if (!row || !db.startInstruction(row.id)) return;
     const abort = new AbortController();
     current = { row, abort, job: null };
-    const wake = (WAKES as readonly string[]).includes(row.wake) ? row.wake as WakeKind : 'instruction';
+    const wake = (WAKE_KINDS as readonly string[]).includes(row.wake) ? row.wake as WakeKind : 'instruction';
     step = null;
     const ch = channel;
 
@@ -307,7 +314,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     const done = { content: clean(`**Done** (${from}): ${row.text}\n${result.summary}\n-# ${footer}`), components: [], files, allowedMentions: { parse: [] as [] } };
     if (msg) await msg.edit(done).catch(err => log(`edit failed: ${errText(err)}`));
     else await ch.send(done).catch(() => {});
-    emit(receiptEvent(row.text, `${result.stopReason}: ${result.summary}`), true);
+    emit(receiptEvent(row.text, `${result.stopReason}: ${result.summary}`), true, wake === 'instruction' ? row.user : undefined);
 
     current = null;
     step = null;
@@ -367,6 +374,19 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     ].join('\n');
   }
 
+  // A thumbs-up on the message of a waiting request moves it up one place. The role check applies.
+  const votes = new QueueVotes({
+    requestFor: messageId => db.waitingByMessage(g.name, messageId),
+    mayTalk: async userId => {
+      if (!g.allowedRoleId) return true;
+      const member = await channel?.guild.members.fetch(userId).catch(() => null);
+      return allowed(member ?? null);
+    },
+    waitingOrder: () => db.waitingOrder(g.name),
+    setOrder: ids => { db.setWaitingOrder(g.name, ids); void card?.update(); },
+    log,
+  });
+
   return {
     name: g.name,
     channelId: g.channelId,
@@ -378,14 +398,24 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       channel = ch;
       card = new StatusCard({ channel: cardChannel(ch), view, secrets: sh.secrets, timers: realTimers, log });
       await card.init().catch(err => log(`status card failed: ${errText(err)}`));
-      advLog = new AdventureLog({ host: logThreadHost(ch), secrets: sh.secrets, timers: realTimers, log, name: cfg.logThreadName });
+      const silent = cfg.suppressNotifications;
+      advLog = new AdventureLog({ host: logThreadHost(ch), secrets: sh.secrets, timers: realTimers, log, name: cfg.logThreadName, silent: silent ?? true });
+      gallery = new Gallery({
+        host: logThreadHost(ch), secrets: sh.secrets, timers: realTimers, log,
+        frame: () => link.frame(), portrait: () => link.portrait(), name: cfg.galleryThreadName, silent: silent ?? true,
+      });
+      const skillSamples = (since: number): SkillSample[] => db.snapshotsSince<WakeState>(g.name, since)
+        .filter(s => s.state && typeof s.state.skills === 'object')
+        .map(s => ({ time: s.time, skills: s.state.skills }));
       posts = new MainPosts({
         channel: postChannel(ch), secrets: sh.secrets, timers: realTimers, log,
         maxPerHour: cfg.postsPerHour, recapHourUtc: cfg.recapHourUtc, spendSince: guildSpendSince, draw,
         eventsSince: since => db.eventsSince(g.name, since),
-        xpGainedSince: since => xpGains(db.snapshotsSince<WakeState>(g.name, since)
-          .filter(s => s.state && typeof s.state.skills === 'object')
-          .map(s => ({ time: s.time, skills: s.state.skills }))),
+        xpGainedSince: since => xpGains(skillSamples(since)),
+        xpSamplesSince: skillSamples,
+        ...(cfg.cards ? { drawChart: (d: XpChartCard) => link.drawCard('xp_chart', d) } : {}),
+        portrait: () => link.portrait(),
+        silent: silent ?? false,
       });
       posts.start();
       void runNext();
@@ -418,6 +448,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
         hasWaiting: db.countWaiting(g.name) > 0,
         dueTimers: db.dueTimers(g.name, now).map(t => ({ id: t.id, note: t.note })),
         budgetOk: budget.status().canWake,
+        lastReviewAt: db.lastWakeAt(g.name, 'review'),
       });
       for (const a of actions) {
         if (a.type === 'abort_job') { log(`job stopped: ${a.reason}`); current?.job?.abort(a.reason); }
@@ -463,10 +494,16 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       }
       const ok = admit(message.author.id, text, db.countWaiting(g.name));
       if (!ok.ok) { await reply(ADMIT_TEXT[ok.reason]); return; }
-      db.enqueueInstruction(g.name, message.member?.displayName ?? message.author.username, ok.text);
+      const id = db.enqueueInstruction(g.name, message.member?.displayName ?? message.author.username, ok.text);
+      db.setMessageId(id, message.id);
       await message.react(current ? '⏳' : '✅').catch(() => {});
       void card?.update();
       void runNext();
+    },
+
+    async onReaction(input: ReactionInput): Promise<void> {
+      if (stopping) return;
+      if (await votes.onReaction(input)) log('a queue vote moved a request up one place');
     },
 
     async onButton(interaction: ButtonInteraction): Promise<void> {

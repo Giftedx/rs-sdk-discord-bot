@@ -13,13 +13,14 @@
 //            measure the same time.
 // Every other wait before a new login is reloginDelayMs(): more than 10 s, with random jitter.
 // stdout gets one JSON line per run. Progress goes to stderr. Page console lines go to
-// measurements/raw/idle-<mode>-<phase>-<ISO date>-console.log, redacted.
+// measurements/raw/idle-<mode>-<phase>-<ISO date>-console.log, redacted. Each JSON line and the
+// first line of the console log hold the provenance: git commit, Chrome path and version.
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Browser, Page } from 'puppeteer';
 import { launchBrowser, openGameTab, type GameTab } from '../src/gamelink/game-tab';
 import { reloginDelayMs } from '../src/gamelink/relogin';
-import { RAW, loadModeConfig, makeRedact, parseMode, sleep } from './run-helpers';
+import { RAW, loadModeConfig, makeRedact, parseMode, provenance, sleep, type Provenance } from './run-helpers';
 
 const log = (line: string) => console.error(`[idle-test ${new Date().toISOString()}] ${line}`);
 
@@ -57,6 +58,7 @@ writeFileSync(consolePath, '');
 let browser: Browser | null = null;
 let tab: GameTab | null = null;
 let exitCode = 1;
+let prov: Provenance | null = null;
 
 const botPath = new URL(config.botPageUrl).pathname;
 
@@ -179,6 +181,8 @@ try {
   log(`mode ${mode}, phase ${phase}${quick ? ' (quick)' : ''}, account ${account}, bot page ${config.botPageUrl}`);
   browser = await launchBrowser(config.chromePath ? { executablePath: config.chromePath } : {});
   const b = browser;
+  prov = await provenance(b, config.chromePath);
+  appendFileSync(consolePath, `provenance ${JSON.stringify(prov)}\n`);
   tab = await openTab(b, 'tab1');
   const first = await waitForLogin(tab, b, Date.now(), 'first login');
   if (first.ms === null) throw new Error(`the game tab is not in game after ${LOGIN_DEADLINE_MS / 1000} s (${first.messages.join('; ')})`);
@@ -187,7 +191,7 @@ try {
 
   if (phase === 'idle') {
     const run1 = await idleRun(tab, b, 1, false);
-    console.log(JSON.stringify(run1));
+    console.log(JSON.stringify({ ...run1, provenance: prov }));
     let between: LoginResult | null = null;
     if (!(await tab.inGame().catch(() => false))) {
       const delay = reloginDelayMs();
@@ -200,7 +204,7 @@ try {
       log(`in game again after ${between.ms} ms`);
     }
     const run2 = await idleRun(tab, b, 2, true);
-    console.log(JSON.stringify({ ...run2, loginBeforeRun: between }));
+    console.log(JSON.stringify({ ...run2, loginBeforeRun: between, provenance: prov }));
   } else {
     // Leave the bot page so that the session ends, and wait before the new login.
     const gamePage = await findGamePage(b);
@@ -212,7 +216,7 @@ try {
     let start = Date.now();
     await tab.reload();
     const reload = await waitForLogin(tab, b, start, 'reload');
-    console.log(JSON.stringify({ test: 'reload', waitBeforeReloadMs: delay, ...reload }));
+    console.log(JSON.stringify({ test: 'reload', waitBeforeReloadMs: delay, ...reload, provenance: prov }));
     if (reload.ms === null) log('reload: not in game before the deadline');
 
     log('closing the tab without a logout');
@@ -222,7 +226,7 @@ try {
     start = Date.now();
     tab = await openTab(b, 'tab2');
     const reopen = await waitForLogin(tab, b, start, 'new tab');
-    console.log(JSON.stringify({ test: 'close, wait 15 s, new tab', ...reopen }));
+    console.log(JSON.stringify({ test: 'close, wait 15 s, new tab', ...reopen, provenance: prov }));
     if (reload.ms === null || reopen.ms === null) throw new Error('a login did not finish');
   }
   exitCode = 0;

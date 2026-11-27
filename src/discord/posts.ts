@@ -1,5 +1,7 @@
 // Rare posts in the main channel: level milestones, deaths, instruction receipts and a daily recap.
 // A hard limit caps all of them per hour, the recap included.
+import { xpChartData } from '../cards/xp-chart';
+import type { XpChartCard } from '../cards/templates';
 import { eventText, type GameEvent } from '../events/diff';
 import { sanitizeForDiscord } from '../shared/sanitize';
 import type { SkillSample } from './status-card';
@@ -13,7 +15,8 @@ const DAY = 24 * HOUR;
 
 /** The adapter must send with allowedMentions { parse: [] }. */
 export interface PostChannel {
-  send(content: string, png?: Uint8Array): Promise<void>;
+  /** extra: more PNGs after png. silent: send with MessageFlags.SuppressNotifications. */
+  send(content: string, png?: Uint8Array, opts?: { extra?: Uint8Array[]; silent?: boolean }): Promise<void>;
 }
 
 /** What a drawn card can show: one event, or the daily recap. */
@@ -46,6 +49,14 @@ export interface MainPostsOptions {
   eventsSince?: (sinceMs: number) => StoredEvent[];
   /** XP gained per skill since a time in ms, for example xpGains() of the stored snapshots. */
   xpGainedSince?: (sinceMs: number) => Record<string, number>;
+  /** Skill samples since a time in ms. With drawChart the recap gets an XP chart of the last 24 hours. */
+  xpSamplesSince?: (sinceMs: number) => SkillSample[];
+  /** Draws the XP chart card. Null or an error sends the recap without it. */
+  drawChart?: (data: XpChartCard) => Promise<Uint8Array | null>;
+  /** Default false: main posts notify the members. */
+  silent?: boolean;
+  /** A close picture of the character. A death post attaches it after the card. */
+  portrait?: () => Promise<Uint8Array | null>;
 }
 
 export interface Recap {
@@ -170,7 +181,8 @@ export class MainPosts {
       return false;
     }
     if (!isMilestone(e)) return false;
-    return this.post(postText(e), e);
+    const portrait = this.o.portrait;
+    return this.post(postText(e), e, e.kind === 'death' && portrait ? () => portrait() : undefined);
   }
 
   /** Posts the waiting level-ups as one post if one of them is a milestone. */
@@ -235,10 +247,17 @@ export class MainPosts {
       this.o.log('posts: no events in the last 24 hours, recap skipped');
       return Promise.resolve(false);
     }
-    return this.post(recapText(recap), { kind: 'recap', recap });
+    return this.post(recapText(recap), { kind: 'recap', recap }, () => this.chart());
   }
 
-  private async post(text: string, subject?: CardSubject): Promise<boolean> {
+  private async chart(): Promise<Uint8Array | null> {
+    if (!this.o.xpSamplesSince || !this.o.drawChart) return null;
+    const now = this.o.timers.now();
+    const data = xpChartData(this.o.xpSamplesSince(now - DAY), now);
+    return data ? this.o.drawChart(data) : null;
+  }
+
+  private async post(text: string, subject?: CardSubject, more?: () => Promise<Uint8Array | null>): Promise<boolean> {
     const now = this.o.timers.now();
     this.sent = this.sent.filter((t) => t > now - HOUR);
     if (this.sent.length >= this.maxPerHour) {
@@ -254,7 +273,11 @@ export class MainPosts {
           return null;
         });
       }
-      await this.o.channel.send(sanitizeForDiscord(text, this.o.secrets), png ?? undefined);
+      const extra = more ? await more().catch((err) => {
+        this.o.log(`posts: extra picture not drawn: ${errText(err)}`);
+        return null;
+      }) : null;
+      await this.o.channel.send(sanitizeForDiscord(text, this.o.secrets), png ?? undefined, { ...(extra ? { extra: [extra] } : {}), silent: this.o.silent ?? false });
       return true;
     } catch (err) {
       this.o.log(`posts: send failed: ${errText(err)}`);

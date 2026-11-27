@@ -4,13 +4,15 @@
 //   GET  /guilds/:name/status         tab, tab reason, proxy, in game, frames, actions in flight, proxy port, boot token
 //   GET  /guilds/:name/state          newest raw state and its age in ms
 //   GET  /guilds/:name/frame          PNG: newest fresh frame or a new capture (?stored=1: stored only)
+//   GET  /guilds/:name/portrait       PNG: the game view around the player at 2x; 204 out of the game
 //   POST /guilds/:name/frames/start   POST /guilds/:name/frames/stop
 //   POST /guilds/:name/job            {"active": boolean}: the job flag of the proxy
 //   POST /guilds/:name/card           {"kind", "data"}: PNG of a drawn card
 //   POST /guilds/:name/idle           {"timeoutMs": number}: {"idle": boolean} when no action is in flight (max 30 s)
 //   POST /guilds/:name/logout
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { CardDataError, isCardKind, type CardDataMap, type CardKind } from '../cards/templates';
 import type { GameLink, GuildLink } from './link';
 import { WAIT_IDLE_CAP_MS } from './proxy';
@@ -42,6 +44,57 @@ export interface StatusBody {
 }
 
 const MAX_BODY_BYTES = 1024 * 1024;
+
+export class LockError extends Error {}
+
+export interface LockDeps {
+  pid: number;
+  // True when a process with this pid runs.
+  alive(pid: number): boolean;
+  // Creates the file only when it does not exist; throws an error with code EEXIST otherwise.
+  create(path: string, text: string): void;
+  read(path: string): string;
+  remove(path: string): void;
+}
+
+const defaultLockDeps = (): LockDeps => ({
+  pid: process.pid,
+  alive(pid) {
+    try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }
+  },
+  create: (path, text) => writeFileSync(path, text, { flag: 'wx', mode: 0o600 }),
+  read: path => readFileSync(path, 'utf8'),
+  remove: path => rmSync(path, { force: true }),
+});
+
+/** The lock file of gamelink, beside its socket. */
+export const lockPathFor = (socketPath: string) => join(dirname(socketPath), 'gamelink.lock');
+
+/** Takes the lock file, so that a second gamelink refuses to start. A lock whose pid does not run
+ *  is stale and is taken over. Returns the release function. */
+export function acquireLock(path: string, deps: LockDeps = defaultLockDeps()): () => void {
+  for (let i = 0; i < 2; i++) {
+    try {
+      deps.create(path, `${deps.pid}\n`);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try { if (deps.read(path).trim() === String(deps.pid)) deps.remove(path); } catch { /* already gone */ }
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    let text = '';
+    try { text = deps.read(path).trim(); } catch { /* removed meanwhile */ }
+    const pid = /^\d+$/.test(text) ? Number(text) : NaN;
+    if (Number.isInteger(pid) && pid > 0 && pid !== deps.pid && deps.alive(pid)) {
+      throw new LockError(`another gamelink runs (pid ${pid}, lock ${path})`);
+    }
+    deps.remove(path);
+  }
+  throw new LockError(`the lock ${path} cannot be taken`);
+}
 const digest = (s: string) => createHash('sha256').update(s).digest();
 
 export function checkAuth(header: string | null, tokenDigest: Buffer): boolean {
@@ -93,6 +146,10 @@ async function route(link: GameLink, req: Request, log: (line: string) => void):
     }
     case 'GET frame': {
       const bytes = url.searchParams.get('stored') === '1' ? g.latestFrame()?.png ?? null : await g.frame();
+      return bytes ? png(bytes) : new Response(null, { status: 204 });
+    }
+    case 'GET portrait': {
+      const bytes = await g.portrait();
       return bytes ? png(bytes) : new Response(null, { status: 204 });
     }
     case 'POST frames/start':

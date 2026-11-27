@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runInstruction, type AgentDeps } from './loop';
+import { jobWentWell, parseMaxJobMin, REVIEW_TEXT, runInstruction, type AgentDeps } from './loop';
 import { createStore } from './store';
 import { createSpendTracker } from './spend';
 
@@ -256,5 +256,82 @@ describe('context, diary, time cap and escalation from the start', () => {
     const r = await runInstruction(d, 'x', 'bob', new AbortController().signal, 'trigger', { escalateFromStart: true });
     expect((calls[0] as { model: string }).model).toBe('claude-opus-5-5');
     expect(r.escalated).toBe(false);
+  });
+});
+
+describe('known-good scripts', () => {
+  const job = (over: object = {}) => ({ exitCode: 0, output: 'ok', timedOut: false, aborted: false, durationMs: 1, ...over });
+  test('jobWentWell needs exit code 0, no stop and no Error', () => {
+    expect(jobWentWell(job())).toBe(true);
+    expect(jobWentWell(job({ exitCode: 1 }))).toBe(false);
+    expect(jobWentWell(job({ output: 'Error: no tree' }))).toBe(false);
+    expect(jobWentWell(job({ output: 'TypeError: x' }))).toBe(false);
+    expect(jobWentWell(job({ output: 'no errors here' }))).toBe(true);
+    expect(jobWentWell(job({ timedOut: true }))).toBe(false);
+    expect(jobWentWell(job({ stopReason: 'watchdog' }))).toBe(false);
+  });
+
+  test('run_script marks the script; list_scripts shows the mark; a failure clears it; a stop keeps it', async () => {
+    const results = [job(), job({ stopReason: 'low HP' }), job({ output: 'Error: stuck' })];
+    const { d, calls } = deps([
+      reply([{ type: 'tool_use', id: 't1', name: 'run_script', input: { name: 'fish' } }]),
+      reply([{ type: 'tool_use', id: 't2', name: 'list_scripts', input: {} }]),
+      reply([{ type: 'tool_use', id: 't3', name: 'run_script', input: { name: 'fish' } }]),
+      reply([{ type: 'tool_use', id: 't4', name: 'list_scripts', input: {} }]),
+      reply([{ type: 'tool_use', id: 't5', name: 'run_script', input: { name: 'fish' } }]),
+      reply([{ type: 'tool_use', id: 't6', name: 'list_scripts', input: {} }]),
+      reply([{ type: 'text', text: 'done' }], 'end_turn'),
+    ], { runJob: async () => results.shift()! });
+    d.store.saveScript('fish', 'Fish', 'return 1;');
+    await runInstruction(d, 'fish', 'bob', new AbortController().signal);
+    const last = (i: number) => JSON.stringify((calls[i] as { messages: unknown[] }).messages.at(-1));
+    expect(last(2)).toMatch(/fish: Fish \[known good \d{4}-\d\d-\d\d \d\d:\d\d UTC\]/);
+    expect(last(4)).toContain('known good');
+    expect(last(6)).not.toContain('known good');
+  });
+});
+
+describe('job time limit', () => {
+  test('parseMaxJobMin: default 15, 1..60', () => {
+    expect(parseMaxJobMin(undefined)).toBe(15);
+    expect(parseMaxJobMin('60')).toBe(60);
+    expect(() => parseMaxJobMin('61')).toThrow(/AI_MAX_JOB_MIN/);
+    expect(() => parseMaxJobMin('0')).toThrow(/AI_MAX_JOB_MIN/);
+  });
+
+  test('a job may run up to maxJobMin; the tool text says so', async () => {
+    const timeouts: number[] = [];
+    const run = async (maxJobMin?: number) => {
+      const { d, calls } = deps([
+        reply([{ type: 'tool_use', id: 't1', name: 'run_code', input: { code: 'x', timeout_s: 9_999 } }]),
+        reply([{ type: 'text', text: 'done' }], 'end_turn'),
+      ], { maxJobMin, runJob: async (_c, ms) => { timeouts.push(ms); return { exitCode: 0, output: '', timedOut: false, aborted: false, durationMs: 1 }; } });
+      await runInstruction(d, 'x', 'bob', new AbortController().signal);
+      return JSON.stringify((calls[0] as { tools: unknown[] }).tools[0]);
+    };
+    expect(await run()).toContain('10 to 900');
+    expect(await run(60)).toContain('10 to 3600');
+    expect(timeouts).toEqual([900_000, 3_600_000]);
+  });
+});
+
+describe('review wake', () => {
+  test('starts on the escalation model, has no game tools, and refuses a game tool', async () => {
+    const jobs: string[] = [];
+    const { d, calls } = deps([
+      reply([{ type: 'tool_use', id: 't1', name: 'run_code', input: { code: 'x' } }]),
+      reply([{ type: 'tool_use', id: 't2', name: 'finish', input: { summary: 'tidied' } }]),
+    ], { escalationModel: 'claude-fable-5-2', runJob: async c => { jobs.push(c); return { exitCode: 0, output: '', timedOut: false, aborted: false, durationMs: 1 }; } });
+    const r = await runInstruction(d, REVIEW_TEXT, 'review', new AbortController().signal, 'review');
+    const c0 = calls[0] as { model: string; tools: { name: string }[]; messages: { content: string }[] };
+    expect(c0.model).toBe('claude-fable-5-2');
+    const names = c0.tools.map(t => t.name);
+    expect(names).toEqual(expect.arrayContaining(['notes_read', 'notes_write', 'diary_append', 'finish']));
+    for (const n of ['run_code', 'run_script', 'look', 'escalate']) expect(names).not.toContain(n);
+    expect(c0.messages[0]!.content).toContain('daily review');
+    expect(jobs).toEqual([]);
+    expect(JSON.stringify((calls[1] as { messages: unknown[] }).messages.at(-1))).toContain('not available in this wake');
+    expect(r.escalated).toBe(true);
+    expect(r.summary).toBe('tidied');
   });
 });

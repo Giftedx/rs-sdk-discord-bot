@@ -99,7 +99,43 @@ describe('compactState', () => {
       skills: { Attack: { level: 10, xp: 1200 } },
       inventory: { Logs: 2, Coins: 50 },
       inCombat: true,
+      equipment: {},
     });
+  });
+
+  test('keeps the equipment and the client death tick', () => {
+    const s = {
+      inGame: true,
+      player: { hp: 7, maxHp: 10, worldX: 1, worldZ: 2, level: 0, combat: { inCombat: false }, lastDeathTick: 900 },
+      skills: [], inventory: [], equipment: [{ slot: 3, id: 5, name: 'Bronze sword', count: 1 }],
+    } as unknown as BotWorldState;
+    expect(compactState(s)).toMatchObject({ equipment: { 'Bronze sword': 1 }, deathTick: 900 });
+  });
+});
+
+describe('client death signal and equipment', () => {
+  test('a new lastDeathTick is one death, also when HP and position show nothing', () => {
+    expect(diffStates(snap({ deathTick: null }), snap({ deathTick: 120 }))).toEqual([{ kind: 'death' }]);
+    expect(diffStates(snap({ deathTick: 120 }), snap({ deathTick: 120 }))).toEqual([]);
+    expect(diffStates(snap({ deathTick: 120 }), snap({ deathTick: 300 }))).toEqual([{ kind: 'death' }]);
+    // A new client session starts with null: no death.
+    expect(diffStates(snap({ deathTick: 120 }), snap({ deathTick: null }))).toEqual([]);
+  });
+
+  test('with the signal, the respawn guess makes no death', () => {
+    expect(diffStates(snap({ hp: 5, x: 3000, deathTick: null }), snap({ hp: 10, x: 3222, deathTick: null }))).toEqual([]);
+    // Without the signal the heuristic still works.
+    expect(diffStates(snap({ hp: 5, x: 3000 }), snap({ hp: 10, x: 3222 }))).toEqual([{ kind: 'death' }]);
+  });
+
+  test('an item that moves to or from the equipment is no gain; a new worn item is', () => {
+    const worn = snap({ inventory: {}, equipment: { 'Bronze sword': 1 } });
+    const carried = snap({ inventory: { 'Bronze sword': 1 }, equipment: {} });
+    expect(diffStates(worn, carried)).toEqual([]);
+    expect(diffStates(carried, worn)).toEqual([]);
+    expect(diffStates(snap({ inventory: {}, equipment: {} }), worn)).toEqual([{ kind: 'item_gain', items: [{ name: 'Bronze sword', count: 1 }] }]);
+    // An old snapshot without equipment: worn items do not count.
+    expect(diffStates(snap({ inventory: {} }), worn)).toEqual([]);
   });
 });
 

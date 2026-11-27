@@ -2,7 +2,7 @@
 // with the newest compact state, the queue facts and the clock, and carries out the actions.
 // A job end needs no rule here: the agent loop already waits for the job.
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
-import type { WakeKind } from '../agent/loop';
+import { REVIEW_TEXT, type WakeKind } from '../agent/loop';
 
 export interface CompactState {
   hp: number;
@@ -13,6 +13,20 @@ export interface CompactState {
   inCombat: boolean;
   skills: Record<string, { level: number; xp: number }>;
   inventory: Record<string, number>;
+  /** The number of used inventory slots. Absent in old snapshots. */
+  slots?: number;
+  /** The client's death signal (PlayerState.lastDeathTick): the game tick of the last death, or null. Absent on old clients. */
+  deathTick?: number | null;
+}
+
+export const INVENTORY_SLOTS = 28;
+
+/** NOTES_REVIEW_HOUR_UTC: unset or empty means off, else a whole hour 0..23. Throws on a bad value. */
+export function parseNotesReviewHour(value: string | undefined): number | null {
+  if (value === undefined || value.trim() === '') return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 23) throw new Error('NOTES_REVIEW_HOUR_UTC must be a whole hour from 0 to 23');
+  return n;
 }
 
 /** The small state that the snapshots table holds. Null when the player is not in the game. */
@@ -23,7 +37,9 @@ export function compactState(s: BotWorldState | null | undefined): CompactState 
   for (const k of s.skills ?? []) skills[k.name] = { level: k.baseLevel, xp: k.experience };
   const inventory: CompactState['inventory'] = {};
   for (const i of s.inventory ?? []) inventory[i.name] = (inventory[i.name] ?? 0) + i.count;
-  return { hp: p.hp, maxHp: p.maxHp, x: p.worldX, z: p.worldZ, level: p.level, inCombat: !!p.combat?.inCombat, skills, inventory };
+  const out: CompactState = { hp: p.hp, maxHp: p.maxHp, x: p.worldX, z: p.worldZ, level: p.level, inCombat: !!p.combat?.inCombat, skills, inventory, slots: (s.inventory ?? []).length };
+  if (p.lastDeathTick !== undefined) out.deathTick = p.lastDeathTick;
+  return out;
 }
 
 /** One value that changes when XP, position or inventory changes. */
@@ -49,6 +65,10 @@ export interface WakeOptions {
   combatMemoryMs?: number;
   /** One death makes one trigger, even if HP 0 and the respawn both show. */
   deathCooldownMs?: number;
+  /** At most one full-inventory wake in this time. */
+  fullInventoryCooldownMs?: number;
+  /** The UTC hour of the daily notes review wake. Null means off. */
+  notesReviewHourUtc?: number | null;
 }
 
 const DEFAULTS: Required<WakeOptions> = {
@@ -61,7 +81,16 @@ const DEFAULTS: Required<WakeOptions> = {
   respawnFromDistance: 10,
   combatMemoryMs: 120_000,
   deathCooldownMs: 60_000,
+  fullInventoryCooldownMs: 30 * 60_000,
+  notesReviewHourUtc: null,
 };
+
+const DAY_MS = 86_400_000;
+/** The start of the newest review window at or before now: today at hourUtc:00, or yesterday. */
+export function reviewWindowStart(now: number, hourUtc: number): number {
+  const at = Math.floor(now / DAY_MS) * DAY_MS + hourUtc * 3_600_000;
+  return at <= now ? at : at - DAY_MS;
+}
 
 export interface DueTimer { id: number; note: string }
 
@@ -80,13 +109,17 @@ export interface WakeInput {
   dueTimers: DueTimer[];
   /** False when the budget allows no new wake (month cap or daily allowance). */
   budgetOk: boolean;
+  /** When the last review wake was queued, from the database, so a restart does not repeat it. */
+  lastReviewAt?: number | null;
 }
 
-export type TriggerKind = 'low_hp' | 'death';
+export type TriggerKind = 'low_hp' | 'death' | 'inventory_full';
+
+export const FULL_INVENTORY_TEXT = 'The inventory is full (28 of 28 slots) and no job runs. Bank, drop or use items, then go on with the current goal.';
 
 export type WakeAction =
   | { type: 'start_instruction' }
-  | { type: 'wake'; kind: Extract<WakeKind, 'timer' | 'trigger'>; user: string; text: string; timerId?: number; trigger?: TriggerKind }
+  | { type: 'wake'; kind: Extract<WakeKind, 'timer' | 'trigger' | 'review'>; user: string; text: string; timerId?: number; trigger?: TriggerKind }
   | { type: 'abort_job'; reason: string }
   | { type: 'event'; event: string; text: string };
 
@@ -99,6 +132,10 @@ interface GuildState {
   progress: string | null;
   progressAt: number;
   wakes: number[];
+  lastFullAt: number | null;
+  // Fires once when the inventory gets full; arms again only after it has room.
+  fullArmed: boolean;
+  lastReviewAt: number | null;
 }
 
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.max(Math.abs(a.x - b.x), Math.abs(a.z - b.z));
@@ -110,7 +147,7 @@ export function createWakeScheduler(options: WakeOptions = {}) {
   const get = (guild: string, now: number): GuildState => {
     let g = guilds.get(guild);
     if (!g) {
-      g = { prev: null, lowHpArmed: true, lastCombatAt: null, lastDeathAt: null, jobWasRunning: false, progress: null, progressAt: now, wakes: [] };
+      g = { prev: null, lowHpArmed: true, lastCombatAt: null, lastDeathAt: null, jobWasRunning: false, progress: null, progressAt: now, wakes: [], lastFullAt: null, fullArmed: true, lastReviewAt: null };
       guilds.set(guild, g);
     }
     return g;
@@ -125,12 +162,15 @@ export function createWakeScheduler(options: WakeOptions = {}) {
     const deathFresh = g.lastDeathAt !== null && now - g.lastDeathAt < o.deathCooldownMs;
 
     const zeroHp = s.maxHp > 0 && s.hp <= 0 && (prev === null || prev.hp > 0);
-    const respawn = prev !== null && !atSpawn(prev) && dist(prev, o.spawn) >= o.respawnFromDistance && atSpawn(s)
+    // The client's own signal: lastDeathTick changes on each death. With it, no respawn guess.
+    const signal = prev !== null && prev.deathTick !== undefined && s.deathTick !== undefined;
+    const clientDeath = signal && s.deathTick !== null && s.deathTick !== prev!.deathTick;
+    const respawn = !signal && prev !== null && !atSpawn(prev) && dist(prev, o.spawn) >= o.respawnFromDistance && atSpawn(s)
       && g.lastCombatAt !== null && now - g.lastCombatAt <= o.combatMemoryMs;
-    if ((zeroHp || respawn) && !deathFresh) {
+    if ((zeroHp || clientDeath || respawn) && !deathFresh) {
       g.lastDeathAt = now;
       g.lowHpArmed = true;
-      out.push({ kind: 'death', text: zeroHp ? 'The player died (HP 0).' : 'The player respawned at the spawn point after combat. It probably died.' });
+      out.push({ kind: 'death', text: zeroHp || clientDeath ? 'The player died (HP 0).' : 'The player respawned at the spawn point after combat. It probably died.' });
       return out;
     }
 
@@ -155,6 +195,7 @@ export function createWakeScheduler(options: WakeOptions = {}) {
     tick(input: WakeInput): WakeAction[] {
       const { now, state } = input;
       const g = get(input.guild, now);
+      if (state && (state.slots ?? 0) < INVENTORY_SLOTS) g.fullArmed = true;
       const actions: WakeAction[] = [];
 
       // Watchdog: a job that changes no progress measure for watchdogMs is stopped.
@@ -200,11 +241,38 @@ export function createWakeScheduler(options: WakeOptions = {}) {
         return actions;
       }
 
+      // A full inventory with no job: one trigger wake when it gets full (and at most one per
+      // cooldown); it arms again only after the inventory has room.
+      if (state && g.fullArmed && !input.jobRunning && (state.slots ?? 0) >= INVENTORY_SLOTS
+        && (g.lastFullAt === null || now - g.lastFullAt >= o.fullInventoryCooldownMs)) {
+        g.lastFullAt = now;
+        g.fullArmed = false;
+        if (!canRateWake(g, now)) {
+          actions.push({ type: 'event', event: 'wake_skipped', text: `No wake for "inventory_full": at most ${o.maxWakesPerHour} timer and trigger wakes per hour.` });
+        } else {
+          g.wakes.push(now);
+          actions.push({ type: 'wake', kind: 'trigger', user: 'trigger', text: FULL_INVENTORY_TEXT, trigger: 'inventory_full' });
+          return actions;
+        }
+      }
+
       // A timer that cannot fire now stays due and fires on a later tick.
       const timer = input.dueTimers[0];
       if (timer && canRateWake(g, now)) {
         g.wakes.push(now);
         actions.push({ type: 'wake', kind: 'timer', user: 'timer', text: timer.note, timerId: timer.id });
+        return actions;
+      }
+
+      // The daily notes review: once per window. It waits while the rate limit is full.
+      if (o.notesReviewHourUtc !== null && !input.jobRunning) {
+        const start = reviewWindowStart(now, o.notesReviewHourUtc);
+        const last = Math.max(g.lastReviewAt ?? -Infinity, input.lastReviewAt ?? -Infinity);
+        if (last < start && canRateWake(g, now)) {
+          g.wakes.push(now);
+          g.lastReviewAt = now;
+          actions.push({ type: 'wake', kind: 'review', user: 'review', text: REVIEW_TEXT });
+        }
       }
       return actions;
     },

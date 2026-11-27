@@ -1,6 +1,8 @@
 // Settings of the Discord bot. Error messages name the variable only, never a value.
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
+import { parseMaxJobMin } from '../agent/loop';
+import { parseNotesReviewHour } from '../orchestrator/wakes';
 import { ConfigError, loadConfig, type Config } from '../shared/config';
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -55,6 +57,15 @@ export interface BotConfig {
   postsPerHour: number;
   recapHourUtc: number | undefined;
   logThreadName: string;
+  // The thread with pictures of deaths and level milestones (DISCORD_GALLERY_THREAD).
+  galleryThreadName: string;
+  // DISCORD_SILENT: true sends every post with no notification, false notifies on every post,
+  // undefined keeps the defaults (log and gallery silent, main posts notify).
+  suppressNotifications: boolean | undefined;
+  // The longest job in minutes (AI_MAX_JOB_MIN).
+  maxJobMin: number;
+  // UTC hour of the daily notes review wake (NOTES_REVIEW_HOUR_UTC). Null: off.
+  notesReviewHourUtc: number | null;
   cards: boolean;
   // Split mode: the game parts run in the gamelink process (src/gamelink/main.ts). Then the bot
   // opens no browser and holds no game password. Null: the game parts run in this process.
@@ -261,6 +272,16 @@ export function loadBotConfig(
   const recapRaw = env.DISCORD_RECAP_HOUR_UTC;
   const logThreadName = env.DISCORD_LOG_THREAD || 'adventure-log';
   if (!/^[a-z0-9 _-]{1,64}$/i.test(logThreadName)) throw new ConfigError('DISCORD_LOG_THREAD must be 1 to 64 letters, digits, spaces, _ or -');
+  const galleryThreadName = env.DISCORD_GALLERY_THREAD || 'gallery';
+  if (!/^[a-z0-9 _-]{1,64}$/i.test(galleryThreadName)) throw new ConfigError('DISCORD_GALLERY_THREAD must be 1 to 64 letters, digits, spaces, _ or -');
+  if (galleryThreadName.toLowerCase() === logThreadName.toLowerCase()) throw new ConfigError('DISCORD_GALLERY_THREAD must differ from DISCORD_LOG_THREAD');
+  const silentRaw = env.DISCORD_SILENT;
+  if (silentRaw !== undefined && silentRaw !== '' && silentRaw !== '0' && silentRaw !== '1') throw new ConfigError('DISCORD_SILENT must be 0 or 1');
+  const asConfig = <T>(f: () => T): T => {
+    try { return f(); } catch (err) { throw new ConfigError(err instanceof Error ? err.message : String(err)); }
+  };
+  const maxJobMin = asConfig(() => parseMaxJobMin(env.AI_MAX_JOB_MIN));
+  const notesReviewHourUtc = asConfig(() => parseNotesReviewHour(env.NOTES_REVIEW_HOUR_UTC));
 
   return {
     game: first.game,
@@ -293,6 +314,10 @@ export function loadBotConfig(
     postsPerHour: int(env, 'DISCORD_POSTS_PER_HOUR', 4, 0, 60),
     recapHourUtc: recapRaw === undefined || recapRaw === '' ? undefined : int(env, 'DISCORD_RECAP_HOUR_UTC', 0, 0, 23),
     logThreadName,
+    galleryThreadName,
+    suppressNotifications: silentRaw === '1' ? true : silentRaw === '0' ? false : undefined,
+    maxJobMin,
+    notesReviewHourUtc,
     cards: env.DISCORD_CARDS !== '0',
     gamelink,
   };

@@ -10,6 +10,10 @@ export interface CompactState {
   skills: Record<string, { level: number; xp: number }>;
   inventory: Record<string, number>;
   inCombat: boolean;
+  /** Worn items by name. Absent in old snapshots. An item gain counts inventory and equipment together. */
+  equipment?: Record<string, number>;
+  /** The client's death signal (PlayerState.lastDeathTick). Absent on old clients. */
+  deathTick?: number | null;
 }
 
 export type GameEvent =
@@ -31,8 +35,12 @@ export function compactState(s: BotWorldState): CompactState | null {
   for (const k of s.skills) skills[k.name] = { level: k.baseLevel, xp: k.experience };
   const inventory: Record<string, number> = {};
   for (const it of s.inventory) inventory[it.name] = (inventory[it.name] ?? 0) + it.count;
+  const equipment: Record<string, number> = {};
+  for (const it of s.equipment ?? []) equipment[it.name] = (equipment[it.name] ?? 0) + it.count;
   const p = s.player;
-  return { hp: p.hp, maxHp: p.maxHp, x: p.worldX, z: p.worldZ, plane: p.level, skills, inventory, inCombat: p.combat.inCombat };
+  const out: CompactState = { hp: p.hp, maxHp: p.maxHp, x: p.worldX, z: p.worldZ, plane: p.level, skills, inventory, inCombat: p.combat.inCombat, equipment };
+  if (p.lastDeathTick !== undefined) out.deathTick = p.lastDeathTick;
+  return out;
 }
 
 export function totalLevel(s: CompactState): number {
@@ -59,18 +67,35 @@ export function diffStates(prev: CompactState | null, next: CompactState | null)
     }
   }
 
+  // The client's own signal when both snapshots have it: lastDeathTick changes on each death.
+  // It also sees a death between two snapshots. Without it, the HP and position heuristic.
+  if (prev.deathTick !== undefined && next.deathTick !== undefined) {
+    if (next.deathTick !== null && next.deathTick !== prev.deathTick) out.push({ kind: 'death' });
+  } else {
   const jump = Math.max(Math.abs(next.x - prev.x), Math.abs(next.z - prev.z)) >= DEATH_JUMP_TILES || next.plane !== prev.plane;
   const diedNow = next.hp === 0 && prev.hp > 0;
   // prev.hp === 0 means the death was already reported on the snapshot before.
   const respawned = prev.hp > 0 && prev.hp < prev.maxHp && next.hp === next.maxHp && next.maxHp > 0 && jump;
   if (diedNow || respawned) out.push({ kind: 'death' });
+  }
 
+  // An item that moves between the inventory and the equipment is no gain.
+  // Only when both snapshots have the equipment: else each worn item looks new.
+  const eq = prev.equipment !== undefined && next.equipment !== undefined;
+  const before = held(prev, eq);
   const items: { name: string; count: number }[] = [];
-  for (const [name, n] of Object.entries(next.inventory)) {
-    const gain = n - (prev.inventory[name] ?? 0);
+  for (const [name, n] of Object.entries(held(next, eq))) {
+    const gain = n - (before[name] ?? 0);
     if (gain >= 1) items.push({ name, count: gain });
   }
   if (items.length > 0) out.push({ kind: 'item_gain', items: items.sort((a, b) => a.name.localeCompare(b.name)) });
+  return out;
+}
+
+/** The inventory and the equipment together, by name. */
+function held(s: CompactState, withEquipment: boolean): Record<string, number> {
+  const out = { ...s.inventory };
+  if (withEquipment) for (const [name, n] of Object.entries(s.equipment ?? {})) out[name] = (out[name] ?? 0) + n;
   return out;
 }
 

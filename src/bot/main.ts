@@ -4,11 +4,12 @@
 // in the gamelink process (src/gamelink/main.ts) and this process holds no game password.
 // Start: bun src/bot/main.ts (docs/running-the-bot.md).
 import Anthropic from '@anthropic-ai/sdk';
-import { Client, Events, GatewayIntentBits, type Interaction, type Message } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials, type Interaction, type Message } from 'discord.js';
 import { chmodSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createKnowledgePack } from '../agent/store';
 import { prepareJobCgroup, type JobCgroup } from '../box/cgroup';
+import { reactionInput } from '../discord/adapters';
 import { connectGameLink } from '../gamelink/client';
 import { openLocalGameLink, readTokenFile, type GameLink } from '../gamelink/link';
 import { openDb } from '../orchestrator/db';
@@ -82,7 +83,12 @@ let shuttingDown = false;
 let ticker: ReturnType<typeof setInterval> | null = null;
 
 const makeClient = (content: boolean) => new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, ...(content ? [GatewayIntentBits.MessageContent] : [])],
+  intents: [
+    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions,
+    ...(content ? [GatewayIntentBits.MessageContent] : []),
+  ],
+  // Reactions on messages from before the start arrive as partials (queue votes).
+  partials: [Partials.Message, Partials.Reaction, Partials.User],
 });
 let discord = makeClient(cfg.readAll);
 
@@ -103,7 +109,7 @@ process.on('uncaughtException', err => { log(`uncaught exception: ${errText(err)
 process.on('unhandledRejection', err => { log(`unhandled rejection: ${errText(err)}`); void shutdown(1); });
 
 try {
-  log(`${cfg.guilds.length} guild(s), model ${cfg.model}, effort ${cfg.effort}${cfg.escalationModel ? `, escalation ${cfg.escalationModel}` : ''}`);
+  log(`${cfg.guilds.length} guild(s), model ${cfg.model}, effort ${cfg.effort}, jobs up to ${cfg.maxJobMin} min${cfg.notesReviewHourUtc !== null ? `, notes review ${cfg.notesReviewHourUtc}:00 UTC` : ''}${cfg.escalationModel ? `, escalation ${cfg.escalationModel}` : ''}`);
   if (cfg.gamelink) {
     if (process.env.RS_PASSWORD) log('WARNING: split mode, but RS_PASSWORD is in the environment of the bot. Do not load secrets/account.env in the bot.');
     log(`game parts in the gamelink process at ${cfg.gamelink.socketPath}`);
@@ -114,12 +120,15 @@ try {
   } else {
     link = await openLocalGameLink({ guilds: cfg.guilds, idleGuard: cfg.idleGuard, cards: cfg.cards, log });
   }
+  const knowledge = createKnowledgePack(ROOT);
+  // Until the page bodies are read, the wiki search uses the titles only.
+  void knowledge.bodyReady?.then(n => log(`wiki body index ready: ${n} pages`));
   const shared = {
     cfg, root: ROOT, link, anthropic: new Anthropic(), db, cgroup, discord,
-    knowledge: createKnowledgePack(ROOT),
+    knowledge,
     apiReference: readFileSync(join(ROOT, 'vendor', 'rs-sdk', 'sdk', 'API.md'), 'utf8'),
     secrets, clean, log,
-    wakes: createWakeScheduler({ watchdogMs: cfg.watchdogMs }),
+    wakes: createWakeScheduler({ watchdogMs: cfg.watchdogMs, notesReviewHourUtc: cfg.notesReviewHourUtc }),
     withLock: createKeyedLock(),
   };
   for (const g of cfg.guilds) {
@@ -182,6 +191,14 @@ function attachHandlers(client: Client) {
       : [];
     await g.onMessage(message, stripMentions(message.content), direct, history, client.user.username)
       .catch(err => log(`[${g.name}] message failed: ${errText(err)}`));
+  });
+
+  // A thumbs-up on a waiting request moves it up the queue (src/discord/queue-votes.ts).
+  client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    const g = byChannel.get(reaction.message.channelId);
+    if (!g) return;
+    const input = await reactionInput(reaction, user);
+    if (input) await g.onReaction(input).catch(err => log(`[${g.name}] reaction failed: ${errText(err)}`));
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {

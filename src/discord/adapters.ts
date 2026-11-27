@@ -4,16 +4,31 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
+  MessageFlags,
   ThreadAutoArchiveDuration,
   type MessageCreateOptions,
+  type MessageReaction,
+  type PartialMessageReaction,
+  type PartialUser,
   type TextChannel,
   type ThreadChannel,
+  type User,
 } from 'discord.js';
 import type { LogThread, LogThreadHost } from './adventure-log';
 import type { PostChannel } from './posts';
+import type { ReactionInput } from './queue-votes';
 import type { CardChannel, CardMessage } from './status-card';
 
 const NO_PINGS = { parse: [] as [] };
+
+function silentFlags(silent: boolean | undefined) {
+  return silent ? { flags: MessageFlags.SuppressNotifications as const } : {};
+}
+
+function pngFiles(pngs: (Uint8Array | undefined)[], base: string): AttachmentBuilder[] {
+  const list = pngs.filter((p): p is Uint8Array => p !== undefined);
+  return list.map((p, i) => new AttachmentBuilder(Buffer.from(p), { name: i === 0 ? `${base}.png` : `${base}-${i + 1}.png` }));
+}
 
 function cardPayload(msg: CardMessage) {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -53,8 +68,12 @@ export function cardChannel(channel: TextChannel): CardChannel {
 
 function logThread(t: ThreadChannel): LogThread {
   return {
-    async send(content) {
-      await t.send({ content, allowedMentions: NO_PINGS });
+    async send(content, opts) {
+      const m = await t.send({ content, files: pngFiles([opts?.png], 'frame'), allowedMentions: NO_PINGS, ...silentFlags(opts?.silent) });
+      return m.id;
+    },
+    async edit(id, content) {
+      await t.messages.edit(id, { content, allowedMentions: NO_PINGS });
     },
   };
 }
@@ -79,9 +98,23 @@ export function logThreadHost(channel: TextChannel): LogThreadHost {
 
 export function postChannel(channel: TextChannel): PostChannel {
   return {
-    async send(content, png) {
-      const files = png ? [new AttachmentBuilder(Buffer.from(png), { name: 'card.png' })] : [];
-      await channel.send({ content, files, allowedMentions: NO_PINGS });
+    async send(content, png, opts) {
+      const files = pngFiles([png, ...(opts?.extra ?? [])], 'card');
+      await channel.send({ content, files, allowedMentions: NO_PINGS, ...silentFlags(opts?.silent) });
     },
   };
+}
+
+/** Maps a messageReactionAdd event to the input of QueueVotes.onReaction. Fetches partials; null when that fails. */
+export async function reactionInput(
+  reaction: MessageReaction | PartialMessageReaction,
+  user: User | PartialUser,
+): Promise<ReactionInput | null> {
+  try {
+    const r = reaction.partial ? await reaction.fetch() : reaction;
+    const u = user.partial ? await user.fetch() : user;
+    return { messageId: r.message.id, userId: u.id, userIsBot: u.bot, emoji: r.emoji.name };
+  } catch {
+    return null;
+  }
 }

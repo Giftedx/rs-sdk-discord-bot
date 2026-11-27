@@ -8,6 +8,45 @@ import { openDb, SCHEMA_VERSION } from './db';
 const tmpFile = () => join(mkdtempSync(join(tmpdir(), 'orch-db-')), 'bot.sqlite');
 
 describe('orchestrator db', () => {
+  test('queue votes: a new order changes nextWaiting, and later rows stay after it', () => {
+    const d = openDb(tmpFile());
+    const a = d.enqueueInstruction('g1', 'alice', 'a');
+    const b = d.enqueueInstruction('g1', 'bob', 'b');
+    const c = d.enqueueInstruction('g1', 'cy', 'c');
+    d.setMessageId(c, '111');
+    expect(d.waitingByMessage('g1', '111')).toBe(c);
+    expect(d.waitingByMessage('g2', '111')).toBeNull();
+    d.setWaitingOrder('g1', [a, c, b]);
+    expect(d.waitingOrder('g1')).toEqual([a, c, b]);
+    const e = d.enqueueInstruction('g1', 'eve', 'e');
+    expect(d.waitingOrder('g1')).toEqual([a, c, b, e]);
+    expect(d.startInstruction(d.nextWaiting('g1')!.id)).toBe(true);
+    expect(d.nextWaiting('g1')!.id).toBe(c);
+    expect(d.listQueue('g1').map(r => r.id)).toEqual([a, c, b, e]);
+    expect(d.waitingByMessage('g1', '111')).toBe(c);
+    d.startInstruction(c);
+    expect(d.waitingByMessage('g1', '111')).toBeNull();
+    // An id that is not waiting leaves the order as it is.
+    d.setWaitingOrder('g1', [e, a]);
+    expect(d.waitingOrder('g1')).toEqual([b, e]);
+    d.close();
+  });
+
+  test('lastWakeAt gives the newest instruction time of one wake kind and guild', () => {
+    let t = 1_000;
+    const d = openDb(tmpFile(), () => t);
+    expect(d.lastWakeAt('g1', 'review')).toBeNull();
+    d.enqueueInstruction('g1', 'review', 'tidy', 'review');
+    t = 5_000;
+    d.enqueueInstruction('g1', 'review', 'tidy', 'review');
+    d.enqueueInstruction('g1', 'alice', 'chop', 'instruction');
+    t = 9_000;
+    d.enqueueInstruction('g2', 'review', 'tidy', 'review');
+    expect(d.lastWakeAt('g1', 'review')).toBe(5_000);
+    expect(d.lastWakeAt('g1', 'timer')).toBeNull();
+    d.close();
+  });
+
   test('migrates a new file to the current schema version, and opens it again', () => {
     const file = tmpFile();
     const a = openDb(file);

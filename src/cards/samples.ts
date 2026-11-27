@@ -49,4 +49,13 @@ export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
       { id: 590, name: 'Tinderbox', count: 1 },
     ],
   },
+  xp_chart: {
+    title: 'Last 24 hours, UTC',
+    labels: Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0')),
+    series: [
+      { name: 'Total', values: Array.from({ length: 24 }, (_, i) => (i % 6 === 0 ? 0 : 2_000 + ((i * 937) % 3_000))) },
+      { name: 'Woodcutting', values: Array.from({ length: 24 }, (_, i) => (i % 6 === 0 ? 0 : 1_500 + ((i * 611) % 1_500))) },
+      { name: 'Firemaking', values: Array.from({ length: 24 }, (_, i) => (i % 4 === 0 ? 300 : 0)) },
+    ],
+  },
 };

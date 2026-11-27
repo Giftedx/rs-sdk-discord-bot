@@ -2,7 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test
 import type { Browser, Page } from 'puppeteer';
 import {
   CHROMIUM_ARGS,
+  PORTRAIT_SIZE,
   RigCheckError,
+  SCREENSHOT_BLOCK_URLS,
+  VIEW_RECT,
+  blockScreenshotUpload,
+  portraitRect,
   TabNotReadyError,
   browserLaunchEnv,
   buildBotUrl,
@@ -109,6 +114,29 @@ describe('game tab', () => {
   test('buildBotUrl encodes values and adds fps and minimal', () => {
     expect(buildBotUrl('https://h/bot', 'abc123', 'p&w', 15)).toBe('https://h/bot?bot=abc123&password=p%26w&fps=15&minimal');
   });
+
+  test('blockScreenshotUpload enables the network domain and sets the block list', async () => {
+    const sent: [string, unknown][] = [];
+    await blockScreenshotUpload({ send: async (m, p) => { sent.push([m, p]); return {}; } });
+    expect(sent).toEqual([['Network.enable', undefined], ['Network.setBlockedURLs', { urls: [...SCREENSHOT_BLOCK_URLS] }]]);
+  });
+
+  test('portraitRect is a square centred on the game view, inside it', () => {
+    const r = portraitRect();
+    expect(r.w).toBe(PORTRAIT_SIZE);
+    expect(r.h).toBe(PORTRAIT_SIZE);
+    expect(r.x + r.w / 2).toBe(VIEW_RECT.x + VIEW_RECT.w / 2);
+    expect(r.y + r.h / 2).toBe(VIEW_RECT.y + VIEW_RECT.h / 2);
+    expect(r.x).toBeGreaterThanOrEqual(VIEW_RECT.x);
+    expect(r.y).toBeGreaterThanOrEqual(VIEW_RECT.y);
+    expect(r.x + r.w).toBeLessThanOrEqual(VIEW_RECT.x + VIEW_RECT.w);
+    expect(r.y + r.h).toBeLessThanOrEqual(VIEW_RECT.y + VIEW_RECT.h);
+  });
+
+  browserTest("frame('portrait') returns a PNG at 2x the portrait size", async () => {
+    const t = await tab();
+    expect(pngSize(await t.frame('portrait'))).toEqual([PORTRAIT_SIZE * 2, PORTRAIT_SIZE * 2]);
+  }, T);
 
   browserTest('selfCheck passes on a 765x503 canvas', async () => {
     const t = await tab();

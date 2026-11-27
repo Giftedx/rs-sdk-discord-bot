@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { connect as netConnect } from 'node:net';
 import { startFakeGateway, type FakeGateway } from '../testing/fake-gateway';
 import { createActionPolicy } from './policy';
-import { BOX_BUFFER_LIMIT_BYTES, sendLimited, startProxy, type ProxyHandle, type ProxyTimers } from './proxy';
+import { BOX_BUFFER_LIMIT_BYTES, PREEMPT_RELAY_TEXT, defaultReconnectDelayMs, directGatewayUrl, rebuildAction, sendLimited, startProxy, type ProxyHandle, type ProxyTimers } from './proxy';
 
 const UPSTREAM_CONNECT = { type: 'sdk_connect', username: 'abc123', password: 'real-pw', mode: 'control', clientId: 'gamelink-proxy' };
 
@@ -32,13 +32,15 @@ interface SetupOptions {
   maxReconnectDelayMs?: number;
   log?: (line: string) => void;
   timers?: ProxyTimers;
+  // Called with the fake gateway URL: the relay and the direct URL of the proxy.
+  urls?: (gwUrl: string) => { upstreamUrl: string; directUpstreamUrl: string | null };
 }
 
 async function setup(o: SetupOptions = {}): Promise<{ gw: FakeGateway; proxy: ProxyHandle }> {
   const gw = await startFakeGateway({ rejectPassword: o.rejectPassword, rejectError: o.rejectError, silent: o.silent });
   cleanups.push(() => gw.stop());
   const proxy = await startProxy({
-    upstreamUrl: gw.url, account: 'abc123', password: 'real-pw', bootToken: 'tok',
+    ...(o.urls ? o.urls(gw.url) : { upstreamUrl: gw.url }), account: 'abc123', password: 'real-pw', bootToken: 'tok',
     listenPort: 0, policy: createActionPolicy(), onState: o.onState,
     reconnectDelayMs: o.reconnectDelayMs ?? (() => 20), handshakeTimeoutMs: o.handshakeTimeoutMs,
     upstreamHandshakeTimeoutMs: o.upstreamHandshakeTimeoutMs, staleMs: o.staleMs,
@@ -145,7 +147,82 @@ test('forwards an allowed action unchanged while a job runs', async () => {
   const msg = { ...action('walkTo'), action: { type: 'walkTo', x: 3200, z: 3200 } };
   box.ws.send(JSON.stringify(msg));
   await waitFor(() => gw.received.length > 1);
-  expect(gw.received[1]).toEqual(msg);
+  // Only the fields that the gateway reads: the action itself is unchanged.
+  expect(gw.received[1]).toEqual({ type: 'sdk_action', actionId: 'a1', action: { type: 'walkTo', x: 3200, z: 3200 }, actionTimeoutMs: 1000 });
+});
+
+test('rebuildAction keeps type, action, actionId and actionTimeoutMs only', () => {
+  expect(rebuildAction({ type: 'sdk_action', username: 'other', actionId: 7, action: { type: 'walkTo' }, actionTimeoutMs: 5, extra: { big: 1 } }))
+    .toEqual({ type: 'sdk_action', actionId: 7, action: { type: 'walkTo' }, actionTimeoutMs: 5 });
+  expect(rebuildAction({ type: 'sdk_action', action: { type: 'say' } })).toEqual({ type: 'sdk_action', action: { type: 'say' } });
+});
+
+test('maps the gateway pre-emption text, so the box SDK keeps its reconnects', async () => {
+  const { gw, proxy } = await setup();
+  const box = await connectBox(proxy.port);
+  gw.send({ type: 'sdk_error', error: 'Disconnected: another controller connected' });
+  await waitFor(() => box.msgs.length > 1);
+  expect(box.msgs[1]).toEqual({ type: 'sdk_error', error: PREEMPT_RELAY_TEXT });
+  expect(PREEMPT_RELAY_TEXT.includes('another controller connected')).toBe(false);
+});
+
+test('the job flag stays on across a box reconnect, and only setJobActive turns it off', async () => {
+  const { gw, proxy } = await setup();
+  const first = await connectBox(proxy.port);
+  proxy.setJobActive(true);
+  first.ws.close();
+  await first.closed;
+  await Bun.sleep(20);
+  // The SDK in the box reconnects by itself during a job: its actions still pass.
+  const second = await connectBox(proxy.port);
+  second.ws.send(JSON.stringify(action('walkTo', 'r1')));
+  await waitFor(() => gw.received.some(m => m.type === 'sdk_action'));
+  proxy.setJobActive(false);
+  second.ws.send(JSON.stringify(action('walkTo', 'r2')));
+  await waitFor(() => second.msgs.some(m => m.type === 'sdk_action_result'));
+  expect(second.msgs.find(m => m.type === 'sdk_action_result').result.message).toStartWith('blocked by policy');
+  expect(gw.received.filter(m => m.type === 'sdk_action')).toHaveLength(1);
+});
+
+test('the default reconnect delay is 11 to 16 s', () => {
+  expect(defaultReconnectDelayMs(() => 0)).toBe(11_000);
+  expect(defaultReconnectDelayMs(() => 0.999999)).toBe(16_000);
+  for (let i = 0; i < 200; i++) {
+    const d = defaultReconnectDelayMs();
+    expect(d).toBeGreaterThanOrEqual(11_000);
+    expect(d).toBeLessThanOrEqual(16_000);
+  }
+});
+
+test('directGatewayUrl maps the demo relay URL to its direct port, and nothing else', () => {
+  expect(directGatewayUrl('wss://rs-sdk.maxbittker.com/gateway')).toBe('wss://rs-sdk.maxbittker.com:7443');
+  expect(directGatewayUrl('ws://localhost:7780')).toBeNull();
+});
+
+test('connects to the direct gateway first and reports it', async () => {
+  const lines: string[] = [];
+  const { gw, proxy } = await setup({ urls: u => ({ upstreamUrl: 'ws://127.0.0.1:1', directUpstreamUrl: u }), log: l => lines.push(l) });
+  expect(proxy.status()).toMatchObject({ connected: true, gateway: 'direct' });
+  expect(gw.connectCount).toBe(1);
+  expect(lines).toContain('gamelink proxy: connected to the gateway (direct)');
+});
+
+test('falls back to the relay gateway after a failed direct connect', async () => {
+  const lines: string[] = [];
+  const { gw, proxy } = await setup({ urls: u => ({ upstreamUrl: u, directUpstreamUrl: 'ws://127.0.0.1:1' }), log: l => lines.push(l), reconnectDelayMs: () => 60_000 });
+  expect(proxy.status()).toMatchObject({ connected: true, gateway: 'relay' });
+  expect(gw.connectCount).toBe(1);
+  expect(lines).toContain('gamelink proxy: the direct gateway did not connect; using the relay gateway');
+  expect(lines).toContain('gamelink proxy: connected to the gateway (relay)');
+});
+
+test('reconnect() drops the gateway socket and connects again at once', async () => {
+  const { gw, proxy } = await setup({ reconnectDelayMs: () => 60_000 });
+  const box = await connectBox(proxy.port);
+  proxy.reconnect();
+  await waitFor(() => gw.connectCount === 2 && proxy.upstreamConnected());
+  expect(proxy.status()).toMatchObject({ connected: true, reconnects: 1, gateway: 'relay' });
+  expect(box.isClosed()).toBe(false);
 });
 
 test('blocks interactPlayer and answers the box', async () => {

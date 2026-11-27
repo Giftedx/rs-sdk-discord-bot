@@ -2,9 +2,9 @@
 // window.renderCard(kind, data, icons) for each card. The page script builds the DOM with
 // createElement and textContent only, because item names and player names are untrusted.
 
-export type CardKind = 'level_up' | 'death' | 'instruction_receipt' | 'daily_recap' | 'status';
+export type CardKind = 'level_up' | 'death' | 'instruction_receipt' | 'daily_recap' | 'status' | 'xp_chart';
 
-export const CARD_KINDS: readonly CardKind[] = ['level_up', 'death', 'instruction_receipt', 'daily_recap', 'status'];
+export const CARD_KINDS: readonly CardKind[] = ['level_up', 'death', 'instruction_receipt', 'daily_recap', 'status', 'xp_chart'];
 
 export interface CardItem {
   /** The item id, for the icon. Without it the card shows the name. */
@@ -73,12 +73,21 @@ export interface StatusCard {
   items?: CardItem[];
 }
 
+/** XP gained per hour. Each series has one value per label. The first series is the total. */
+export interface XpChartCard {
+  title: string;
+  /** One short label per hour, for example "14". */
+  labels: string[];
+  series: { name: string; values: number[] }[];
+}
+
 export interface CardDataMap {
   level_up: LevelUpCard;
   death: DeathCard;
   instruction_receipt: InstructionReceiptCard;
   daily_recap: DailyRecapCard;
   status: StatusCard;
+  xp_chart: XpChartCard;
 }
 
 export const CARD_SIZES: Readonly<Record<CardKind, { width: number; height: number }>> = {
@@ -87,6 +96,7 @@ export const CARD_SIZES: Readonly<Record<CardKind, { width: number; height: numb
   instruction_receipt: { width: 600, height: 420 },
   daily_recap: { width: 600, height: 360 },
   status: { width: 600, height: 400 },
+  xp_chart: { width: 600, height: 320 },
 };
 
 export const CARD_DEVICE_SCALE = 2;
@@ -106,6 +116,9 @@ const LIMITS = {
   skills: 24,
   counts: 8,
   receiptRows: 12,
+  chartPoints: 25,
+  chartSeries: 4,
+  chartLabel: 8,
 };
 
 export const MAX_LEVEL = 99;
@@ -259,6 +272,20 @@ export function validateCardData<K extends CardKind>(kind: K, data: unknown): Ca
       out = s;
       break;
     }
+    case 'xp_chart': {
+      const labels = arr(o, 'labels', LIMITS.chartPoints, w, false)!.map((v, i) => str({ v }, 'v', LIMITS.chartLabel, `${w}.labels[${i}]`));
+      if (labels.length < 2) throw new CardDataError(`${w}.labels: fewer than 2 entries`);
+      const series = arr(o, 'series', LIMITS.chartSeries, w, false)!.map((e, i) => {
+        const sw = `${w}.series[${i}]`;
+        const so = obj(e, sw);
+        const values = arr(so, 'values', LIMITS.chartPoints, sw, false)!.map((v, j) => num({ v }, 'v', `${sw}.values[${j}]`, 0, 200_000_000));
+        if (values.length !== labels.length) throw new CardDataError(`${sw}.values: not one value per label`);
+        return { name: str(so, 'name', LIMITS.name, sw), values };
+      });
+      if (series.length === 0) throw new CardDataError(`${w}.series: empty`);
+      out = { title: str(o, 'title', LIMITS.date, w), labels, series } satisfies XpChartCard;
+      break;
+    }
     default:
       throw new CardDataError(`unknown card kind: ${String(kind)}`);
   }
@@ -299,6 +326,9 @@ td{padding:1px 6px 1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellips
 .item .c{position:absolute;left:2px;top:0;font-size:10px;color:#ffeb6b;text-shadow:1px 1px 0 #000}
 .item .nm{font-size:8px;line-height:1;text-align:center;overflow:hidden;max-height:32px;color:#a9a69f;overflow-wrap:anywhere}
 .cols{display:flex;gap:20px;min-height:0;flex:1}.cols>div{min-width:0}
+.card.xp_chart{--accent:#c87a4a}
+.legend{display:flex;gap:16px;font-size:12.5px;color:#a9a69f}.legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
+svg text{fill:#a9a69f;font-size:10px;font-family:inherit}
 `;
 
 // Plain JavaScript that runs in the card page. It must never parse a string as HTML.
@@ -418,6 +448,40 @@ export const CARD_PAGE_SCRIPT = `
       }
       c.appendChild(cols);
     }
+  };
+  var COLORS = ['#e8e6e1','#c87a4a','#4a8fc8','#5aa86a'];
+  function svgEl(tag, attrs){
+    // The SVG namespace; built in parts so the page holds no URL.
+    var e = document.createElementNS(['http:', '', 'www.w3.org', '2000', 'svg'].join('/'), tag);
+    Object.keys(attrs).forEach(function(k){ e.setAttribute(k, String(attrs[k])); });
+    return e;
+  }
+  R.xp_chart = function(c, d){
+    c.appendChild(el('div','kicker','XP per hour'));
+    c.appendChild(el('div','sub',d.title));
+    var leg = el('div','legend');
+    d.series.forEach(function(s, i){ var x = el('div'); var sw = el('span'); sw.style.background = COLORS[i % COLORS.length]; x.appendChild(sw); x.appendChild(document.createTextNode(s.name)); leg.appendChild(x); });
+    c.appendChild(leg);
+    var W = 552, H = 186, L = 44, B = 18, n = d.labels.length;
+    var max = 1;
+    d.series.forEach(function(s){ s.values.forEach(function(v){ if (v > max) max = v; }); });
+    var svg = svgEl('svg', { width: W, height: H, viewBox: '0 0 ' + W + ' ' + H });
+    function X(i){ return L + (W - L - 4) * i / (n - 1); }
+    function Y(v){ return 4 + (H - B - 8) * (1 - v / max); }
+    [0, 0.5, 1].forEach(function(f){
+      var y = Y(max * f);
+      svg.appendChild(svgEl('line', { x1: L, x2: W - 4, y1: y, y2: y, stroke: '#2a2d33' }));
+      var t = svgEl('text', { x: L - 6, y: y + 3, 'text-anchor': 'end' }); t.textContent = fmt(Math.round(max * f)); svg.appendChild(t);
+    });
+    d.labels.forEach(function(l, i){
+      if (i % 3 !== 0 && i !== n - 1) return;
+      var t = svgEl('text', { x: X(i), y: H - 4, 'text-anchor': 'middle' }); t.textContent = l; svg.appendChild(t);
+    });
+    for (var k = d.series.length - 1; k >= 0; k--) {
+      var pts = d.series[k].values.map(function(v, i){ return X(i).toFixed(1) + ',' + Y(v).toFixed(1); }).join(' ');
+      svg.appendChild(svgEl('polyline', { points: pts, fill: 'none', stroke: COLORS[k % COLORS.length], 'stroke-width': k === 0 ? 2.5 : 1.5, 'stroke-linejoin': 'round' }));
+    }
+    c.appendChild(svg);
   };
   window.renderCard = function(kind, data, icons){
     var draw = R[kind];

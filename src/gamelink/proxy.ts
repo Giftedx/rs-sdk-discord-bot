@@ -3,7 +3,9 @@ import { timingSafeEqual } from 'node:crypto';
 import type { ActionPolicy } from './policy';
 
 export interface ProxyOptions {
-  upstreamUrl: string;              // gateway WebSocket URL
+  upstreamUrl: string;              // gateway WebSocket URL (the relay URL of deriveGatewayUrl)
+  // The direct gateway URL to try first. Default: directGatewayUrl(upstreamUrl). null: relay only.
+  directUpstreamUrl?: string | null;
   account: string;
   password: string;                 // real game password, used only upstream
   bootToken: string;                // the box sends this in the `password` field of sdk_connect
@@ -30,13 +32,18 @@ export interface ProxyStatus {
   connected: boolean;
   lastError: string | null;         // the last gateway problem; null after a successful connect
   reconnects: number;               // count of gateway connect attempts after the first
+  gateway: GatewayRoute;            // the route of the current or the next connect
 }
+
+export type GatewayRoute = 'direct' | 'relay';
 
 export interface ProxyHandle {
   port: number;
   setJobActive(active: boolean): void;
   upstreamConnected(): boolean;
   status(): ProxyStatus;
+  // Drops the gateway socket and connects again at once, the direct route first. For SIGUSR1.
+  reconnect(): void;
   // Actions sent to the gateway whose sdk_action_result has not come yet.
   actionsInFlight(): number;
   // True when no action is in flight, at once or within timeoutMs (capped at WAIT_IDLE_CAP_MS).
@@ -51,7 +58,32 @@ const RELAYED_TYPES: ReadonlySet<string> = new Set(['sdk_state', 'sdk_action_res
 
 interface BoxData { authed: boolean; handshakeTimer: ReturnType<typeof setTimeout> | null; }
 
-const defaultReconnectDelayMs = () => 11_000 + Math.floor(Math.random() * 5_001);
+// The direct gateway ports of the public servers: vendor/rs-sdk/sdk/index.ts DIRECT_GATEWAYS
+// (preferDirectGateway). The direct port negotiates permessage-deflate and skips the relay on the
+// tick thread of the game server, so state frames arrive about 6x smaller.
+const DIRECT_GATEWAYS: Readonly<Record<string, string>> = {
+  'wss://rs-sdk.maxbittker.com/gateway': 'wss://rs-sdk.maxbittker.com:7443',
+};
+
+/** The direct gateway URL for a relay URL, or null when the server has none. */
+export function directGatewayUrl(relayUrl: string): string | null {
+  return DIRECT_GATEWAYS[relayUrl] ?? null;
+}
+
+// The gateway tells a replaced controller this text (gateway.ts). The SDK stops its reconnects
+// when it reads it, so the box would stay off after the proxy itself was replaced.
+const PREEMPT_TEXT = 'another controller connected';
+export const PREEMPT_RELAY_TEXT = 'Disconnected: the gateway connection of gamelink was replaced; it reconnects';
+
+// The fields of sdk_action that the gateway reads (gateway.ts, handler of sdk_action).
+export function rebuildAction(msg: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { type: 'sdk_action', action: msg.action };
+  if (msg.actionId !== undefined) out.actionId = msg.actionId;
+  if (msg.actionTimeoutMs !== undefined) out.actionTimeoutMs = msg.actionTimeoutMs;
+  return out;
+}
+
+export const defaultReconnectDelayMs = (random: () => number = Math.random) => 11_000 + Math.floor(random() * 5_001);
 
 function tokenEquals(given: string, expected: string): boolean {
   const a = Buffer.from(given, 'utf8');
@@ -85,7 +117,10 @@ function parseObject(text: string): Record<string, unknown> | null {
 
 export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
   const now = opts.now ?? Date.now;
-  const reconnectDelayMs = opts.reconnectDelayMs ?? defaultReconnectDelayMs;
+  const reconnectDelayMs = opts.reconnectDelayMs ?? (() => defaultReconnectDelayMs());
+  const directUrl = opts.directUpstreamUrl === undefined ? directGatewayUrl(opts.upstreamUrl) : opts.directUpstreamUrl;
+  let useDirect = directUrl !== null;
+  const route = (): GatewayRoute => (useDirect ? 'direct' : 'relay');
   const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? 5_000;
   const upstreamHandshakeTimeoutMs = opts.upstreamHandshakeTimeoutMs ?? 10_000;
   const staleMs = opts.staleMs ?? 60_000;
@@ -148,6 +183,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
   // Forgets the socket at once, so a half-open socket whose close never completes cannot block the reconnect.
   function dropUpstream(ws: WebSocket, reason: string, refused: boolean) {
     if (upstream !== ws) return;
+    const wasReady = upstreamReady;
     upstream = null;
     upstreamReady = false;
     clearUpstreamTimer();
@@ -157,13 +193,20 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     notifyIdle();
     log(reason);
     try { ws.close(); } catch { /* already closed */ }
+    if (useDirect && !wasReady && !refused && !stopped) {
+      // The direct port did not answer: fall back to the relay at once.
+      useDirect = false;
+      log('the direct gateway did not connect; using the relay gateway');
+      connectUpstream();
+      return;
+    }
     scheduleReconnect(refused);
   }
 
   function connectUpstream() {
     if (stopped || upstream) return;
     if (attempts++ > 0) log('connecting to the gateway again');
-    const ws = new WebSocket(opts.upstreamUrl);
+    const ws = new WebSocket(useDirect && directUrl !== null ? directUrl : opts.upstreamUrl);
     upstream = ws;
     upstreamReady = false;
     armUpstreamTimer(ws, upstreamHandshakeTimeoutMs, `no sdk_connected from the gateway within ${upstreamHandshakeTimeoutMs} ms`);
@@ -184,7 +227,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
           upstreamReady = true;
           refusals = 0;
           lastError = null;
-          log('connected to the gateway');
+          log(`connected to the gateway (${route()})`);
           armUpstreamTimer(ws, staleMs, `no message from the gateway for ${staleMs} ms`);
         }
         lastConnected = text;
@@ -198,7 +241,9 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
           // (gateway.ts: "Bot not connected"). That action is no longer in flight.
           const id = msg.actionId;
           if ((typeof id === 'string' || typeof id === 'number') && inFlight.delete(actionKey(id))) notifyIdle();
-          sendToBox(text);
+          if (typeof msg.error === 'string' && msg.error.includes(PREEMPT_TEXT)) {
+            sendToBox(JSON.stringify({ ...msg, error: PREEMPT_RELAY_TEXT }));
+          } else sendToBox(text);
         } else dropUpstream(ws, `the gateway refused the login: ${errorText(msg.error, opts.password)}`, true);
         return;
       }
@@ -241,7 +286,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     const verdict = opts.policy.check(msg.action, { jobActive, nowMs: now() });
     if (verdict.allow && upstream && upstreamReady) {
       inFlight.set(actionKey(msg.actionId), now());
-      upstream.send(JSON.stringify(msg));
+      upstream.send(JSON.stringify(rebuildAction(msg)));
       return;
     }
     const message = verdict.allow ? 'upstream not connected' : `blocked by policy: ${verdict.reason}`;
@@ -270,7 +315,9 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
         ws.data.handshakeTimer = setTimeout(() => { ws.data.handshakeTimer = null; if (!ws.data.authed) ws.close(); }, handshakeTimeoutMs);
       },
       message: handleBoxMessage,
-      close(ws) { clearHandshakeTimer(ws); if (box === ws) { box = null; droppingState = false; } },
+      close(ws) { clearHandshakeTimer(ws); // The job flag stays: the SDK in the box reconnects by itself during a job. The job runner
+      // turns the flag off when the job ends.
+      if (box === ws) { box = null; droppingState = false; } },
     },
   });
 
@@ -296,7 +343,24 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
         timer = timers.setTimeout(() => { timer = null; done(countInFlight() === 0); }, ms);
       });
     },
-    status: () => ({ connected: upstreamReady && upstream?.readyState === WebSocket.OPEN, lastError, reconnects: Math.max(0, attempts - 1) }),
+    status: () => ({ connected: upstreamReady && upstream?.readyState === WebSocket.OPEN, lastError, reconnects: Math.max(0, attempts - 1), gateway: route() }),
+    reconnect() {
+      if (stopped) return;
+      if (reconnectTimer !== null) { timers.clearTimeout(reconnectTimer); reconnectTimer = null; }
+      useDirect = directUrl !== null;
+      refusals = 0;
+      const ws = upstream;
+      if (ws) {
+        upstream = null;
+        upstreamReady = false;
+        clearUpstreamTimer();
+        inFlight.clear();
+        notifyIdle();
+        try { ws.close(); } catch { /* already closed */ }
+      }
+      log('reconnect to the gateway requested');
+      connectUpstream();
+    },
     async stop() {
       stopped = true;
       if (reconnectTimer !== null) { timers.clearTimeout(reconnectTimer); reconnectTimer = null; }

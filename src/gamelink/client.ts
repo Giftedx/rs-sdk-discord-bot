@@ -112,7 +112,7 @@ async function connectGuild(opts: ClientOptions, name: string, account: string):
         return false;
       }
     },
-    proxyStatus: (): ProxyStatus => (stale() ? { connected: false, lastError: 'gamelink does not answer', reconnects: status.proxy.reconnects } : status.proxy),
+    proxyStatus: (): ProxyStatus => (stale() ? { connected: false, lastError: 'gamelink does not answer', reconnects: status.proxy.reconnects, gateway: status.proxy.gateway } : status.proxy),
     state: () => state,
     latestFrame: () => stored,
     async frame() {
@@ -121,6 +121,14 @@ async function connectGuild(opts: ClientOptions, name: string, account: string):
       } catch (err) {
         log(`frame failed: ${errText(err)}`);
         return stored?.png ?? null;
+      }
+    },
+    async portrait() {
+      try {
+        return await bytesOf(await req('GET', `${base}/portrait`));
+      } catch (err) {
+        log(`portrait failed: ${errText(err)}`);
+        return null;
       }
     },
     framesActive: () => framesWanted,

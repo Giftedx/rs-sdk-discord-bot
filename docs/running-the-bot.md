@@ -16,7 +16,7 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 1. Open the Discord developer portal and make a new application.
 2. On the **Bot** page, reset the token and copy it. This is `DISCORD_TOKEN`. Keep it secret.
 3. On the same page, turn on **Message Content Intent**, then save. With it, the bot reads every message of its channel. Without it, the bot logs a line at start and answers only messages that mention it.
-4. On the **OAuth2** page, make an invite URL with the scope `bot` and these permissions: View Channels, Send Messages, Read Message History, Add Reactions, Attach Files, Manage Messages (to pin the status card), Create Public Threads and Send Messages in Threads (for the adventure log).
+4. On the **OAuth2** page, make an invite URL with the scope `bot` and these permissions: View Channels, Send Messages, Read Message History, Add Reactions, Attach Files, Manage Messages (to pin the status card), Create Public Threads and Send Messages in Threads (for the adventure log and the gallery). The bot also asks for the Guild Message Reactions intent, which needs no portal setting.
 5. Open the URL and add the bot to your Discord server.
 6. In Discord, turn on Developer Mode. Right-click the channel for the bot and copy its ID. This is `DISCORD_CHANNEL_ID`.
 
@@ -39,6 +39,8 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 | `AI_MAX_TURNS` | | `25` | Model calls per instruction. |
 | `AI_MAX_INSTRUCTION_USD` | | `2` | Spend limit per instruction, in USD. |
 | `AI_MAX_INSTRUCTION_MIN` | | `120` | Wall-clock limit of one instruction, in minutes (1 to 1440). The loop checks it before each turn and stops with "This instruction used its time limit". Job timeouts are cut to the time that is left. |
+| `AI_MAX_JOB_MIN` | | `15` | The longest job, in minutes (1 to 60). The `run_code` and `run_script` tools offer timeouts up to this value, and the job runner stops a job at it. |
+| `NOTES_REVIEW_HOUR_UTC` | | unset | Hour (0 to 23, UTC) of a daily review wake. The AI tidies its notes and adds a diary line on `ESCALATION_MODEL`, with no game tools. It runs once a day, when no job runs and the budget and the hourly wake limit have room. Unset: no review. |
 | `AI_MONTHLY_CAP_USD` | | `30` | At this spend in one period (UTC), the bot takes no new instructions. The cap is for all guilds together, and each guild gets an equal share (cap / guilds). At 80% of the share or of the cap, the bot runs the main loop on `SMALL_MODEL` with no escalation. |
 | `SPEND_RESET_DAY` | | `1` | Day of the month (1 to 28) when the spend period starts. The daily allowance for timer and trigger wakes is the cap that is left, divided by the days left in the period (today included), so unused spend carries over. |
 | `ESCALATION_MODEL` | | `claude-opus-5-5` | The AI gets the `escalate` tool and can move the rest of one instruction to this model, once. A trigger wake (low HP, death) starts on this model. `none` turns escalation off. |
@@ -58,7 +60,9 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 | `DISCORD_POSTS_PER_HOUR` | | `4` | Milestone posts per hour and guild, the recap included. `0` turns them off. |
 | `DISCORD_RECAP_HOUR_UTC` | | unset | Hour (0 to 23, UTC) of the daily recap post. Unset: no recap. |
 | `DISCORD_LOG_THREAD` | | `adventure-log` | Name of the adventure log thread. |
-| `DISCORD_CARDS` | | `1` | `0` turns the drawn cards off. |
+| `DISCORD_GALLERY_THREAD` | | `gallery` | Name of the thread with a picture for each death and each 10 levels of a skill, at most 6 an hour. It must differ from `DISCORD_LOG_THREAD`. |
+| `DISCORD_SILENT` | | unset | `1` sends every post with no notification, `0` notifies on every post. Unset: the adventure log and the gallery are silent, the main posts notify. |
+| `DISCORD_CARDS` | | `1` | `0` turns the drawn cards off. The daily recap then also has no XP chart. |
 | `PROXY_PORT` | | `7790` | Loopback port of the proxy. With `GUILDS_FILE`, guild number *n* (from 0) uses `PROXY_PORT` + *n*. |
 | `GAMELINK_SOCKET` | | unset | Split mode: the Unix socket of the gamelink process. With it, the bot opens no browser and does not need `RS_PASSWORD`. See "Split mode". In gamelink, the default is `/run/rs-gamelink/gamelink.sock`. |
 | `GAMELINK_TOKEN_FILE` | with `GAMELINK_SOCKET`, and in gamelink | | An absolute path to a file with one token of at least 32 characters. Every request to the socket must carry it. |
@@ -98,6 +102,7 @@ People talk to the bot in plain words. There are no commands.
 
 - The bot reads every message of its channel. A small model decides for each message if it talks to the bot, with or without an @mention. People who talk to each other about the bot, or leave notes for each other, get no answer.
 - A request to do something in the game goes to the queue. The bot adds a reaction: a check mark when nothing runs, an hourglass when the request waits.
+- A thumbs-up reaction on the message of a waiting request moves that request up one place in the queue. Each member counts once per request, and only members who may talk to the bot count. The vote record is in memory; the new order is in the database.
 - A question, such as "what are you doing?", gets a short answer at once.
 - Telling the bot to stop, such as "stop that", ends the current request and kills its job.
 - The **Status** button of the status card shows what runs, the goal, the queue, the timers, the spend and the game state.
@@ -107,10 +112,11 @@ The bot posts one message for each instruction. It edits that message with progr
 Other output in the channel:
 
 - **Status card**: one pinned message that the bot edits every 15 s while an instruction runs. It shows the goal, the current step, the HP, the queue length, the spend and a recent frame.
-- **Adventure log**: a thread (`DISCORD_LOG_THREAD`) with level-ups, item gains, deaths, receipts, wake events and the `post` lines of the AI, sent in batches.
-- **Posts**: a message for each 10 levels of a skill, for a death and for the daily recap, with a drawn card. At most `DISCORD_POSTS_PER_HOUR` per hour.
+- **Adventure log**: a thread (`DISCORD_LOG_THREAD`) with level-ups, item gains, deaths, receipts, wake events and the `post` lines of the AI, sent in batches, in the first person ("I reached Attack 20.", "I finished a request for Sam ..."). A batch is added to the last message by an edit when that message is less than 2 minutes old.
+- **Gallery**: a thread (`DISCORD_GALLERY_THREAD`) with a frame of the game, or a close portrait of the character, for each death and each 10 levels of a skill.
+- **Posts**: a message for each 10 levels of a skill, for a death and for the daily recap, with a drawn card. A death post also has the portrait. The recap has an XP chart of the last 24 hours. At most `DISCORD_POSTS_PER_HOUR` per hour.
 
-Wakes: the AI can set a timer (1 to 1440 minutes) with a note. The bot also wakes the AI when the HP falls below 30% and after a death. Each wake is an instruction in the queue with no human author. At most 6 timer and trigger wakes per hour and guild, and only while the daily allowance has room.
+Wakes: the AI can set a timer (1 to 1440 minutes) with a note. The bot also wakes the AI when the HP falls below 30%, after a death, and when the inventory is full (28 of 28, at most once in 30 minutes, only when nothing else runs or waits). With `NOTES_REVIEW_HOUR_UTC`, a daily review wake tidies the notes. Each wake is an instruction in the queue with no human author. At most 6 timer and trigger wakes per hour and guild, and only while the daily allowance has room.
 
 The queue is in the database. After a restart, an instruction that ran at the stop goes back to the queue and starts again.
 
@@ -305,20 +311,27 @@ How the two units work together:
 
 - `rs-discord-bot.service` has `Wants=rs-gamelink.service`. A stop of gamelink does not stop the bot: the bot waits and reconnects when gamelink is back. Gamelink logs every account out of the game on SIGTERM.
 - A restart of the bot does not log the account out. Gamelink keeps the game session.
-- After each job, the bot turns the job flag of the proxy off through the socket. It tries three times. If all three fail, the log shows `job flag not turned off`.
+- After each job, the bot turns the job flag of the proxy off through the socket. It tries three times. If all three fail, the log shows `job flag not turned off`. The proxy also turns the flag off when the box socket closes.
+- Gamelink takes a lock file (`gamelink.lock`, next to the socket) at start. If another gamelink runs, it logs `start refused: ...` and exits with code 2. A lock with a dead pid is taken over.
+- `systemctl kill -s HUP rs-gamelink` logs every tab out and logs in again after the normal delay. This also clears `login_refused` after you fixed the account. `systemctl kill -s USR1 rs-gamelink` drops the gateway connection of each proxy and connects again at once.
+- The proxy first tries the direct gateway port (7443 on the demo world), and uses the relay URL when the direct socket does not connect. The status text shows the route: `Gateway connection: up (direct)` or `up (relay)`.
+- `GET /guilds/:name/portrait` returns a 256x256 PNG of the centre of the view, or 204 when the tab is out of the game.
 - To go back to one process: stop both units, move `account.env` back to `secrets/` (owner `rsbot`, mode 600), remove the `GAMELINK_*` lines from `secrets/bot.env`, disable `rs-discord-bot` and `rs-gamelink`, install and start `rs-discord-bot-single.service`.
 - At the end of each job, the bot waits up to 30 s until the gateway has answered every action of the job (`POST /guilds/:name/idle`). If actions are still in flight, the log shows `job ended with N actions in flight`.
 - Gamelink opens each game tab with no login, and the first login comes 20 to 30 s later, at least 15 s after the tab before. A failed login waits longer each time: the re-login delay times 1, 2, 4, 8, then 16 at most. "Invalid username or password" or "account has been disabled" sets the tab to `login_refused`: gamelink stops all logins until it restarts, and the bot logs one `ALERT game login refused` line. The status card and the status text show the login message of the server.
 
 ## Deploy scripts
 
-These files are in `scripts/` and `deploy/systemd/`. They run as root on the server. Set the exec bit in git once: `git update-index --chmod=+x scripts/server-firewall.sh scripts/server-backup.sh scripts/server-revision-check.sh scripts/server-alert.sh`.
+These files are in `scripts/` and `deploy/systemd/`. They run as root on the server. Set the exec bit in git once: `git update-index --chmod=+x scripts/server-firewall.sh scripts/server-backup.sh scripts/server-revision-check.sh scripts/server-alert.sh scripts/server-chrome-prune.sh scripts/server-restore-test.sh`.
 
 | What | Install | Notes |
 |---|---|---|
-| Box egress firewall | `sudo BOX_USERS=rsbox scripts/server-firewall.sh apply 7790`, then install and enable `rsbox-egress.service` | Each box user can reach only `127.0.0.1` on the proxy ports. IPv6 is closed for them. Modes: `apply [PORTS]`, `egress [PORTS]`, `status`, `undo [--ufw]`. PORTS is one port, a range or a list (`7790`, `7790-7795`, `7790,7792`). With `GUILDS_FILE`, list every box user in `BOX_USERS` and give the range `PROXY_PORT` to `PROXY_PORT` + guilds - 1. Edit `BOX_USERS` and `PROXY_PORTS` in `rsbox-egress.service` to match. |
+| Game egress firewall | install `rsgame-egress.service` and `rsgame-egress.timer`, then `systemctl enable --now rsgame-egress.service rsgame-egress.timer` | `scripts/server-firewall.sh game-egress` lets `rsgame` reach only loopback, DNS, and the game host (`RS_SERVER_HOST`, from the environment or `/etc/rs-gamelink/gamelink.env`) on TCP 443 and 7443 (`GAME_PORTS`). Open connections stay open. The timer runs `game-egress-refresh` every hour, which keeps the old rules when the host does not resolve. With no rules and no resolved host, `rsgame` gets loopback and DNS only. After you enable it, check the journal of `rs-gamelink` for refused connections to other hosts. |
+| Box egress firewall | `sudo BOX_USERS=rsbox scripts/server-firewall.sh apply 7790`, then install and enable `rsbox-egress.service` | Each box user can reach only `127.0.0.1` on the proxy ports. IPv6 is closed for them. Modes: `apply [PORTS]`, `egress [PORTS]`, `game-egress`, `game-egress-refresh`, `status`, `undo [box|game] [--ufw]` (no word removes both). PORTS is one port, a range or a list (`7790`, `7790-7795`, `7790,7792`). With `GUILDS_FILE`, list every box user in `BOX_USERS` and give the range `PROXY_PORT` to `PROXY_PORT` + guilds - 1. Edit `BOX_USERS` and `PROXY_PORTS` in `rsbox-egress.service` to match. |
 | Backup | install `rs-backup.service` and `rs-backup.timer`, then `systemctl enable --now rs-backup.timer` | Backs up the SQLite files under `data/` with `sqlite3 .backup` (install `sqlite3`). Env: `APP_DIR`, `BACKUP_DIR` (default `/var/backups/rs-discord-bot`), `KEEP` (default 14). The script header has the restore steps. |
 | Revision check | install `rs-revision-check.service` and `.timer`, enable the timer | Logs `REVISION CHANGED` when the bot page of the game server changes: `journalctl -u rs-revision-check`. It then writes `data/revision-changed`, restarts `rs-gamelink` (split mode only, through `try-restart`), and runs `server-alert.sh --revision`, which posts to `ALERT_CHANNEL_ID` at most once an hour. The bot reads `data/revision-changed`, logs `game revision changed` once, deletes the file and draws the status cards again. |
+| Old Chrome versions | `sudo scripts/server-chrome-prune.sh`, then again with `--apply` | Removes the versions under `/opt/rs-chrome` (`CHROME_ROOT`) other than the one in `RS_CHROME_PATH` (from the environment or `server.env`). It keeps a version that a running process uses, and skips symbolic links. With no flag it only prints. |
+| Restore test | `sudo scripts/server-restore-test.sh [ARCHIVE]` | Extracts the newest backup (or ARCHIVE) to a temporary directory, checks `secrets/` and `data/bot.sqlite` with `PRAGMA integrity_check` and a table count, prints the sizes, and removes the directory. It writes nothing over live files. Exit 1 when a part is missing. |
 | Job limits | `rs-discord-bot.service` has `Delegate=yes` | The bot makes one cgroup for all jobs and sets `JOB_MEMORY_MB`, `JOB_PIDS` and `JOB_CPU_PERCENT`. Without delegation it logs one line and runs jobs with no limits. |
 
 ## 6. Smoke test without Discord
@@ -337,5 +350,5 @@ The last line of stdout is JSON. Each value under `checks` must be `true`.
 
 - Without `BOX_USER`, AI-written code can read the secrets of the bot. With `BOX_USER`, the job limits need `Delegate=yes`, and the network limit needs the firewall script. [security.md](security.md) lists the gaps.
 - The status card, adventure log, posts and the Discord adapters have unit tests only. They have not run against a real Discord server yet.
-- The wake rate limit, the trigger state and the hourly post count are in memory. A restart resets them. The daily recap reads the events table, so it survives a restart.
+- The wake rate limit, the trigger state, the queue votes and the hourly post and gallery counts are in memory. A restart resets them. The daily recap reads the events table, so it survives a restart.
 - All guilds use one game server.
