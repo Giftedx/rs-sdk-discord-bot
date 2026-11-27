@@ -39,9 +39,11 @@ export function wieldRule(label: string, args: string[]): string | null {
 
 const slugify = (n: string) => n.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-function walk(dir: string, ext: string, out: string[] = []): string[] {
+export function walk(dir: string, ext: string, out: string[] = []): string[] {
   if (!existsSync(dir)) return out;
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
+  // Sorted: the order of readdirSync differs between file systems, and the pages must not.
+  const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const e of entries) {
     const p = join(dir, e.name);
     if (e.isDirectory()) walk(p, ext, out); else if (e.name.endsWith(ext)) out.push(p);
   }

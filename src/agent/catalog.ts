@@ -1,9 +1,9 @@
 // Knowledge pages made from the server configs: all armour by slot, by metal and by style, and
 // all food by the hitpoints it heals. Like the weapon pages in wield.ts, they come from the data
 // that the server runs, so they cannot drift from the game the way the hand-written wiki did.
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fitPage, METAL, type ObjConfig } from './wield';
+import { fitPage, METAL, walk, type ObjConfig } from './wield';
 
 type Page = { source: string; text: string };
 
@@ -84,7 +84,9 @@ export function armourPages(objs: Map<string, ObjConfig>, bySym: Map<string, str
     const can = list.filter(a => a.slot === slot && !/Ranged|Magic|Attack|Strength/.test(a.rule) && a.defTotal > 0);
     const rows: { from: number; to: number | null; text: string }[] = [];
     TIERS.forEach((t, i) => {
-      const ok = can.filter(a => a.level <= t).sort((a, b) => b.defTotal - a.defTotal || a.level - b.level);
+      // On a tie, the plain item before its trimmed copy (the code name ends in _trim or _gold).
+      const copy = (a: Armour) => (/_(trim|gold)$/.test(a.sym) ? 1 : 0);
+      const ok = can.filter(a => a.level <= t).sort((a, b) => b.defTotal - a.defTotal || a.level - b.level || copy(a) - copy(b) || a.name.localeCompare(b.name));
       if (!ok[0]) return;
       const free = ok.find(a => !a.members);
       const text = free && free !== ok[0] ? `${label(ok[0])}. Free: ${label(free)}` : label(ok[0]);
@@ -109,15 +111,6 @@ export function armourPages(objs: Map<string, ObjConfig>, bySym: Map<string, str
     ...page('magic', 'Magic armour and robes (magic attack bonus)', list.filter(a => a.magic)),
     ...page('prayer', 'Prayer gear (prayer bonus: prayer lasts longer)', list.filter(a => a.prayer)),
   ];
-}
-
-function walk(dir: string, ext: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out;
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) walk(p, ext, out); else if (e.name.endsWith(ext)) out.push(p);
-  }
-  return out;
 }
 
 /** The dbrow rows of every .dbrow file under a folder: one map of column -> values per row. */
