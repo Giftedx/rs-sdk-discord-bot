@@ -50,7 +50,6 @@ if [ -f "$stamp" ] && [ $(( now - $(cat "$stamp" 2>/dev/null || echo 0) )) -lt 3
   echo "rs-alert: $unit is still down ($state); a message was sent less than an hour ago"
   exit 0
 fi
-echo "$now" > "$stamp"
 
 hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT
 chmod 600 "$hdr"
@@ -61,4 +60,6 @@ body="{\"content\":\"${text}\",\"allowed_mentions\":{\"parse\":[]}}"
 code="$("$CURL" -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST -H @"$hdr" -H 'Content-Type: application/json' \
   --data "$body" "https://discord.com/api/v10/channels/$channel/messages" || true)"
 echo "rs-alert: message about $unit sent to Discord, HTTP status ${code:-none}"
-[ "$code" = 200 ]
+[ "$code" = 200 ] || exit 1
+# The stamp only after a delivered message: a failed send must not hide the next alerts.
+echo "$now" > "$stamp"

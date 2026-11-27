@@ -13,7 +13,7 @@
 # The script keeps the newest KEEP archives (default 14) and deletes the older ones.
 #
 # Restore:
-#   1. sudo systemctl stop rs-discord-bot.service
+#   1. sudo systemctl stop rs-discord-bot.service rs-gamelink.service
 #   2. Look at the archive: sudo tar -tzf /var/backups/rs-discord-bot/rs-discord-bot-<time>.tar.gz
 #   3. Extract it into the app directory:
 #        sudo tar -xzpf /var/backups/rs-discord-bot/rs-discord-bot-<time>.tar.gz -C /opt/rs-discord-bot
@@ -22,8 +22,15 @@
 #        sudo chown -R rsbot:rsbot /opt/rs-discord-bot/data
 #        sudo chown -R root:rsbot /opt/rs-discord-bot/secrets   (use the owner that
 #        scripts/server-bootstrap.sh gave; tar -p keeps the modes)
-#   5. If a "*-wal" or "*-shm" file of an old database is next to a restored database, delete it.
-#   6. sudo systemctl start rs-discord-bot.service
+#   5. Split mode only: the archive put rs-gamelink-etc/ in the app directory. Move it back to
+#      /etc/rs-gamelink with its owners and modes, and delete the copy in the app directory:
+#        sudo install -d -m 750 -o root -g rsgate /etc/rs-gamelink
+#        sudo install -m 600 -o rsgame -g rsgame /opt/rs-discord-bot/rs-gamelink-etc/account.env /etc/rs-gamelink/
+#        sudo install -m 640 -o root -g rsgate /opt/rs-discord-bot/rs-gamelink-etc/token /etc/rs-gamelink/
+#        sudo install -m 640 -o root -g rsgame /opt/rs-discord-bot/rs-gamelink-etc/gamelink.env /etc/rs-gamelink/   (if it exists)
+#        sudo rm -rf /opt/rs-discord-bot/rs-gamelink-etc
+#   6. If a "*-wal" or "*-shm" file of an old database is next to a restored database, delete it.
+#   7. sudo systemctl start rs-gamelink.service rs-discord-bot.service
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/rs-discord-bot}"
@@ -41,8 +48,13 @@ umask 077
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 
+name="rs-discord-bot-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+tmp="$BACKUP_DIR/.$name.part"
 stage="$(mktemp -d "$BACKUP_DIR/.stage.XXXXXX")"
-trap 'rm -rf "$stage"' EXIT
+# A failed tar (a full disk) must not leave its part file. After the mv, $tmp no longer exists.
+trap 'rm -rf "$stage" "$tmp"' EXIT
+# Part files and stages of an earlier run that was killed.
+find "$BACKUP_DIR" -maxdepth 1 \( -name '.rs-discord-bot-*.tar.gz.part' -o -name '.stage.*' \) ! -path "$stage" -exec rm -rf {} +
 
 parts=()
 for part in secrets data; do
@@ -82,8 +94,6 @@ if [ -d "$APP_DIR/data" ]; then
   done < <(find "$APP_DIR/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0)
 fi
 
-name="rs-discord-bot-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
-tmp="$BACKUP_DIR/.$name.part"
 tar -czf "$tmp" -C "$stage" "${parts[@]}"
 chmod 600 "$tmp"
 mv "$tmp" "$BACKUP_DIR/$name"
