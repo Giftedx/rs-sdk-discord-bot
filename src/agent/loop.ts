@@ -156,6 +156,7 @@ Job code format: the body of an async function. Example:
 
 Protections: each job runs built-in protections. At HP 40% or less they eat the food that heals most; at 25% or less with no food they run 10 tiles away from the attacker. The job body can call protections.off(), protections.on() and protections.status(). Turn them off only when the instruction needs it, for example a fight to the death.
 Saved seed scripts (skip-tutorial, walk-to, bank-deposit-all, chop-and-bank, fish-and-cook, mine-and-bank, kill-chickens) are in the script list. On a new account, run bank-deposit-all first: the starter kit fills the inventory. The gather seed scripts stop by themselves after at most 13 minutes: run them with timeout_s 900.
+A death loses most of the inventory, tools included. Tools: Bob's Axes in Lumbridge (3230, 3203) sells a bronze axe (16 gp) and a bronze pickaxe (1 gp); Gerrant's Fishy Business in Port Sarim (3014, 3224) sells a small fishing net (5 gp). Carry food before a fight or a long walk, and keep away from aggressive NPCs that are above the account's combat level.
 
 rs-sdk API reference:
 ${apiReference}`;

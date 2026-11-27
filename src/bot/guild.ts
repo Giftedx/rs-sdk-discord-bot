@@ -13,7 +13,7 @@ import { runInstruction, type AgentDeps, type AgentJobResult, type InstructionRe
 import { createStore, type KnowledgeChunk } from '../agent/store';
 import type { JobCgroup } from '../box/cgroup';
 import { createJobRunner } from '../box/job-runner';
-import { seedStore } from '../box/seed';
+import { fileSeedRecord, seedStore } from '../box/seed';
 import { cardChannel, logThreadHost, postChannel } from '../discord/adapters';
 import { AdventureLog } from '../discord/adventure-log';
 import { MainPosts, type CardSubject } from '../discord/posts';
@@ -84,7 +84,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     } : {}),
   });
   const store = createStore(g.dataDir);
-  const added = seedStore(store, join(sh.root, 'seed'));
+  const added = seedStore(store, join(sh.root, 'seed'), fileSeedRecord(join(g.dataDir, 'seed-hashes.json')));
   log(added.length > 0 ? `seed scripts added: ${added.join(', ')}` : 'seed scripts: none new');
 
   let current: { row: InstructionRow; abort: AbortController; job: ReturnType<typeof jobSignal> | null } | null = null;
@@ -342,7 +342,8 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       });
       for (const a of actions) {
         if (a.type === 'abort_job') { log(`job stopped: ${a.reason}`); current?.job?.abort(a.reason); }
-        else if (a.type === 'event') { db.addEvent(g.name, a.event, a.text); advLog?.add(a.text); }
+        // The events diff (src/events/diff.ts) already reports a death: keep one line per death.
+        else if (a.type === 'event') { if (a.event !== 'death') { db.addEvent(g.name, a.event, a.text); advLog?.add(a.text); } }
         else if (a.type === 'wake') {
           if (a.timerId !== undefined) db.deleteTimer(a.timerId);
           db.enqueueInstruction(g.name, a.user, a.text, a.kind);

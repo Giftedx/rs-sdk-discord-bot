@@ -9,7 +9,7 @@ let caught = 0;
 let cooked = 0;
 let rounds = 0;
 
-if (!sdk.findInventoryItem(/small fishing net/i)) return 'no small fishing net in the inventory';
+if (!sdk.findInventoryItem(/small fishing net/i)) return "no small fishing net in the inventory: buy one (5 gp) at Gerrant's Fishy Business in Port Sarim (3014, 3224)";
 if (sdk.getInventory().length >= 28 && count(/^raw /i) === 0) return 'inventory is full: run bank-deposit-all first';
 while (Date.now() < deadline && rounds < MAX_ROUNDS) {
   await bot.walkTo(SPOT.x, SPOT.z);

@@ -11,7 +11,7 @@ let trips = 0;
 let fails = 0;
 let nextTin = false;
 
-if (!sdk.findInventoryItem(/pickaxe/i) && !sdk.findEquipmentItem(/pickaxe/i)) return 'no pickaxe';
+if (!sdk.findInventoryItem(/pickaxe/i) && !sdk.findEquipmentItem(/pickaxe/i)) return "no pickaxe: buy a bronze pickaxe (1 gp) at Bob's Axes in Lumbridge (3230, 3203)";
 while (Date.now() < deadline && trips < MAX_TRIPS) {
   if (sdk.getInventory().length < 28) {
     const p = sdk.getState()?.player;

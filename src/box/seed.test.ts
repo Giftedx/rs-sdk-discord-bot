@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createStore } from '../agent/store';
-import { parseSeed, readSeeds, seedStore } from './seed';
+import { fileSeedRecord, parseSeed, readSeeds, seedStore } from './seed';
 
 const SEED_DIR = resolve(import.meta.dir, '..', '..', 'seed');
 
@@ -41,5 +41,32 @@ describe('seed scripts', () => {
       expect(s.body).toMatch(/\breturn\b/);
       expect(() => transpiler.transformSync(`export async function job(bot: any, sdk: any, protections: any) {\n${s.body}\n}`)).not.toThrow();
     }
+  });
+});
+
+describe('seed updates', () => {
+  function setup() {
+    const root = mkdtempSync(join(tmpdir(), 'seedupd-'));
+    mkdirSync(join(root, 'seed'));
+    writeFileSync(join(root, 'seed', 'walk.ts'), '// Walk v1\nreturn 1;\n');
+    const store = createStore(join(root, 'data'));
+    const record = fileSeedRecord(join(root, 'data', 'seed-hashes.json'));
+    return { root, store, record };
+  }
+  test('a new seed version replaces a stored seed that nobody changed', () => {
+    const { root, store, record } = setup();
+    expect(seedStore(store, join(root, 'seed'), record)).toEqual(['walk']);
+    writeFileSync(join(root, 'seed', 'walk.ts'), '// Walk v2\nreturn 2;\n');
+    expect(seedStore(store, join(root, 'seed'), record)).toEqual(['walk']);
+    expect(store.readScript('walk')).toContain('return 2;');
+    expect(seedStore(store, join(root, 'seed'), record)).toEqual([]);
+  });
+  test('a stored seed that the AI changed stays as it is', () => {
+    const { root, store, record } = setup();
+    seedStore(store, join(root, 'seed'), record);
+    store.saveScript('walk', 'Walk mine', 'return 9;');
+    writeFileSync(join(root, 'seed', 'walk.ts'), '// Walk v2\nreturn 2;\n');
+    expect(seedStore(store, join(root, 'seed'), record)).toEqual([]);
+    expect(store.readScript('walk')).toContain('return 9;');
   });
 });
