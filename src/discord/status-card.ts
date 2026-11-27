@@ -93,7 +93,12 @@ export function currentSkill(samples: SkillSample[], windowMs = XP_RATE_WINDOW_M
 export function renderCard(v: CardView, secrets: string[], watchUrl?: string): CardMessage {
   const hp = v.hp ? `${v.hp.hp}/${v.hp.maxHp}` : '?';
   // A long goal or step must not push the queue, spend and warning lines off the card.
-  const cap = (s: string | null | undefined, n = 200) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : s ?? null);
+  // Hide the secrets first, then cut: a cut through a secret would leave a part that no longer matches.
+  const cap = (s: string | null | undefined, n = 200) => {
+    if (!s) return s ?? null;
+    const r = sanitizeForDiscord(s, secrets, Number.MAX_SAFE_INTEGER);
+    return r.length > n ? `${r.slice(0, n - 1)}…` : r;
+  };
   const lines = [`**Status** ${CARD_MARKER}`];
   if (v.running || v.goal) {
     const step = cap(v.step) || 'working';

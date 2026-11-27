@@ -179,7 +179,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       frame: frames.latest()?.png ?? null,
       inventory: s ? { used: s.inventory.length, max: 28 } : null,
       xpSamples: xpSamples(),
-      lastEvent: cardLastEvent(db.recentEvents(10, g.name)),
+      lastEvent: cardLastEvent(db.recentEvents(10, g.name), discordSecrets),
       script,
     });
   }

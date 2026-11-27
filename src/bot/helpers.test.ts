@@ -256,3 +256,12 @@ describe('retryUntil', () => {
     expect(calls).toBe(6);
   });
 });
+
+describe('secrets and cuts', () => {
+  test('cardLastEvent hides a secret before it cuts the text', () => {
+    const secret = 'hunter2secretvalue';
+    const text = `${'word '.repeat(16)}${secret} and more words after it`;
+    const out = cardLastEvent([{ type: 'death', text }], [secret])!;
+    expect(out).not.toContain('hunter2');
+  });
+});

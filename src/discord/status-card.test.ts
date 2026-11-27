@@ -171,3 +171,11 @@ describe('long text on the card', () => {
     expect(m.content).toContain('⚠️ game tab: login_refused');
   });
 });
+
+describe('secrets and cuts on the card', () => {
+  test('a secret at the cut point of the goal is hidden, not cut in half', () => {
+    const secret = 'hunter2secretvalue';
+    const m = renderCard({ goal: `${'g'.repeat(190)}${secret}`, step: 'x', running: true, hp: null, queueLength: 0, spend: { usedUsd: 0, capUsd: 1 }, frame: null } as never, [secret]);
+    expect(m.content).not.toContain('hunter2');
+  });
+});

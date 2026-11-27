@@ -4,6 +4,7 @@ import { lostItems, totalLevel, type CompactState as EventState, type GameEvent 
 import type { CardSubject } from '../discord/posts';
 import type { CardView, SkillSample } from '../discord/status-card';
 import { MAX_INSTRUCTION_CHARS } from './queue';
+import { sanitizeForDiscord } from '../shared/sanitize';
 
 // A lock per key. Guilds that share a box user share one key, because the job runner kills
 // every process of the box user after a job.
@@ -294,10 +295,11 @@ export function createRateLimit(max: number, windowMs: number, now: () => number
 
 // The "Last:" line of the status card: the newest event that is not an item gain, short.
 // "Instruction ended (finished): <text>" becomes "Finished: <text>".
-export function cardLastEvent(rows: { type: string; text: string }[], max = 90): string | null {
+export function cardLastEvent(rows: { type: string; text: string }[], secrets: string[] = [], max = 90): string | null {
   const r = rows.find(x => x.type !== 'item_gain' && x.type !== 'wake_skipped');
   if (!r) return null;
-  let t = r.text.replace(/\s+/g, ' ').trim();
+  // Hide the secrets first, then shorten: a cut through a secret would leave a part that no longer matches.
+  let t = sanitizeForDiscord(r.text, secrets, Number.MAX_SAFE_INTEGER).replace(/\s+/g, ' ').trim();
   const done = /^Instruction ended \(([a-z_]+)\): (.*)$/i.exec(t);
   if (done) t = `${done[1] === 'finished' ? 'Finished' : `Ended (${done[1]})`}: ${done[2]}`;
   if (t.length <= max) return t;
