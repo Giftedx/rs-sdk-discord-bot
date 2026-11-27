@@ -63,3 +63,10 @@ test('the crash reporter is off', () => {
   expect(CHROMIUM_ARGS).toContain('--disable-crash-reporter');
   expect(CHROMIUM_ARGS).toContain('--disable-breakpad');
 });
+
+test('puppeteer does not handle the signals of the process', () => {
+  const o = browserLaunchOptions({}, { env: { HOME: '/h' }, fileExists: exists([]), platform: 'linux' });
+  expect(o.handleSIGINT).toBe(false);
+  expect(o.handleSIGTERM).toBe(false);
+  expect(o.handleSIGHUP).toBe(false);
+});

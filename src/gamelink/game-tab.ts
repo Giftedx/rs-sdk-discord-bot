@@ -128,6 +128,12 @@ export function browserLaunchOptions(
     pipe: (deps.platform ?? process.platform) !== 'win32',
     args: [...CHROMIUM_ARGS],
     env: browserLaunchEnv(deps.env),
+    // The process has its own handlers: SIGTERM and SIGINT log the tabs out before the browser
+    // closes, and SIGHUP logs them out and in again. Puppeteer's default handlers would kill the
+    // browser first.
+    handleSIGINT: false,
+    handleSIGTERM: false,
+    handleSIGHUP: false,
     ...(opts.userDataDir ? { userDataDir: opts.userDataDir } : {}),
     ...(executablePath !== null ? { executablePath } : {}),
   };
