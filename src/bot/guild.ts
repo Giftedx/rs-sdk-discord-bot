@@ -36,7 +36,10 @@ import {
   ADMIT_TEXT, buildReceipt, endedOf, RECEIPT_SUMMARY_MAX, cardFor, createItemIdBook, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
   retryBackoff, scriptFromProgress, tabLine, wakeContextText, type CardRequest, type Receipt, type createKeyedLock,
 } from './helpers';
-import { bankData, bankSeen, bankText, equipmentData, geData, geSeen, geText, inventoryData, pickInfoCard, skillsData, type BankSeen, type GeSeen, type InfoKind, type InfoState } from './info-cards';
+import {
+  bankData, bankSeen, bankText, equipmentData, geData, geSeen, geText, inventoryData, nearbyData, pickInfoCard, prayerData, shopData, shopSeen, skillsData, tradeData, tradeSeen,
+  type BankSeen, type GeSeen, type InfoKind, type InfoState, type ShopSeen, type TradeSeen,
+} from './info-cards';
 
 export interface Shared {
   cfg: BotConfig;
@@ -390,13 +393,12 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     return r.content.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('\n').trim();
   }
 
-  // A question gets a short answer at once, from the status, the game state and a search of the
-  // knowledge pack, with no job.
-  // Keeps the bank and the exchange while their window is open. It writes only on a change, because
-  // a state comes several times a second.
-  const lastSeenJson: Record<'bank' | 'ge', string> = { bank: '', ge: '' };
+  // Keeps the bank, the exchange, the shop and the trade while their window is open. It writes only
+  // on a change, because a state comes several times a second.
+  type SeenKey = 'bank' | 'ge' | 'shop' | 'trade';
+  const lastSeenJson: Record<SeenKey, string> = { bank: '', ge: '', shop: '', trade: '' };
   function rememberSeen(s: InfoState): void {
-    const parts: ['bank' | 'ge', BankSeen | GeSeen | null][] = [['bank', bankSeen(s)], ['ge', geSeen(s)]];
+    const parts: [SeenKey, unknown][] = [['bank', bankSeen(s)], ['ge', geSeen(s)], ['shop', shopSeen(s)], ['trade', tradeSeen(s)]];
     for (const [key, value] of parts) {
       if (!value) continue;
       const json = JSON.stringify(value);
@@ -410,19 +412,36 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   // the question asks for no card, or the bot has no data for it (no fresh state, bank never seen).
   function infoCard(kind: InfoKind): { req: CardRequest; facts: string } | null {
     const now = Date.now();
-    if (kind === 'bank' || kind === 'ge') {
-      if (kind === 'bank') {
-        const seen = db.getSeen<BankSeen>(g.name, 'bank');
-        return seen ? { req: { kind: 'bank', data: bankData(seen.value, now - seen.time) }, facts: bankText(seen.value, now - seen.time) } : null;
-      }
-      const seen = db.getSeen<GeSeen>(g.name, 'ge');
-      return seen ? { req: { kind: 'ge', data: geData(seen.value, now - seen.time) }, facts: geText(seen.value, now - seen.time) } : null;
+    const saved = <T,>(key: SeenKey) => db.getSeen<T>(g.name, key);
+    let req: CardRequest | null = null;
+    let facts = '';
+    if (kind === 'bank') {
+      const seen = saved<BankSeen>('bank');
+      if (seen) { req = { kind, data: bankData(seen.value, now - seen.time) }; facts = bankText(seen.value, now - seen.time); }
+    } else if (kind === 'ge') {
+      const seen = saved<GeSeen>('ge');
+      if (seen) { req = { kind, data: geData(seen.value, now - seen.time) }; facts = geText(seen.value, now - seen.time); }
+    } else if (kind === 'shop') {
+      const seen = saved<ShopSeen>('shop');
+      if (seen) req = { kind, data: shopData(seen.value, now - seen.time) };
+    } else if (kind === 'trade') {
+      const seen = saved<TradeSeen>('trade');
+      if (seen) req = { kind, data: tradeData(seen.value, now - seen.time) };
+    } else {
+      const s = freshState() as unknown as InfoState | null;
+      if (!s) return null;
+      if (kind === 'equipment') req = { kind, data: equipmentData(s) };
+      else if (kind === 'inventory') req = { kind, data: inventoryData(s) };
+      else if (kind === 'skills') req = { kind, data: skillsData(s) };
+      else if (kind === 'nearby') req = { kind, data: nearbyData(s) };
+      else { const p = prayerData(s); if (p) req = { kind, data: p }; }
     }
-    const s = freshState() as unknown as InfoState | null;
-    if (!s) return null;
-    const req: CardRequest = kind === 'equipment' ? { kind, data: equipmentData(s) } : kind === 'inventory' ? { kind, data: inventoryData(s) } : { kind, data: skillsData(s) };
-    return { req, facts: `${kind} now: ${JSON.stringify(req.data)}` };
+    if (!req) return null;
+    return { req, facts: facts || `${kind}: ${JSON.stringify(req.data)}` };
   }
+
+  // A question gets a short answer at once, from the status, the game state and a search of the
+  // knowledge pack, with no job.
 
   async function answerQuestion(author: string, text: string, history: ChannelLine[], extra = ''): Promise<string> {
     let knowledge = '';

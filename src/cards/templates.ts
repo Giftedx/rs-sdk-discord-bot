@@ -2,9 +2,9 @@
 // window.renderCard(kind, data, icons) for each card. The page script builds the DOM with
 // createElement and textContent only, because item names and player names are untrusted.
 
-export type CardKind = 'level_up' | 'death' | 'instruction_receipt' | 'daily_recap' | 'status' | 'xp_chart' | 'equipment' | 'inventory' | 'bank' | 'skills' | 'ge';
+export type CardKind = 'level_up' | 'death' | 'instruction_receipt' | 'daily_recap' | 'status' | 'xp_chart' | 'equipment' | 'inventory' | 'bank' | 'skills' | 'ge' | 'shop' | 'prayer' | 'nearby' | 'trade';
 
-export const CARD_KINDS: readonly CardKind[] = ['level_up', 'death', 'instruction_receipt', 'daily_recap', 'status', 'xp_chart', 'equipment', 'inventory', 'bank', 'skills', 'ge'];
+export const CARD_KINDS: readonly CardKind[] = ['level_up', 'death', 'instruction_receipt', 'daily_recap', 'status', 'xp_chart', 'equipment', 'inventory', 'bank', 'skills', 'ge', 'shop', 'prayer', 'nearby', 'trade'];
 
 /** The wear slots of the 2004 equipment screen. */
 export type EquipSlot = 'head' | 'cape' | 'neck' | 'ammo' | 'weapon' | 'body' | 'shield' | 'legs' | 'hands' | 'feet' | 'ring';
@@ -46,6 +46,40 @@ export interface GeOffer {
   price: number;
   filled: number;
   state: 'open' | 'completed' | 'cancelled';
+}
+
+export interface ShopItemCard extends CardItem {
+  /** What the shop asks for one, in coins. */
+  price: number;
+}
+
+export interface ShopCard {
+  title: string;
+  seen: string;
+  items: ShopItemCard[];
+}
+
+export interface PrayerCard {
+  points: number;
+  level: number;
+  /** The 15 prayers of 2004, in prayer book order. level: the Prayer level that it needs. */
+  prayers: { name: string; level: number; active: boolean }[];
+}
+
+export interface NearbyCard {
+  npcs: { name: string; level: number; distance: number; hpPct?: number }[];
+  players: { name: string; level: number; distance: number }[];
+  items: (CardItem & { distance: number })[];
+}
+
+export interface TradeCard {
+  partner: string;
+  seen: string;
+  screen: 'offer' | 'confirm';
+  mine: CardItem[];
+  theirs: CardItem[];
+  myAccepted: boolean;
+  theirAccepted: boolean;
 }
 
 export interface GeCard {
@@ -147,6 +181,10 @@ export interface CardDataMap {
   bank: BankCard;
   skills: SkillsCard;
   ge: GeCard;
+  shop: ShopCard;
+  prayer: PrayerCard;
+  nearby: NearbyCard;
+  trade: TradeCard;
 }
 
 /** The width of each card and its largest height. The picture is as high as its content. */
@@ -163,6 +201,10 @@ export const CARD_SIZES: Readonly<Record<CardKind, { width: number; height: numb
   bank: { width: 560, height: 520 },
   skills: { width: 560, height: 400 },
   ge: { width: 560, height: 520 },
+  shop: { width: 560, height: 560 },
+  prayer: { width: 560, height: 340 },
+  nearby: { width: 560, height: 620 },
+  trade: { width: 560, height: 480 },
 };
 
 /** The smallest height of a card picture. */
@@ -202,6 +244,9 @@ const LIMITS = {
   bankItems: 80,
   geOffers: 8,
   style: 40,
+  shopItems: 40,
+  nearby: 8,
+  tradeItems: 28,
 };
 
 export const MAX_LEVEL = 99;
@@ -428,6 +473,54 @@ export function validateCardData<K extends CardKind>(kind: K, data: unknown): Ca
       out = s;
       break;
     }
+    case 'shop': {
+      const list = rows(o, 'items', LIMITS.shopItems, w, (k, kw) => {
+        const it: ShopItemCard = { name: str(k, 'name', LIMITS.name, kw), count: num(k, 'count', kw, 0, 2_147_483_647), price: num(k, 'price', kw, 0, 2_147_483_647) };
+        if (k.id !== undefined) it.id = num(k, 'id', kw, 0, 999_999);
+        return it;
+      }) ?? [];
+      out = { title: str(o, 'title', LIMITS.place, w), seen: str(o, 'seen', LIMITS.time, w), items: list } satisfies ShopCard;
+      break;
+    }
+    case 'prayer': {
+      const level = num(o, 'level', w, 1, 126);
+      const prayers = arr(o, 'prayers', 30, w, false)!.map((e, i) => {
+        const kw = `${w}.prayers[${i}]`;
+        const k = obj(e, kw);
+        if (typeof k.active !== 'boolean') throw new CardDataError(`${kw}.active: not a boolean`);
+        return { name: str(k, 'name', LIMITS.name, kw), level: num(k, 'level', kw, 1, 126), active: k.active };
+      });
+      out = { points: num(o, 'points', w, 0, 255), level, prayers } satisfies PrayerCard;
+      break;
+    }
+    case 'nearby': {
+      const npcs = rows(o, 'npcs', LIMITS.nearby, w, (k, kw) => {
+        const n: NearbyCard['npcs'][number] = { name: str(k, 'name', LIMITS.name, kw), level: num(k, 'level', kw, 0, 2_000), distance: num(k, 'distance', kw, 0, 200) };
+        const hp = optNum(k, 'hpPct', kw, 0, 100);
+        if (hp !== undefined) n.hpPct = hp;
+        return n;
+      }) ?? [];
+      const players = rows(o, 'players', LIMITS.nearby, w, (k, kw) => ({ name: str(k, 'name', LIMITS.name, kw), level: num(k, 'level', kw, 0, 200), distance: num(k, 'distance', kw, 0, 200) })) ?? [];
+      const list = rows(o, 'items', LIMITS.nearby, w, (k, kw) => {
+        const it: CardItem & { distance: number } = { name: str(k, 'name', LIMITS.name, kw), count: num(k, 'count', kw, 1, 2_147_483_647), distance: num(k, 'distance', kw, 0, 200) };
+        if (k.id !== undefined) it.id = num(k, 'id', kw, 0, 999_999);
+        return it;
+      }) ?? [];
+      out = { npcs, players, items: list } satisfies NearbyCard;
+      break;
+    }
+    case 'trade': {
+      const screen = o.screen;
+      if (screen !== 'offer' && screen !== 'confirm') throw new CardDataError(`${w}.screen: not offer or confirm`);
+      if (typeof o.myAccepted !== 'boolean' || typeof o.theirAccepted !== 'boolean') throw new CardDataError(`${w}: accepted flags must be booleans`);
+      const side = (key: string) => rows(o, key, LIMITS.tradeItems, w, (k, kw) => {
+        const it: CardItem = { name: str(k, 'name', LIMITS.name, kw), count: num(k, 'count', kw, 1, 2_147_483_647) };
+        if (k.id !== undefined) it.id = num(k, 'id', kw, 0, 999_999);
+        return it;
+      }) ?? [];
+      out = { partner: str(o, 'partner', LIMITS.name, w), seen: str(o, 'seen', LIMITS.time, w), screen, mine: side('mine'), theirs: side('theirs'), myAccepted: o.myAccepted, theirAccepted: o.theirAccepted } satisfies TradeCard;
+      break;
+    }
     case 'ge': {
       const offers = arr(o, 'offers', LIMITS.geOffers, w, false)!.map((e, i) => {
         const kw = `${w}.offers[${i}]`;
@@ -461,6 +554,9 @@ export function cardIconIds(kind: CardKind, data: CardDataMap[CardKind]): number
   else if (kind === 'instruction_receipt') list = (data as InstructionReceiptCard).inventory ?? [];
   else if (kind === 'equipment') list = (data as EquipmentCard).worn;
   else if (kind === 'ge') list = (data as GeCard).offers;
+  else if (kind === 'shop') list = (data as ShopCard).items;
+  else if (kind === 'nearby') list = (data as NearbyCard).items;
+  else if (kind === 'trade') list = [...(data as TradeCard).mine, ...(data as TradeCard).theirs];
   return [...new Set(list.flatMap(i => (i.id === undefined ? [] : [i.id])))];
 }
 
@@ -529,6 +625,17 @@ border:2px solid #000;box-shadow:inset 0 0 0 2px #6e6352,inset 0 0 0 4px #221d17
 .skt .nm{flex:1;min-width:0;font-size:12.5px;color:#ff981f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .skt .lv{font-size:14px;color:#ffff00}
 .doll{display:grid;grid-template-columns:repeat(3,44px);grid-template-rows:repeat(5,38px);gap:4px 10px}
+.shopgrid{display:grid;grid-template-columns:repeat(8,58px);gap:6px 4px}
+.shopcell{display:flex;flex-direction:column;align-items:center;gap:2px}
+.shopcell .gp{font-size:11.5px;color:#ffff00;white-space:nowrap}
+.slot.out img{opacity:.45}
+.pray{display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
+.pt{height:50px;padding:4px 6px;background:#2e2820;border:1px solid #1a1611;display:flex;flex-direction:column;justify-content:center;gap:2px;min-width:0}
+.pt .pn{font-size:12px;color:#ff981f;line-height:1.1;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.pt .pl{font-size:11px;color:#c9b98f}
+.pt.on{background:#4a4220;border-color:#ffff00;box-shadow:0 0 6px rgba(255,255,0,.5)}
+.pt.on .pn{color:#ffff00}.pt.on .pl{color:#00ff00}
+.pt.lock{opacity:.45}
 .ghost{font-size:9.5px;color:#6e6352;text-shadow:none}
 .legend{display:flex;flex-wrap:wrap;gap:4px 14px;padding:0 4px;font-size:13px}
 .legend span{display:inline-flex;align-items:center;gap:6px;color:#fff;white-space:nowrap}
@@ -878,6 +985,102 @@ export const CARD_PAGE_SCRIPT = `
       p.appendChild(st);
       c.appendChild(p);
     });
+  };
+
+  function price(n){
+    if (n >= 10000000) return Math.floor(n / 1000000) + 'M';
+    if (n >= 100000) return Math.floor(n / 1000) + 'K';
+    return fmt(n);
+  }
+
+  R.shop = function(c, d, icons){
+    head(c, d.title, 'Seen ' + d.seen);
+    var p = well('Stock and price');
+    if (!d.items.length) p.appendChild(el('div','more','The shop had nothing.'));
+    var g = el('div','shopgrid');
+    d.items.forEach(function(it){
+      var cell = el('div','shopcell');
+      var s = slot({ id: it.id, name: it.name, count: 1 }, icons);
+      var st = stack(it.count);
+      var cnt = s.appendChild(el('div', st.c, it.count === 0 ? '0' : st.t));
+      if (it.count === 0) { s.classList.add('out'); cnt.style.color = '#ff3a2a'; }
+      cell.appendChild(s);
+      cell.appendChild(el('div','gp',price(it.price) + ' gp'));
+      g.appendChild(cell);
+    });
+    p.appendChild(g);
+    c.appendChild(p);
+  };
+
+  R.prayer = function(c, d){
+    head(c, 'Prayer', d.points + ' / ' + d.level + ' points');
+    var b = css(el('div'), 'display:flex;align-items:center;gap:10px;padding:0 4px');
+    b.appendChild(badge('Prayer', 24));
+    b.appendChild(bar(d.points / Math.max(1, d.level) * 100, '#5fb0ff'));
+    c.appendChild(b);
+    var p = well();
+    var g = el('div','pray');
+    d.prayers.forEach(function(x){
+      var t = el('div','pt' + (x.active ? ' on' : x.level > d.level ? ' lock' : ''));
+      t.appendChild(el('div','pn',x.name));
+      t.appendChild(el('div','pl', x.active ? 'Active' : 'Level ' + x.level));
+      g.appendChild(t);
+    });
+    p.appendChild(g);
+    c.appendChild(p);
+    var on = d.prayers.filter(function(x){ return x.active; }).length;
+    c.appendChild(css(el('div','more', on ? on + (on === 1 ? ' prayer is on.' : ' prayers are on.') : 'No prayer is on.'), 'padding:0 4px'));
+  };
+
+  R.nearby = function(c, d, icons){
+    head(c, 'Nearby', null);
+    function list(label, rowsIn, draw){
+      var p = well(label, rowsIn.length ? String(rowsIn.length) : 'none');
+      var rs = el('div','rows');
+      rowsIn.forEach(function(x){ rs.appendChild(draw(x)); });
+      if (!rowsIn.length) rs.appendChild(el('div','more','Nothing in view.'));
+      p.appendChild(rs);
+      c.appendChild(p);
+    }
+    function tiles(n){ return n + (n === 1 ? ' tile' : ' tiles'); }
+    list('NPCs', d.npcs, function(n){
+      var r = el('div','r');
+      r.appendChild(el('span','nm',n.name));
+      if (n.level > 0) r.appendChild(css(el('span','','Level ' + n.level), 'color:#ffff00;white-space:nowrap'));
+      if (n.hpPct !== undefined) { var hb = bar(n.hpPct, '#00b400', 'hp thin'); hb.style.flex = 'none'; hb.style.width = '60px'; r.appendChild(hb); }
+      r.appendChild(css(el('span','d',tiles(n.distance)), 'color:#c9b98f;min-width:64px'));
+      return r;
+    });
+    list('Players', d.players, function(n){
+      var r = el('div','r');
+      r.appendChild(el('span','nm',n.name));
+      r.appendChild(css(el('span','','Level ' + n.level), 'color:#ffff00;white-space:nowrap'));
+      r.appendChild(css(el('span','d',tiles(n.distance)), 'color:#c9b98f;min-width:64px'));
+      return r;
+    });
+    list('On the ground', d.items, function(it){
+      var r = el('div','r');
+      var src = iconSrc(icons, it.id);
+      r.appendChild(src ? img(src, it.name) : el('span','ph'));
+      r.appendChild(el('span','nm',it.name + (it.count > 1 ? ' x' + fmt(it.count) : '')));
+      r.appendChild(css(el('span','d',tiles(it.distance)), 'color:#c9b98f;min-width:64px'));
+      return r;
+    });
+  };
+
+  R.trade = function(c, d, icons){
+    head(c, 'Trading with ' + d.partner, (d.screen === 'confirm' ? 'Second screen' : 'First screen') + DOT + 'Seen ' + d.seen);
+    var cols = el('div','cols');
+    function side(label, list, ok){
+      var p = well(label, ok ? 'Accepted' : 'Not accepted');
+      p.lastChild.lastChild.style.color = ok ? '#00ff00' : '#ff3a2a';
+      if (list.length) p.appendChild(slots(list, icons, 5, 0));
+      else p.appendChild(el('div','more','Nothing offered.'));
+      cols.appendChild(p);
+    }
+    side('You offer', d.mine, d.myAccepted);
+    side(d.partner + ' offers', d.theirs, d.theirAccepted);
+    c.appendChild(cols);
   };
 
   var LINE = ['#ffff00','#00ff00','#ff981f','#5fb0ff'];

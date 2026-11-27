@@ -92,6 +92,44 @@ export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
       { id: 317, name: 'Raw shrimps', side: 'buy', quantity: 500, price: 6, filled: 120, state: 'cancelled' },
     ],
   },
+  shop: {
+    title: "Bob's Brilliant Axes",
+    seen: '3 minutes ago',
+    items: [
+      { id: 1265, name: 'Bronze pickaxe', count: 5, price: 1 },
+      { id: 1351, name: 'Bronze axe', count: 10, price: 16 },
+      { id: 1349, name: 'Iron axe', count: 5, price: 56 },
+      { id: 1353, name: 'Steel axe', count: 0, price: 200 },
+      { id: 1375, name: 'Bronze battleaxe', count: 4, price: 52 },
+    ],
+  },
+  prayer: {
+    points: 9,
+    level: 12,
+    prayers: [
+      ['Thick Skin', 1], ['Burst of Strength', 4], ['Clarity of Thought', 7], ['Rock Skin', 10], ['Superhuman Strength', 13],
+      ['Improved Reflexes', 16], ['Rapid Restore', 19], ['Rapid Heal', 22], ['Protect Items', 25], ['Steel Skin', 28],
+      ['Ultimate Strength', 31], ['Incredible Reflexes', 34], ['Protect from Magic', 37], ['Protect from Missiles', 40], ['Protect from Melee', 43],
+    ].map(([name, level], i) => ({ name: name as string, level: level as number, active: i === 0 || i === 2 })),
+  },
+  nearby: {
+    npcs: [
+      { name: 'Man', level: 2, distance: 3, hpPct: 100 },
+      { name: 'Goblin', level: 2, distance: 6, hpPct: 40 },
+      { name: 'Bob', level: 0, distance: 8 },
+    ],
+    players: [{ name: 'Woodcutter12', level: 34, distance: 5 }],
+    items: [{ id: 526, name: 'Bones', count: 1, distance: 2 }, { id: 995, name: 'Coins', count: 12, distance: 4 }],
+  },
+  trade: {
+    partner: 'Woodcutter12',
+    seen: 'just now',
+    screen: 'offer',
+    mine: [{ id: 1521, name: 'Oak logs', count: 1 }, { id: 1521, name: 'Oak logs', count: 1 }, { id: 1521, name: 'Oak logs', count: 1 }],
+    theirs: [{ id: 995, name: 'Coins', count: 75 }],
+    myAccepted: true,
+    theirAccepted: false,
+  },
   xp_chart: {
     title: 'Last 24 hours, UTC',
     labels: Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0')),

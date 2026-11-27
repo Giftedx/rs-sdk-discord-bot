@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { CardDataError, validateCardData } from '../cards/templates';
-import { ago, bankData, bankSeen, bankText, equipmentData, geData, geSeen, inventoryData, pickInfoCard, skillsData, type InfoState } from './info-cards';
+import {
+  ago, bankData, bankSeen, bankText, equipmentData, geData, geSeen, inventoryData, nearbyData, pickInfoCard, prayerData, shopData, shopSeen, skillsData, tradeData, tradeSeen, type InfoState,
+} from './info-cards';
 
 const state = (over: Partial<InfoState> = {}): InfoState => ({
   player: { combatLevel: 21 },
@@ -24,7 +26,7 @@ describe('pickInfoCard', () => {
   test('picks nothing for other questions, and does not match inside words', () => {
     expect(pickInfoCard('where are you?')).toBeNull();
     expect(pickInfoCard('what is the best axe')).toBeNull();
-    expect(pickInfoCard('are you in a general store')).toBeNull();
+    expect(pickInfoCard('are you in a general area')).toBeNull();
     expect(pickInfoCard('are the bankers nice')).toBeNull();
   });
 });
@@ -88,5 +90,55 @@ describe('validateCardData for the account cards', () => {
     const offer = { name: 'Logs', side: 'buy', quantity: 5, price: 1, filled: 6, state: 'open' };
     expect(() => validateCardData('ge', { seen: 'now', offers: [offer] })).toThrow(/filled/);
     expect(() => validateCardData('ge', { seen: 'now', offers: [{ ...offer, filled: 1, side: 'swap' }] })).toThrow(/side/);
+  });
+});
+
+describe('shop, prayer, nearby and trade cards', () => {
+  test('the question picks them', () => {
+    expect(pickInfoCard('what does the general store have')).toBe('shop');
+    expect(pickInfoCard('what is in stock')).toBe('shop');
+    expect(pickInfoCard('which prayers are on?')).toBe('prayer');
+    expect(pickInfoCard('what monsters are nearby')).toBe('nearby');
+    expect(pickInfoCard('anything on the ground?')).toBe('nearby');
+    expect(pickInfoCard('how is the trade going')).toBe('trade');
+    // The exchange comes first: "offers" is about the exchange, not a trade.
+    expect(pickInfoCard('any trade offers on the ge')).toBe('ge');
+    // A prayer level question gets the prayer card, not the skills card.
+    expect(pickInfoCard('what prayer level are you')).toBe('prayer');
+  });
+
+  test('the shop is kept only while it is open, with the buy price', () => {
+    expect(shopSeen(state({ shop: { isOpen: false, title: 'x', shopItems: [] } }))).toBeNull();
+    const seen = shopSeen(state({ shop: { isOpen: true, title: "Bob's Brilliant Axes", shopItems: [{ id: 1351, name: 'Bronze axe', count: 0, buyPrice: 16 }] } }))!;
+    expect(seen.items).toEqual([{ id: 1351, name: 'Bronze axe', count: 0, price: 16 }]);
+    expect(() => validateCardData('shop', shopData(seen, 0))).not.toThrow();
+  });
+
+  test('prayer lists the 15 prayers with their levels and marks the active ones', () => {
+    expect(prayerData(state())).toBeNull();
+    const active = Array.from({ length: 15 }, (_, i) => i === 12);
+    const p = prayerData(state({ prayers: { activePrayers: active, prayerPoints: 30, prayerLevel: 43 } }))!;
+    expect(p.prayers.length).toBe(15);
+    expect(p.prayers[0]).toEqual({ name: 'Thick Skin', level: 1, active: false });
+    expect(p.prayers[12]).toEqual({ name: 'Protect from Magic', level: 37, active: true });
+    expect(() => validateCardData('prayer', p)).not.toThrow();
+  });
+
+  test('nearby keeps the 8 nearest of each and the NPC health', () => {
+    const npcs = Array.from({ length: 10 }, (_, i) => ({ name: `Npc ${i}`, combatLevel: 2, distance: 10 - i, healthPercent: i === 9 ? 50 : null }));
+    const n = nearbyData(state({ nearbyNpcs: npcs, nearbyPlayers: [], groundItems: [{ id: 526, name: 'Bones', count: 1, distance: 2.4 }] }));
+    expect(n.npcs.length).toBe(8);
+    expect(n.npcs[0]).toEqual({ name: 'Npc 9', level: 2, distance: 1, hpPct: 50 });
+    expect(n.items[0]).toEqual({ id: 526, name: 'Bones', count: 1, distance: 2 });
+    expect(() => validateCardData('nearby', n)).not.toThrow();
+  });
+
+  test('the trade is kept only while it is open', () => {
+    const t = { isOpen: true, screen: 'confirm' as const, partner: 'Zezima', myOffer: [{ id: 1521, name: 'Oak logs', count: 3 }], theirOffer: [], myAccepted: false, partnerAccepted: true };
+    expect(tradeSeen(state({ trade: { ...t, isOpen: false } }))).toBeNull();
+    const seen = tradeSeen(state({ trade: t }))!;
+    expect(seen.screen).toBe('confirm');
+    expect(seen.theirAccepted).toBe(true);
+    expect(() => validateCardData('trade', tradeData(seen, 0))).not.toThrow();
   });
 });

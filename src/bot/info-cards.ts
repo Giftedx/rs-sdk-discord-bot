@@ -1,15 +1,20 @@
 // Cards that answer a question about the account: what it wears and carries, its skills, and the
 // last bank and exchange that the bot saw. Plain functions from the game state to card data.
-import type { BankCard, CardItem, EquipmentCard, EquipSlot, GeCard, GeOffer, InventoryCard, SkillsCard } from '../cards/templates';
+import type { BankCard, CardItem, EquipmentCard, EquipSlot, GeCard, GeOffer, InventoryCard, NearbyCard, PrayerCard, ShopCard, ShopItemCard, SkillsCard, TradeCard } from '../cards/templates';
+import { PRAYER_LEVELS, PRAYER_NAMES } from '../../vendor/rs-sdk/sdk/types';
 
-export type InfoKind = 'equipment' | 'inventory' | 'bank' | 'skills' | 'ge';
+export type InfoKind = 'equipment' | 'inventory' | 'bank' | 'skills' | 'ge' | 'shop' | 'prayer' | 'nearby' | 'trade';
 
 // The words that ask for each card. The first match wins, so the narrow kinds come first.
 const PICK: [InfoKind, RegExp][] = [
   ['ge', /\b(ge|grand exchange|exchange|offers?)\b/i],
+  ['trade', /\b(trade|trading|traded)\b/i],
+  ['shop', /\b(shop|shops|store|shopkeeper|stock)\b/i],
   ['bank', /\bbank(ed)?\b/i],
   ['equipment', /\b(wear|wearing|worn|equip|equipped|equipment|gear|armou?r|weapons?|wield|wielding|outfit)\b/i],
   ['inventory', /\b(inventory|invent|inv|backpack|bag|carry|carrying|holding)\b/i],
+  ['prayer', /\b(pray|praying|prayers?)\b/i],
+  ['nearby', /\b(nearby|around (you|here|us)|near (you|us|here)|close by|next to you|npcs?|monsters?|players?|on the ground)\b/i],
   ['skills', /\b(skills?|stats|levels?|xp|experience)\b/i],
 ];
 
@@ -28,6 +33,12 @@ export interface InfoState {
   bank?: { isOpen: boolean; items: { id: number; name: string; count: number }[] };
   ge?: { isOpen: boolean; offers: { item: number; name: string; side: 'buy' | 'sell'; quantity: number; price: number; filled: number; state: 'open' | 'completed' | 'cancelled' }[] } | null;
   combatStyle?: { currentStyle: number; known: boolean; styles: { index: number; name: string; type: string }[] };
+  shop?: { isOpen: boolean; title: string; shopItems: { id: number; name: string; count: number; buyPrice: number }[] };
+  prayers?: { activePrayers: boolean[]; prayerPoints: number; prayerLevel: number };
+  nearbyNpcs?: { name: string; combatLevel: number; distance: number; healthPercent: number | null }[];
+  nearbyPlayers?: { name: string; combatLevel: number; distance: number }[];
+  groundItems?: { id: number; name: string; count: number; distance: number }[];
+  trade?: { isOpen: boolean; screen: 'offer' | 'confirm' | null; partner: string | null; myOffer: { id: number; name: string; count: number }[]; theirOffer: { id: number; name: string; count: number }[]; myAccepted: boolean; partnerAccepted: boolean };
 }
 
 // The wear position numbers of the game (ObjType.getWearPosId) and the slot that each fills.
@@ -119,4 +130,65 @@ export function bankText(seen: BankSeen, ageMs: number): string {
 export function geText(seen: GeSeen, ageMs: number): string {
   const list = seen.offers.map(o => `${o.side} ${o.quantity} ${o.name} at ${o.price} gp, ${o.filled} filled, ${o.state}`).join('; ');
   return `Grand Exchange offers, seen ${ago(ageMs)}: ${list || 'none'}.`;
+}
+
+/** What the bot keeps of an open shop. */
+export interface ShopSeen { title: string; items: ShopItemCard[] }
+/** What the bot keeps of an open trade. */
+export interface TradeSeen { partner: string; screen: 'offer' | 'confirm'; mine: CardItem[]; theirs: CardItem[]; myAccepted: boolean; theirAccepted: boolean }
+
+export const SHOP_CARD_ITEMS = 40;
+
+export function shopSeen(s: InfoState): ShopSeen | null {
+  if (!s.shop?.isOpen) return null;
+  return {
+    title: s.shop.title || 'Shop',
+    items: s.shop.shopItems.filter(it => it.name).slice(0, SHOP_CARD_ITEMS).map(it => ({ id: it.id, name: it.name, count: Math.max(0, it.count), price: Math.max(0, it.buyPrice) })),
+  };
+}
+
+export function tradeSeen(s: InfoState): TradeSeen | null {
+  const t = s.trade;
+  if (!t?.isOpen || !t.partner) return null;
+  return {
+    partner: t.partner, screen: t.screen === 'confirm' ? 'confirm' : 'offer',
+    mine: t.myOffer.filter(it => it.name).slice(0, 28).map(item), theirs: t.theirOffer.filter(it => it.name).slice(0, 28).map(item),
+    myAccepted: t.myAccepted, theirAccepted: t.partnerAccepted,
+  };
+}
+
+export function shopData(seen: ShopSeen, ageMs: number): ShopCard {
+  return { title: seen.title, seen: ago(ageMs), items: seen.items };
+}
+
+export function tradeData(seen: TradeSeen, ageMs: number): TradeCard {
+  return { ...seen, seen: ago(ageMs) };
+}
+
+// "thick_skin" becomes "Thick Skin"; the short words stay small.
+const prayerTitle = (key: string) => key.split('_').map((w, i) => (i > 0 && (w === 'of' || w === 'from') ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
+
+export function prayerData(s: InfoState): PrayerCard | null {
+  const p = s.prayers;
+  if (!p) return null;
+  const level = Math.max(1, p.prayerLevel);
+  return {
+    points: Math.min(Math.max(0, p.prayerPoints), 255), level,
+    prayers: PRAYER_NAMES.map((key, i) => ({ name: prayerTitle(key), level: PRAYER_LEVELS[i] ?? 1, active: p.activePrayers[i] === true })),
+  };
+}
+
+const NEARBY = 8;
+const nearest = <T extends { distance: number }>(list: T[] | undefined) => [...(list ?? [])].sort((a, b) => a.distance - b.distance).slice(0, NEARBY);
+const tiles = (d: number) => Math.min(200, Math.max(0, Math.round(d)));
+
+export function nearbyData(s: InfoState): NearbyCard {
+  return {
+    npcs: nearest(s.nearbyNpcs).filter(n => n.name).map(n => ({
+      name: n.name, level: Math.max(0, n.combatLevel), distance: tiles(n.distance),
+      ...(n.healthPercent === null || n.healthPercent === undefined ? {} : { hpPct: Math.min(100, Math.max(0, Math.round(n.healthPercent))) }),
+    })),
+    players: nearest(s.nearbyPlayers).filter(p => p.name).map(p => ({ name: p.name, level: Math.max(0, p.combatLevel), distance: tiles(p.distance) })),
+    items: nearest(s.groundItems).filter(it => it.name).map(it => ({ ...item(it), distance: tiles(it.distance) })),
+  };
 }
