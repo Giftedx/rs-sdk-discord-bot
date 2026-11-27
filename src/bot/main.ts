@@ -17,7 +17,7 @@ import { createWakeScheduler } from '../orchestrator/wakes';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 import { loadBotConfig } from './config';
 import { startGuild, type Guild } from './guild';
-import { createKeyedLock, mentionsBot, retryUntil, stripMentions, takeRevisionFlag } from './helpers';
+import { createKeyedLock, gamelinkWaitReason, mentionsBot, retryUntil, stripMentions, takeRevisionFlag } from './helpers';
 
 const ROOT = resolve(dirname(import.meta.path), '..', '..');
 const TICK_MS = 5_000;
@@ -130,14 +130,14 @@ try {
     }), {
       deadlineMs: 120_000, delayMs: 3_000,
       shouldRetry: err => !(err instanceof GameLinkError) || /HTTP 5\d\d/.test(err.message),
-      onRetry: (err, n) => { if (n === 1 || n % 10 === 0) log(`gamelink is not ready yet (${errText(err)}); waiting`); },
+      onRetry: (err, n) => { if (n === 1 || n % 10 === 0) log(`gamelink is not ready yet (${gamelinkWaitReason(err, gl.socketPath)}); waiting`); },
     });
   } else {
-    link = await openLocalGameLink({ guilds: cfg.guilds, idleGuard: cfg.idleGuard, cards: cfg.cards, log });
+    link = await openLocalGameLink({ guilds: cfg.guilds, idleGuard: cfg.idleGuard, cards: cfg.cards, log, onBrowserGone: () => { void shutdown(1); } });
   }
   const knowledge = createKnowledgePack(ROOT);
   // Until the page bodies are read, the wiki search uses the titles only.
-  void knowledge.bodyReady?.then(n => log(`wiki body index ready: ${n} pages`));
+  void knowledge.bodyReady?.then(n => log(`wiki body index ready: ${n} item and shop pages`));
   const shared = {
     cfg, root: ROOT, link, anthropic: new Anthropic(), db, cgroup,
     knowledge,

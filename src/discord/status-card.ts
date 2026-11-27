@@ -187,8 +187,13 @@ export class StatusCard {
         await this.o.channel.edit(this.id, msg);
         return;
       } catch (err) {
-        // The card was deleted or cannot be edited; send a new one.
-        this.warnOnce('edit', `status card: edit failed, sending a new card: ${errText(err)}`);
+        // Only a deleted card gets a new one. Other errors (a 5xx, a reset, a timeout) keep the
+        // card, and the next edit tries again: a new card for each error would fill the pins.
+        if (!cardIsGone(err)) {
+          this.warnOnce('edit-retry', `status card: edit failed, the next edit tries again: ${errText(err)}`);
+          return;
+        }
+        this.warnOnce('edit', `status card: the card is gone, sending a new card: ${errText(err)}`);
         this.id = null;
       }
     }
@@ -210,4 +215,10 @@ export class StatusCard {
     this.warned.add(key);
     this.o.log(line);
   }
+}
+
+// Discord's "Unknown Message" (code 10008): the card was deleted.
+export function cardIsGone(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  return e?.code === 10008 || (typeof e?.message === 'string' && e.message.includes('Unknown Message'));
 }

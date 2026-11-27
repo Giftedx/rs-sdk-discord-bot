@@ -80,6 +80,8 @@ export interface ProfiledBrowser {
   profile: ProfileDir;
   // Closes the browser, then removes its profile.
   close(): Promise<void>;
+  // Calls cb when the browser disconnects (a crash, an OOM kill), but not after close().
+  onGone(cb: () => void): void;
 }
 
 export async function launchBrowserWithProfile(
@@ -94,10 +96,15 @@ export async function launchBrowserWithProfile(
     profile.dispose();
     throw err;
   }
+  let closing = false;
   return {
     browser,
     profile,
+    onGone(cb) {
+      browser.on('disconnected', () => { if (!closing) cb(); });
+    },
     async close() {
+      closing = true;
       try {
         await browser.close();
       } finally {

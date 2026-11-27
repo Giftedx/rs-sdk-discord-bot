@@ -77,7 +77,7 @@ try {
 
 try {
   log(`${cfg.guilds.length} guild(s)`);
-  link = await openLocalGameLink({ guilds: cfg.guilds, idleGuard: cfg.idleGuard, cards: cfg.cards, log });
+  link = await openLocalGameLink({ guilds: cfg.guilds, idleGuard: cfg.idleGuard, cards: cfg.cards, log, onBrowserGone: () => { void shutdown(1); } });
   service = serveGameLink({ link, socketPath: cfg.socketPath, token, log });
   log(`listening on ${cfg.socketPath}`);
 } catch (err) {

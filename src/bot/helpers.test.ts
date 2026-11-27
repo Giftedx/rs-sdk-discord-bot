@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildReceipt, cardFor, retryBackoff, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
-  scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
+  gamelinkWaitReason, scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
 } from './helpers';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 
@@ -307,5 +307,20 @@ describe('secrets and cuts', () => {
     const text = `${'word '.repeat(16)}${secret} and more words after it`;
     const out = cardLastEvent([{ type: 'death', text }], [secret])!;
     expect(out).not.toContain('hunter2');
+  });
+});
+
+describe('gamelinkWaitReason', () => {
+  const sock = '/run/rs-gamelink/gamelink.sock';
+  test('names a missing socket in place of the URL hint of Bun', () => {
+    const err = Object.assign(new Error('Was there a typo in the url or port?'), { code: 'FailedToOpenSocket' });
+    expect(gamelinkWaitReason(err, sock)).toBe(`no socket at ${sock} yet`);
+  });
+  test('names a socket with no listener', () => {
+    expect(gamelinkWaitReason(Object.assign(new Error('x'), { code: 'ConnectionRefused' }), sock)).toBe(`nothing listens on ${sock} yet`);
+  });
+  test('keeps the message of other errors', () => {
+    expect(gamelinkWaitReason(new Error('HTTP 503'), sock)).toBe('HTTP 503');
+    expect(gamelinkWaitReason('odd', sock)).toBe('odd');
   });
 });

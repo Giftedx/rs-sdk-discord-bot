@@ -180,6 +180,38 @@ journalctl -u rs-discord-bot -f
 
 To stop the bot, run `sudo systemctl stop rs-discord-bot`. The bot logs the account out of the game before it exits.
 
+### Update a running server
+
+Do these steps from your own machine, in a clone of this repository, with the new commit on `main`.
+
+1. Run `bunx tsc --noEmit` and `bun test`. Do not deploy a commit that fails.
+2. Push the commit to the bare repository on the server:
+
+   ```bash
+   git push --receive-pack='sudo -u rsbot git-receive-pack' <user>@<server>:/home/rsbot/repo.git main
+   ```
+
+3. Update the clone. Phase `install` runs `git reset --hard origin/main` and `bun install --frozen-lockfile`. `secrets/` and `data/` are not in git, so the reset keeps them. The reset deletes local changes to tracked files.
+
+   ```bash
+   ssh <user>@<server> 'sudo bash -c "$(cat)" bootstrap install main' < scripts/server-bootstrap.sh
+   ```
+
+4. If the commit changed a file in `deploy/systemd/`, copy that file to `/etc/systemd/system/` again and run `sudo systemctl daemon-reload`.
+5. Restart the services. Restart gamelink first, because the bot waits up to 2 minutes for its socket:
+
+   ```bash
+   ssh <user>@<server> 'sudo systemctl restart rs-gamelink && sudo systemctl restart rs-discord-bot'
+   ```
+
+6. Check the log. The bot is ready when it logs `Discord ready as`:
+
+   ```bash
+   ssh <user>@<server> 'journalctl -u rs-discord-bot -u rs-gamelink --since -5min --no-pager'
+   ```
+
+A restart stops the current job. The bot keeps its request in the queue and runs it again after the start.
+
 ## Several channels
 
 Put one entry per channel in a JSON file, and set `GUILDS_FILE` to its path. The file holds no password: `passwordEnv` names the environment variable that holds the password of that account.

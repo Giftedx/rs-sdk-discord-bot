@@ -55,3 +55,23 @@ test('a failed launch removes the profile', async () => {
   expect(path).not.toBe('');
   expect(existsSync(path)).toBe(false);
 });
+
+test('onGone fires when the browser disconnects, but not after close', async () => {
+  const { EventEmitter } = await import('node:events');
+  const make = () => Object.assign(new EventEmitter(), {
+    close: async function (this: InstanceType<typeof EventEmitter>) { this.emit('disconnected'); },
+  }) as unknown as Browser;
+  const crashed = await launchBrowserWithProfile({}, { shmRoot: dir, launch: async () => make() });
+  let gone = 0;
+  crashed.onGone(() => { gone++; });
+  (crashed.browser as unknown as InstanceType<typeof EventEmitter>).emit('disconnected');
+  expect(gone).toBe(1);
+  await crashed.close();
+  expect(gone).toBe(1);
+
+  const stopped = await launchBrowserWithProfile({}, { shmRoot: dir, launch: async () => make() });
+  let stoppedGone = 0;
+  stopped.onGone(() => { stoppedGone++; });
+  await stopped.close();
+  expect(stoppedGone).toBe(0);
+});

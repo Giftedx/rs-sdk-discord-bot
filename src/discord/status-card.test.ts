@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { FakeTimers } from './fake-timers';
-import { CARD_MARKER, STATUS_ID, StatusCard, currentSkill, renderCard, type CardChannel, type CardMessage, type CardView } from './status-card';
+import { CARD_MARKER, STATUS_ID, StatusCard, cardIsGone, currentSkill, renderCard, type CardChannel, type CardMessage, type CardView } from './status-card';
 
 class FakeChannel implements CardChannel {
   pinned: { id: string; content: string }[] = [];
@@ -9,6 +9,7 @@ class FakeChannel implements CardChannel {
   pins: string[] = [];
   pinFails = false;
   editFails = false;
+  editError: Error | null = null;
   async fetchPinned() {
     return this.pinned;
   }
@@ -18,6 +19,7 @@ class FakeChannel implements CardChannel {
   }
   async edit(id: string, msg: CardMessage) {
     if (this.editFails) throw new Error('Unknown Message');
+    if (this.editError) throw this.editError;
     this.edits.push({ id, msg });
   }
   async pin(id: string) {
@@ -87,6 +89,28 @@ describe('StatusCard', () => {
     expect(card.ticking).toBe(false);
     await timers.advance(60_000);
     expect(ch.edits).toHaveLength(5);
+  });
+
+  test('a passing edit error keeps the card; only a deleted card gets a new one', async () => {
+    const { ch, card, logs } = setup();
+    await card.init();
+    ch.editError = Object.assign(new Error('Service Unavailable'), { status: 503 });
+    await card.update();
+    await card.update();
+    expect(ch.sent).toHaveLength(1);
+    expect(ch.pins).toEqual(['m1']);
+    expect(logs.filter((l) => l.includes('the next edit tries again'))).toHaveLength(1);
+    ch.editError = Object.assign(new Error('x'), { code: 10008 });
+    await card.update();
+    expect(ch.sent).toHaveLength(2);
+    expect(ch.pins).toEqual(['m1', 'm2']);
+  });
+
+  test('cardIsGone accepts only Unknown Message', () => {
+    expect(cardIsGone(Object.assign(new Error('x'), { code: 10008 }))).toBe(true);
+    expect(cardIsGone(new Error('Unknown Message'))).toBe(true);
+    expect(cardIsGone(Object.assign(new Error('Internal Server Error'), { code: 0 }))).toBe(false);
+    expect(cardIsGone(null)).toBe(false);
   });
 
   test('a failed pin is logged once', async () => {

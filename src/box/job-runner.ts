@@ -99,8 +99,32 @@ export function wrapJobCode(body: string, runnerPath: string, timeoutMs: number,
   ].join('\n');
 }
 
-export function tail(text: string, max = OUTPUT_TAIL_CHARS): string {
-  return text.length <= max ? text : `[... ${text.length - max} characters cut ...]\n${text.slice(-max)}`;
+// `alreadyCut` counts characters that readTail dropped before this text.
+export function tail(text: string, max = OUTPUT_TAIL_CHARS, alreadyCut = 0): string {
+  const cut = Math.max(0, text.length - max) + alreadyCut;
+  return cut === 0 ? text : `[... ${cut} characters cut ...]\n${text.slice(-max)}`;
+}
+
+/**
+ * Reads a stream and keeps only its last `keep` characters, so that a job that prints without
+ * end cannot fill the memory of the bot. `dropped` counts the characters it did not keep. The
+ * window must be much larger than OUTPUT_TAIL_CHARS: a secret cut at the start of the window
+ * is then outside the final tail, and redactAll still sees every whole secret in the tail.
+ */
+export async function readTail(stream: ReadableStream<Uint8Array>, keep = 64_000): Promise<{ text: string; dropped: number }> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let dropped = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    text += decoder.decode(value, { stream: !done });
+    if (text.length > keep * 2 || (done && text.length > keep)) {
+      dropped += text.length - keep;
+      text = text.slice(-keep);
+    }
+    if (done) return { text, dropped };
+  }
 }
 
 export function redactAll(text: string, secrets: string[]): string {
@@ -176,20 +200,22 @@ export function createJobRunner(opts: JobRunnerOptions) {
         const deadline = setTimeout(() => { timedOut = true; stopChild(); }, limit + 15_000);
         const onAbort = () => { aborted = true; stopChild(signal?.reason === 'shutdown' ? SHUTDOWN_GRACE_MS : KILL_GRACE_MS); };
         if (signal?.aborted) onAbort(); else signal?.addEventListener('abort', onAbort, { once: true });
-        const outText = new Response(child.stdout as ReadableStream).text();
-        const errText = new Response(child.stderr as ReadableStream).text();
+        const outText = readTail(child.stdout as ReadableStream<Uint8Array>);
+        const errText = readTail(child.stderr as ReadableStream<Uint8Array>);
         await child.exited;
         clearTimeout(deadline);
         clearTimeout(killTimer);
         signal?.removeEventListener('abort', onAbort);
         // Kill what the job left behind, so that its pipes close and no code of it stays.
         await killBox();
-        const pipeWait = new Promise<string>(r => setTimeout(() => r(''), 5_000));
+        let pipeTimer: ReturnType<typeof setTimeout> | undefined;
+        const pipeWait = new Promise<{ text: string; dropped: number }>(r => { pipeTimer = setTimeout(() => r({ text: '', dropped: 0 }), 5_000); });
         const [out, err] = await Promise.all([Promise.race([outText, pipeWait]), Promise.race([errText, pipeWait])]);
-        const joined = err.trim() ? `${out}\n--- stderr ---\n${err}` : out;
+        clearTimeout(pipeTimer);
+        const joined = err.text.trim() ? `${out.text}\n--- stderr ---\n${err.text}` : out.text;
         return {
           exitCode: child.exitCode ?? -1,
-          output: tail(redactAll(joined, [...opts.secrets, opts.bootToken])),
+          output: tail(redactAll(joined, [...opts.secrets, opts.bootToken]), OUTPUT_TAIL_CHARS, out.dropped + err.dropped),
           timedOut,
           aborted,
           durationMs: Date.now() - started,

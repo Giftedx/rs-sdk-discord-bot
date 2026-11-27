@@ -107,6 +107,9 @@ export interface LocalLinkOptions {
   log(line: string): void;
   // The wait before the first login of each tab. Default reloginDelayMs: 20 to 30 s.
   startDelay?: () => number;
+  // Called when the browser stops by itself (a crash, an OOM kill). Every tab is then dead, so
+  // the caller exits and systemd starts a new browser.
+  onBrowserGone?: () => void;
 }
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -118,6 +121,7 @@ export async function openLocalGameLink(opts: LocalLinkOptions): Promise<LocalGa
   const first = opts.guilds[0]!.game;
   const pb: ProfiledBrowser = await launchBrowserWithProfile(first.chromePath ? { executablePath: first.chromePath } : {});
   opts.log(pb.profile.onTmpfs ? 'browser profile on tmpfs' : 'WARNING: /dev/shm is missing; the browser profile is on disk');
+  pb.onGone(() => { opts.log('the browser stopped by itself'); opts.onBrowserGone?.(); });
   let cards: CardTab | null = null;
   const guilds = new Map<string, LocalGuildLink>();
   const closeAll = async () => {

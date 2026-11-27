@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { copyFileSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { boxKillCommand, createJobRunner, DEFAULT_MAX_JOB_MS, jobChildEnv, jobCommand, jobLimitMs, MAX_JOB_MS, redactAll, SHUTDOWN_GRACE_MS, tail, wrapJobCode } from './job-runner';
+import { boxKillCommand, createJobRunner, DEFAULT_MAX_JOB_MS, jobChildEnv, jobCommand, jobLimitMs, MAX_JOB_MS, readTail, redactAll, SHUTDOWN_GRACE_MS, tail, wrapJobCode } from './job-runner';
 
 describe('job runner helpers', () => {
   test('the job limit is 15 min by default and at most 60 min', () => {
@@ -122,5 +122,26 @@ describe('job runner', () => {
     expect(SHUTDOWN_GRACE_MS).toBeLessThan(1_000);
     expect(r.durationMs).toBeLessThan(2_800);
     expect(runner.isRunning()).toBe(false);
+  });
+});
+
+describe('readTail', () => {
+  const streamOf = (chunks: string[]) => new ReadableStream<Uint8Array>({
+    start(c) { const e = new TextEncoder(); for (const s of chunks) c.enqueue(e.encode(s)); c.close(); },
+  });
+  test('keeps short output whole', async () => {
+    expect(await readTail(streamOf(['ab', 'cd']))).toEqual({ text: 'abcd', dropped: 0 });
+  });
+  test('keeps only the last characters of long output and counts the rest', async () => {
+    const chunks = Array.from({ length: 50 }, (_, i) => String(i % 10).repeat(100));
+    const r = await readTail(streamOf(chunks), 250);
+    expect(r.text.length).toBe(250);
+    expect(r.dropped).toBe(5000 - 250);
+    expect(r.text).toBe(chunks.join('').slice(-250));
+  });
+  test('tail adds the characters that readTail dropped to its count', () => {
+    expect(tail('abc', 10, 7)).toBe('[... 7 characters cut ...]\nabc');
+    expect(tail('abcdef', 4, 2)).toBe('[... 4 characters cut ...]\ncdef');
+    expect(tail('abc', 10)).toBe('abc');
   });
 });
