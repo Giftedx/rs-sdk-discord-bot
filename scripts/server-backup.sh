@@ -52,7 +52,8 @@ name="rs-discord-bot-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
 tmp="$BACKUP_DIR/.$name.part"
 stage="$(mktemp -d "$BACKUP_DIR/.stage.XXXXXX")"
 # A failed tar (a full disk) must not leave its part file. After the mv, $tmp no longer exists.
-trap 'rm -rf "$stage" "$tmp"' EXIT
+work=""
+trap 'rm -rf "$stage" "$tmp" ${work:+"$work"}' EXIT
 # Part files and stages of an earlier run that was killed.
 find "$BACKUP_DIR" -maxdepth 1 \( -name '.rs-discord-bot-*.tar.gz.part' -o -name '.stage.*' \) ! -path "$stage" -exec rm -rf {} +
 
@@ -73,39 +74,52 @@ if [ -d "$GAMELINK_ETC" ]; then
 fi
 [ "${#parts[@]}" -gt 0 ] || die "nothing to back up"
 
-# Replace the plain copy of each database with a consistent one. The list comes from the stage,
-# which only root can write, and not from the live tree, which rsbot can change during the run.
-# find does not follow symbolic links, so each $stage/$rel is a regular file in a real directory
-# of the stage, and the writes below cannot leave the stage.
+# Replace the plain copy of each database with a consistent one.
+# - The list comes from the stage, which only root can write, and not from the live tree, which
+#   rsbot can change during the run. find does not follow symbolic links, so each $stage/$rel is
+#   a regular file in a real directory of the stage.
+# - The copy runs as the owner of data/ (runuser), so it can read no file that the owner cannot
+#   read, also when the owner swaps a live path for a symbolic link.
+# - The copy goes to a numbered file in a private work directory. No file name from data/ goes
+#   into a sqlite3 command, so a name with a quote or a newline cannot add a command.
+# - Root reads that file back through the owner as well, and writes it into the stage only after
+#   it removes what was at that path (cp -a can have copied a symbolic link there).
 if [ -d "$stage/data" ]; then
+  owner="$(stat -c %U "$APP_DIR/data")"
+  work="$(mktemp -d)"
+  chown "$owner" "$work"
+  as_owner() { runuser -u "$owner" -- "$@"; }
+  BUN_BIN="${BUN:-/usr/local/bin/bun}"
+  i=0
   while IFS= read -r -d '' staged; do
     rel="${staged#"$stage"/}"
     db="$APP_DIR/$rel"
+    i=$((i + 1))
+    out="$work/$i.db"
     # One file that is not a database, or a locked one, must not stop the whole backup. On a
     # failure the plain copy of cp -a above stays, with its -wal and -shm files.
     if command -v sqlite3 >/dev/null; then
-      if sqlite3 "$db" ".backup '$stage/$rel.consistent'" && [ -s "$stage/$rel.consistent" ]; then
-        mv -f "$stage/$rel.consistent" "$stage/$rel"
-        rm -f "$stage/$rel-wal" "$stage/$rel-shm" "$stage/$rel-journal"
-        log "database $rel: sqlite3 .backup"
-      else
-        rm -f "$stage/$rel.consistent"
-        log "warning: sqlite3 .backup of $rel failed; $rel is a plain copy and can be inconsistent"
-      fi
-    elif [ -x "${BUN:-/usr/local/bin/bun}" ]; then
+      how="sqlite3 .backup"
+      as_owner sqlite3 "$db" ".backup $out" || true
+    elif [ -x "$BUN_BIN" ]; then
       # VACUUM INTO writes one consistent copy, also while the bot writes the database.
-      if DB_SRC="$db" DB_DST="$stage/$rel.consistent" "${BUN:-/usr/local/bin/bun}" --no-env-file -e \
-        'const { Database } = require("bun:sqlite"); const d = new Database(process.env.DB_SRC, { readonly: true }); d.run("VACUUM INTO ?", [process.env.DB_DST]); d.close();' && [ -s "$stage/$rel.consistent" ]; then
-        mv -f "$stage/$rel.consistent" "$stage/$rel"
-        rm -f "$stage/$rel-wal" "$stage/$rel-shm" "$stage/$rel-journal"
-        log "database $rel: VACUUM INTO (bun:sqlite)"
-      else
-        rm -f "$stage/$rel.consistent"
-        log "warning: VACUUM INTO of $rel failed; $rel is a plain copy and can be inconsistent"
-      fi
+      how="VACUUM INTO (bun:sqlite)"
+      as_owner env DB_SRC="$db" DB_DST="$out" "$BUN_BIN" --no-env-file -e \
+        'const { Database } = require("bun:sqlite"); const d = new Database(process.env.DB_SRC, { readonly: true }); d.run("VACUUM INTO ?", [process.env.DB_DST]); d.close();' || true
     else
       log "warning: sqlite3 is not installed; $rel is a plain copy and can be inconsistent"
+      continue
     fi
+    rm -f "$stage/$rel.consistent"
+    if as_owner cat -- "$out" > "$stage/$rel.consistent" && [ -s "$stage/$rel.consistent" ]; then
+      mv -f "$stage/$rel.consistent" "$stage/$rel"
+      rm -f "$stage/$rel-wal" "$stage/$rel-shm" "$stage/$rel-journal"
+      log "database $rel: $how"
+    else
+      rm -f "$stage/$rel.consistent"
+      log "warning: $how of $rel failed; $rel is a plain copy and can be inconsistent"
+    fi
+    as_owner rm -f -- "$out"
   done < <(find "$stage/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0)
 fi
 

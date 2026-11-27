@@ -211,6 +211,7 @@ Do these steps on your own machine, in a clone of this repository, with the new 
 
 4. If the commit changed a file in `deploy/systemd/`, copy that file to `/etc/systemd/system/` again and run `sudo systemctl daemon-reload`.
    If the commit changed `scripts/server-firewall.sh` or `scripts/server-backup.sh`, install their root-owned copies again ("Deploy scripts" below).
+   If the commit changed `BUN_VERSION` in `scripts/server-bootstrap.sh`, run phase `prepare` first. Then, with `rs-discord-bot` stopped, copy the new Bun to the path that `rsgame` and the box user run: `sudo install -m 755 -o root -g root /home/rsbot/.bun/bin/bun /usr/local/bin/bun`.
 5. Restart the services. Stop the bot first, so that it stops its parts while gamelink still answers. The bot then waits up to 2 minutes for the new gamelink socket.
 
    ```bash
@@ -374,8 +375,8 @@ These files are in `scripts/` and `deploy/systemd/`. They run as root on the ser
 Root must not run a file in `/opt/rs-discord-bot`, because `rsbot` can write it. So the root units run root-owned copies in `/usr/local/sbin`. Install the copies from your own machine, over SSH, and install them again after each change to the scripts:
 
 ```bash
-ssh <user>@<server> 'sudo install -m 755 -o root -g root /dev/stdin /usr/local/sbin/rs-server-firewall' < scripts/server-firewall.sh
-ssh <user>@<server> 'sudo install -m 755 -o root -g root /dev/stdin /usr/local/sbin/rs-server-backup' < scripts/server-backup.sh
+ssh <user>@<server> 'sudo tee /usr/local/sbin/rs-server-firewall.new >/dev/null && sudo chmod 755 /usr/local/sbin/rs-server-firewall.new && sudo mv -f /usr/local/sbin/rs-server-firewall.new /usr/local/sbin/rs-server-firewall' < scripts/server-firewall.sh
+ssh <user>@<server> 'sudo tee /usr/local/sbin/rs-server-backup.new >/dev/null && sudo chmod 755 /usr/local/sbin/rs-server-backup.new && sudo mv -f /usr/local/sbin/rs-server-backup.new /usr/local/sbin/rs-server-backup' < scripts/server-backup.sh
 ```
 
 To run another script of this list as root (the restore test, the Chrome prune), pipe it the same way: `ssh <user>@<server> 'sudo bash -s -- <args>' < scripts/<script>`.
