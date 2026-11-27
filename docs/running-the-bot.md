@@ -198,10 +198,10 @@ Do these steps from your own machine, in a clone of this repository, with the ne
    ```
 
 4. If the commit changed a file in `deploy/systemd/`, copy that file to `/etc/systemd/system/` again and run `sudo systemctl daemon-reload`.
-5. Restart the services. Restart gamelink first, because the bot waits up to 2 minutes for its socket:
+5. Restart the services. Stop the bot first, so that it stops its parts while gamelink still answers. The bot then waits up to 2 minutes for the new gamelink socket:
 
    ```bash
-   ssh <user>@<server> 'sudo systemctl restart rs-gamelink && sudo systemctl restart rs-discord-bot'
+   ssh <user>@<server> 'sudo systemctl stop rs-discord-bot && sudo systemctl restart rs-gamelink && sudo systemctl start rs-discord-bot'
    ```
 
 6. Check the log. The bot is ready when it logs `Discord ready as`:
