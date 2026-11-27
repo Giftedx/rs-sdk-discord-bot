@@ -87,7 +87,7 @@ Run each command on your own machine, in the root of your clone. Root must never
 
    Put the content of `$HOME/account.env` into your password manager. Import the file, or open it only inside the password manager. Then delete `$HOME/account.env`.
 
-To deploy a later commit, do steps 2 and 3 again.
+To deploy a later commit, do steps 2 and 3 again. Restart the bot and gamelink together, so both run the same commit. An older gamelink ignores the game frame that a newer bot sends with the receipt card, and the Done message then has no game view.
 
 ## Optional: first login on a game server
 

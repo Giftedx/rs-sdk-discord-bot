@@ -131,6 +131,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   // Item ids by name, for the item icons of the death and receipt cards.
   const itemIds = createItemIdBook();
   let lastReceipt: Receipt | null = null;
+  let lastReceiptFrame: Uint8Array | null = null;
   let lastSnapshotAt = 0;
   let stopping = false;
   let script: string | null = null;
@@ -160,10 +161,12 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   // The look tool: the newest stored frame, or a new capture when the store has none that is fresh.
   const frame = (): Promise<Uint8Array | null> => link.frame();
 
+  // The posts flow draws the receipt card with no frame: it gets the frame of the last receipt.
   async function draw(subject: CardSubject, frame?: Uint8Array | null): Promise<Uint8Array | null> {
     const req = cardFor(subject, prevEvents, lastReceipt, new Date(), itemIds.get);
     if (!req) return null;
-    return link.drawCard(req.kind, req.data as never, frame);
+    const view = frame === undefined && req.kind === 'instruction_receipt' ? lastReceiptFrame : frame;
+    return link.drawCard(req.kind, req.data as never, view);
   }
 
   function view() {
@@ -337,6 +340,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       const files: AttachmentBuilder[] = [];
       const shot = (await frame()) ?? result.lastFrame;
       const view = shot && isCardFrame(shot) ? shot : null;
+      lastReceiptFrame = view;
       const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }, view).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
       if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
       const png = receiptPng && view ? null : shot;
