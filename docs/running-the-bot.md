@@ -210,6 +210,7 @@ Do these steps on your own machine, in a clone of this repository, with the new 
    ```
 
 4. If the commit changed a file in `deploy/systemd/`, copy that file to `/etc/systemd/system/` again and run `sudo systemctl daemon-reload`.
+   If the commit changed `scripts/server-firewall.sh` or `scripts/server-backup.sh`, install their root-owned copies again ("Deploy scripts" below).
 5. Restart the services. Stop the bot first, so that it stops its parts while gamelink still answers. The bot then waits up to 2 minutes for the new gamelink socket.
 
    ```bash
@@ -370,10 +371,19 @@ How the two units behave:
 
 These files are in `scripts/` and `deploy/systemd/`. They run as root on the server. Set the exec bit in git once: `git update-index --chmod=+x scripts/server-firewall.sh scripts/server-backup.sh scripts/server-revision-check.sh scripts/server-alert.sh scripts/server-chrome-prune.sh scripts/server-restore-test.sh`.
 
+Root must not run a file in `/opt/rs-discord-bot`, because `rsbot` can write it. So the root units run root-owned copies in `/usr/local/sbin`. Install the copies from your own machine, over SSH, and install them again after each change to the scripts:
+
+```bash
+ssh <user>@<server> 'sudo install -m 755 -o root -g root /dev/stdin /usr/local/sbin/rs-server-firewall' < scripts/server-firewall.sh
+ssh <user>@<server> 'sudo install -m 755 -o root -g root /dev/stdin /usr/local/sbin/rs-server-backup' < scripts/server-backup.sh
+```
+
+To run another script of this list as root (the restore test, the Chrome prune), pipe it the same way: `ssh <user>@<server> 'sudo bash -s -- <args>' < scripts/<script>`.
+
 | What | Install | Notes |
 |---|---|---|
 | Game egress firewall | Install `rsgame-egress.service` and `rsgame-egress.timer`, then `systemctl enable --now rsgame-egress.service rsgame-egress.timer` | `scripts/server-firewall.sh game-egress` lets `rsgame` reach only loopback, DNS, and the game host on TCP 443 and 7443 (`GAME_PORTS`). The host is `RS_SERVER_HOST`, from the environment or `/etc/rs-gamelink/gamelink.env`. Open connections stay open. Every hour, the timer runs `game-egress-refresh`. If the host does not resolve, it keeps the old rules. With no rules and no resolved host, `rsgame` gets loopback and DNS only. After you enable it, look in the journal of `rs-gamelink` for refused connections to other hosts. |
-| Box egress firewall | `sudo BOX_USERS=rsbox scripts/server-firewall.sh apply 7790`, then install and enable `rsbox-egress.service` | Each box user can reach only `127.0.0.1` on the proxy ports. IPv6 is closed for them. Modes: `apply [PORTS]`, `egress [PORTS]`, `game-egress`, `game-egress-refresh`, `status`, `undo [box|game] [--ufw]` (no word removes both). PORTS is one port, a range or a list (`7790`, `7790-7795`, `7790,7792`). With `GUILDS_FILE`, list every box user in `BOX_USERS` and give the range `PROXY_PORT` to `PROXY_PORT` + guilds - 1. Make `BOX_USERS` and `PROXY_PORTS` in `rsbox-egress.service` match. |
+| Box egress firewall | `sudo BOX_USERS=rsbox /usr/local/sbin/rs-server-firewall apply 7790`, then install and enable `rsbox-egress.service` | Each box user can reach only `127.0.0.1` on the proxy ports. IPv6 is closed for them. Modes: `apply [PORTS]`, `egress [PORTS]`, `game-egress`, `game-egress-refresh`, `status`, `undo [box|game] [--ufw]` (no word removes both). PORTS is one port, a range or a list (`7790`, `7790-7795`, `7790,7792`). With `GUILDS_FILE`, list every box user in `BOX_USERS` and give the range `PROXY_PORT` to `PROXY_PORT` + guilds - 1. Make `BOX_USERS` and `PROXY_PORTS` in `rsbox-egress.service` match. |
 | Backup | Install `rs-backup.service` and `rs-backup.timer`, then `systemctl enable --now rs-backup.timer` | Backs up the SQLite files under `data/` with `sqlite3 .backup` (install `sqlite3`). Env: `APP_DIR`, `BACKUP_DIR` (default `/var/backups/rs-discord-bot`), `KEEP` (default 14). The script header has the restore steps. |
 | Revision check | Install `rs-revision-check.service` and `.timer`, and enable the timer | If the bot page of the game server changes, it logs `REVISION CHANGED` (`journalctl -u rs-revision-check`), writes `data/revision-changed` and restarts `rs-gamelink` (split mode only, through `try-restart`). It posts nothing to Discord. The bot reads `data/revision-changed`, logs `game revision changed` once, deletes the file and draws the status cards again. |
 | Old Chrome versions | `sudo scripts/server-chrome-prune.sh`, then again with `--apply` | Removes the versions under `/opt/rs-chrome` (`CHROME_ROOT`) other than the one in `RS_CHROME_PATH` (from the environment or `server.env`). It keeps a version that a running process uses, and skips symbolic links. With no flag, it only prints. |

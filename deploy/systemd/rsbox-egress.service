@@ -4,12 +4,17 @@
 #   sudo install -m 644 deploy/systemd/rsbox-egress.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now rsbox-egress.service
 # If PROXY_PORT in secrets/bot.env is not 7790, change the port below too.
+# Root runs this unit. So it runs a root-owned copy of the script, not the file in
+# /opt/rs-discord-bot, which rsbot can write. docs/running-the-bot.md, "Deploy scripts", shows
+# how to install the copy. Install it again after each change to the script.
+# After=ufw.service: at boot, ufw adds its OUTPUT jumps first, and this unit then inserts its
+# jump above them. After a restart of ufw, restart this unit too.
 [Unit]
 Description=Egress rules of the box users of the bot
 Wants=network-pre.target
 Before=network-pre.target rs-discord-bot.service
 DefaultDependencies=no
-After=local-fs.target
+After=local-fs.target ufw.service
 
 [Service]
 Type=oneshot
@@ -18,8 +23,8 @@ RemainAfterExit=yes
 # (PROXY_PORT, or the range PROXY_PORT to PROXY_PORT + guilds - 1 with GUILDS_FILE).
 Environment=BOX_USERS=rsbox
 Environment=PROXY_PORTS=7790
-ExecStart=/opt/rs-discord-bot/scripts/server-firewall.sh egress ${PROXY_PORTS}
-ExecStop=/opt/rs-discord-bot/scripts/server-firewall.sh undo box
+ExecStart=/usr/local/sbin/rs-server-firewall egress ${PROXY_PORTS}
+ExecStop=/usr/local/sbin/rs-server-firewall undo box
 
 [Install]
 WantedBy=multi-user.target

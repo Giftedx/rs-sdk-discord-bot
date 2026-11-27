@@ -73,10 +73,14 @@ if [ -d "$GAMELINK_ETC" ]; then
 fi
 [ "${#parts[@]}" -gt 0 ] || die "nothing to back up"
 
-# Replace the plain copy of each database with a consistent one.
-if [ -d "$APP_DIR/data" ]; then
-  while IFS= read -r -d '' db; do
-    rel="${db#"$APP_DIR"/}"
+# Replace the plain copy of each database with a consistent one. The list comes from the stage,
+# which only root can write, and not from the live tree, which rsbot can change during the run.
+# find does not follow symbolic links, so each $stage/$rel is a regular file in a real directory
+# of the stage, and the writes below cannot leave the stage.
+if [ -d "$stage/data" ]; then
+  while IFS= read -r -d '' staged; do
+    rel="${staged#"$stage"/}"
+    db="$APP_DIR/$rel"
     # One file that is not a database, or a locked one, must not stop the whole backup. On a
     # failure the plain copy of cp -a above stays, with its -wal and -shm files.
     if command -v sqlite3 >/dev/null; then
@@ -102,7 +106,7 @@ if [ -d "$APP_DIR/data" ]; then
     else
       log "warning: sqlite3 is not installed; $rel is a plain copy and can be inconsistent"
     fi
-  done < <(find "$APP_DIR/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0)
+  done < <(find "$stage/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0)
 fi
 
 tar -czf "$tmp" -C "$stage" "${parts[@]}"
