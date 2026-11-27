@@ -18,7 +18,8 @@ const ROOT = join(import.meta.dir, '..');
 const model = process.env.SMALL_MODEL || 'claude-haiku-5-5';
 const BOT = 'rs-bot';
 
-const STATE = [
+// ASK_STATE names a text file with the game state to use; without it, this fixed state.
+const STATE = process.env.ASK_STATE ? readFileSync(process.env.ASK_STATE, 'utf8').trim() : [
   'Player: combat 39, HP 35/35, at (3222, 3218) Lumbridge',
   'Skills: Attack 36, Strength 35, Defence 1, Hitpoints 35, Ranged 1, Prayer 1, Magic 1, Woodcutting 69, Firemaking 1, Mining 1, Fishing 1, Cooking 1',
   'Equipment: right hand Steel axe',

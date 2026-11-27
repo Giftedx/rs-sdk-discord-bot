@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { meleeWeaponPages, readWieldRules, wieldNote, wieldRule } from './wield';
+import { meleeWeaponPages, readWieldRules, weaponCatalogPages, wieldNote, wieldRule } from './wield';
 
 describe('wield rules', () => {
   test('wieldRule names the skills, the levels and the quest', () => {
@@ -61,6 +61,29 @@ describe('wield rules', () => {
     expect(stab.text).toContain('- Attack 40 or more: Rune halberd (+48 stab, +68 strength, speed 4; members, needs Attack 40 and Strength 20). Free: Rune sword');
     expect(stab.text).not.toContain('Poisoned');
     expect(stab.text).not.toContain('Pickaxe handle');
+  });
+
+  test('weaponCatalogPages: one page per metal and per type, poisoned copies once, arrows need a bow', () => {
+    const w = (name: string, category: string, params: Record<string, string>, wearpos = 'righthand') => ({ name, wearpos, category, params, file: '/s/x.obj' });
+    const objs = new Map([
+      ['rune_sword', w('Rune sword', 'weapon_stab', { stabattack: '38', strengthbonus: '39' })],
+      ['adamant_sword', w('Adamant sword', 'weapon_stab', { stabattack: '23', strengthbonus: '24' })],
+      ['adamant_dagger', w('Adamant dagger', 'weapon_stab', { stabattack: '15' })],
+      ['adamant_dagger_p', w('Adamant dagger(p)', 'weapon_stab', { stabattack: '15' })],
+      ['adamnt_warhammer', w('Adamnt warhammer', 'weapon_blunt', { crushattack: '35' })],
+      ['adamant_arrow', w('Adamant arrow', 'arrows', { rangebonus: '31' }, 'quiver')],
+    ]);
+    const rules = new Map([['rune_sword', 'Attack 40'], ['adamant_sword', 'Attack 30'], ['adamant_dagger', 'Attack 30'], ['adamnt_warhammer', 'Attack 30']]);
+    const pages = weaponCatalogPages(objs, rules);
+    const page = (s: string) => pages.find(p => p.source === s)!.text;
+    const adamant = page('knowledge/weapons-adamant-melee.md');
+    expect(adamant).toContain('- Adamant sword: Attack 30; stab +23, strength +24, speed 4');
+    expect(adamant).toContain('- Adamnt warhammer: Attack 30; crush +35, speed 4');
+    expect(adamant.match(/Adamant dagger/g)).toHaveLength(1);
+    expect(page('knowledge/weapons-adamant-ranged.md')).toContain('- Adamant arrow: the bow must allow it; ranged strength +31 (ammo)');
+    const swords = page('knowledge/weapons-sword.md');
+    expect(swords.indexOf('Adamant sword')).toBeLessThan(swords.indexOf('Rune sword'));
+    expect(pages.every(p => p.text.length <= 1_450)).toBe(true);
   });
 
   const sdk = join(import.meta.dir, '..', '..', 'vendor', 'rs-sdk');

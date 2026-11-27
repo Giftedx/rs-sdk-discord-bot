@@ -121,6 +121,91 @@ const STYLES = [
 ] as const;
 const TIERS = [1, 5, 10, 20, 30, 40, 50, 60];
 
+const METAL = /^(bronze|iron|steel|black|mithril|adamant|adamnt|adam|rune|dragon)\s+(.+)$/i;
+const METALS = ['bronze', 'iron', 'steel', 'black', 'mithril', 'adamant', 'rune', 'dragon'];
+const POISON = /\s*\((p|kp|p\+|p\+\+)\)$/i;
+const RANGED = new Set(['weapon_thrown', 'weapon_javelin', 'weapon_bow', 'weapon_crossbow']);
+const plural = (kind: string) => kind.endsWith('knife') ? `${kind.slice(0, -4)}knives` : /(s|staff)$/.test(kind) ? (kind.endsWith('staff') ? `${kind}s` : kind) : `${kind}s`;
+
+/**
+ * Knowledge pages made from the item configs: every weapon (and arrow) with its wield level and
+ * bonuses, one page per metal ("Adamant melee weapons") and one page per type ("Swords"). A
+ * poisoned copy, such as "Adamant dagger(p)", is the same weapon and is not listed again.
+ */
+export function weaponCatalogPages(objs: Map<string, ObjConfig>, bySym: Map<string, string>): { source: string; text: string }[] {
+  const num = (o: ObjConfig, k: string) => Number(o.params[k] ?? 0) || 0;
+  type W = { name: string; kind: string; metal: string | null; ranged: boolean; line: string; level: number };
+  const seen = new Set<string>();
+  const list: W[] = [];
+  for (const [sym, o] of objs) {
+    if (!o.name || /[\\/](macro events|_test)[\\/]/.test(o.file) || sym === 'poisoned_dagger_p') continue;
+    const weapon = o.wearpos === 'righthand' && (o.category ?? '').startsWith('weapon_');
+    const ammo = o.wearpos === 'quiver' && /arrow|bolt/i.test(o.name);
+    if (!weapon && !ammo) continue;
+    const base = o.name.replace(POISON, '').trim();
+    if (seen.has(base.toLowerCase())) continue;
+    seen.add(base.toLowerCase());
+    const m = METAL.exec(base);
+    const metal = m ? (/^adam/i.test(m[1]!) ? 'adamant' : m[1]!.toLowerCase()) : null;
+    const kind = (m ? m[2]! : base).toLowerCase();
+    const ranged = ammo || RANGED.has(o.category ?? '');
+    const rule = bySym.get(sym) ?? '';
+    const level = Number(/(?:Attack|Ranged|Magic) (\d+)/.exec(rule)?.[1] ?? 1);
+    const bonuses = ranged
+      ? [['range', num(o, 'rangeattack')], ['ranged strength', num(o, 'rangebonus')]]
+      : [['stab', num(o, 'stabattack')], ['slash', num(o, 'slashattack')], ['crush', num(o, 'crushattack')], ['magic', num(o, 'magicattack')], ['strength', num(o, 'strengthbonus')]];
+    const shown = bonuses.filter(([, v]) => v !== 0).map(([k, v]) => `${k} ${(v as number) > 0 ? '+' : ''}${v}`);
+    const speed = weapon && !ammo ? `, speed ${o.params.attackrate ?? '4'}` : '';
+    // An arrow has no wield level: the bow decides which arrows it can fire.
+    const needs = rule || (ammo ? 'the bow must allow it' : 'no level needed');
+    const line = `- ${base}: ${needs}${o.members === 'yes' ? ' (members)' : ''}; ${shown.join(', ') || 'no bonuses'}${speed}${ammo ? ' (ammo)' : ''}`;
+    list.push({ name: base, kind, metal, ranged, line, level });
+  }
+  const byLevel = (a: W, b: W) => a.level - b.level || a.name.localeCompare(b.name);
+  const head = 'From the server item configs and wield checks. Speed: ticks per attack, lower is faster. A higher bonus is better.';
+  const out: { source: string; text: string }[] = [];
+  // The search shows at most 1500 characters of a page: a longer page splits into parts.
+  const pages = { push(p: { source: string; text: string }) {
+    if (p.text.length <= 1_450) { out.push(p); return; }
+    const [title, , , , ...rows] = p.text.split('\n');
+    const parts: string[][] = [[]];
+    for (const row of rows) {
+      const cur = parts[parts.length - 1]!;
+      if (cur.length && [title, head, ...cur, row].join('\n').length > 1_350) parts.push([row]);
+      else cur.push(row);
+    }
+    parts.forEach((part, i) => out.push({
+      source: p.source.replace(/\.md$/, `-part${i + 1}.md`),
+      text: [`${title} (part ${i + 1} of ${parts.length})`, '', head, '', ...part].join('\n'),
+    }));
+  } };
+  for (const metal of METALS) {
+    for (const ranged of [false, true]) {
+      const items = list.filter(w => w.metal === metal && w.ranged === ranged).sort((a, b) => a.kind.localeCompare(b.kind));
+      if (!items.length) continue;
+      const what = ranged ? 'ranged weapons and ammo' : 'melee weapons';
+      const title = `${metal[0]!.toUpperCase()}${metal.slice(1)} ${what}`;
+      pages.push({ source: `knowledge/weapons-${metal}-${ranged ? 'ranged' : 'melee'}.md`, text: [`## ${title}: every ${metal} ${ranged ? 'ranged weapon' : 'weapon'}, its level and bonuses`, '', head, '', ...items.map(w => w.line)].join('\n') });
+    }
+  }
+  // One page per metal weapon type, sorted by level, so "best sword at Attack 56" is the last one that the level allows.
+  const kinds = [...new Set(list.filter(w => w.metal).map(w => w.kind))].sort();
+  for (const kind of kinds) {
+    const items = list.filter(w => w.kind === kind || w.kind.endsWith(` ${kind}`) && !kinds.includes(w.kind)).sort(byLevel);
+    pages.push({ source: `knowledge/weapons-${kind.replace(/\s+/g, '-')}.md`, text: [`## ${plural(kind)[0]!.toUpperCase()}${plural(kind).slice(1)}: every ${kind}, its level and bonuses, lowest level first`, '', head, '', ...items.map(w => w.line)].join('\n') });
+  }
+  const groups: [string, string, (w: W) => boolean][] = [
+    ['bows', 'Bows and crossbows', w => !w.metal && /bow/.test(w.kind)],
+    ['staffs', 'Staffs and battlestaffs', w => !w.metal && /staff/.test(w.kind)],
+    ['special', 'Special melee weapons (not made of a metal)', w => !w.metal && !w.ranged && !/staff/.test(w.kind)],
+  ];
+  for (const [slug, title, pick] of groups) {
+    const items = list.filter(pick).sort(byLevel);
+    if (items.length) pages.push({ source: `knowledge/weapons-${slug}.md`, text: [`## ${title}: every one, its level and bonuses, lowest level first`, '', head, '', ...items.map(w => w.line)].join('\n') });
+  }
+  return out;
+}
+
 /**
  * Knowledge pages made from the item configs: for each attack style, the best melee weapons that
  * each Attack level can wield. A free weapon and a members weapon are both named.

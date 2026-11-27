@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
-import { meleeWeaponPages, readWieldRules, wieldNote, type WieldRules } from './wield';
+import { meleeWeaponPages, readWieldRules, weaponCatalogPages, wieldNote, type WieldRules } from './wield';
 
 export const SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 export const MAX_SCRIPT_CHARS = 40_000;
@@ -348,7 +348,7 @@ export function createKnowledgePack(rootDir: string): KnowledgePack {
   try {
     const r = readWieldRules(base);
     wield = r.rules;
-    if (r.objs.size > 0) learnings.push(...meleeWeaponPages(r.objs, r.bySym));
+    if (r.objs.size > 0) learnings.push(...meleeWeaponPages(r.objs, r.bySym), ...weaponCatalogPages(r.objs, r.bySym));
   } catch { /* no server scripts: the wiki pages stay as they are */ }
   return { learnings, wiki, bodyReady, wield };
 }
@@ -380,7 +380,8 @@ export function searchKnowledge(knowledge: KnowledgeChunk[] | KnowledgePack, que
   // A rare term counts more than a common one: "runite" more than "ore" in "where is runite ore".
   const weight = stemmed.map((_, k) => Math.log(1 + chunks.length / Math.max(1, counts.filter(n => n[k]! > 0).length)));
   // Repeats of one term add less and less (BM25 with k1 = 1.2): 11 times "ore" is not 11 times one "ore".
-  // A term in the file name ("walk" in walking.md) counts as two more mentions, as a page title does.
+  // A term in the file name ("walk" in walking.md, "sword" in weapons-sword.md) adds a fixed bonus,
+  // as a page title does: many pages mention swords, but one page is about them.
   const scored = chunks
     .map((c, i) => {
       const fileWords = textWords(basename(c.source, '.md'));
@@ -388,8 +389,8 @@ export function searchKnowledge(knowledge: KnowledgeChunk[] | KnowledgePack, que
       counts[i]!.forEach((n, k) => {
         const t = stemmed[k]!;
         if (n === 0) return;
-        const inName = fileWords.some(w => w === t || (t.length >= 4 && w.startsWith(t))) ? 2 : 0;
-        score += ((n + inName) * 2.2 / (n + inName + 1.2)) * weight[k]!;
+        const inName = fileWords.some(w => w === t || (t.length >= 4 && w.startsWith(t)));
+        score += (n * 2.2 / (n + 1.2)) * weight[k]! + (inName ? 2 * weight[k]! : 0);
       });
       return { c, score };
     })
