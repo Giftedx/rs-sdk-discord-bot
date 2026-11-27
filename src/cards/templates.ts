@@ -264,6 +264,8 @@ export function levelProgress(level: number, xp: number): { toNext: number; pct:
   if (level >= MAX_LEVEL) return null;
   const start = xpForLevel(level);
   const end = xpForLevel(level + 1);
+  // XP outside the level (an unknown XP of 0, for example) gives no true progress.
+  if (xp < start || xp >= end) return null;
   const toNext = Math.max(0, end - xp);
   const pct = Math.max(0, Math.min(100, Math.floor(((xp - start) / (end - start)) * 100)));
   return { toNext, pct };
@@ -756,6 +758,8 @@ export const CARD_PAGE_SCRIPT = `
       top.appendChild(words);
       chat.appendChild(top);
       c.appendChild(chat);
+      // No progress below the maximum level: the XP is not known, so the card shows no bar.
+      if (!d.progress && d.level < 99) return;
       var p = well();
       var l = el('div','label');
       if (d.progress) {

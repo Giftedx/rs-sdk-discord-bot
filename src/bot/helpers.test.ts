@@ -247,6 +247,11 @@ describe('cardFor', () => {
     const recap = { levelUps: 0, items: 0, deaths: 0, instructions: 1, spendUsd: null, xpBySkill: [{ skill: 'Attack', xp: 300 }] };
     expect(cardFor({ kind: 'recap', recap }, null, null, at)?.data).toMatchObject({ xp: [{ skill: 'Attack', xp: 300 }] });
   });
+  test('a recap at 00:00 UTC names the day that just ended', () => {
+    const recap = { levelUps: 0, items: 0, deaths: 0, instructions: 1, spendUsd: null };
+    expect(cardFor({ kind: 'recap', recap }, null, null, new Date('2026-11-28T00:00:00Z'))?.data).toMatchObject({ date: '2026-11-27' });
+    expect(cardFor({ kind: 'recap', recap }, null, null, at)?.data).toMatchObject({ date: '2026-11-27' });
+  });
   test('death and receipt items get the ids of the item book', () => {
     const book = createItemIdBook();
     book.learn([{ id: 1351, name: 'Bronze axe' }, { id: 995, name: 'Coins' }]);

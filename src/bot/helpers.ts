@@ -295,7 +295,9 @@ export function cardFor(subject: CardSubject, state: EventState | null, receipt:
       return {
         kind: 'daily_recap',
         data: {
-          date: at.toISOString().slice(0, 10),
+          // The recap counts the 24 hours before "at". The day of the last millisecond names that
+          // period, so a recap at 00:00 UTC shows the day that just ended.
+          date: new Date(at.getTime() - 1).toISOString().slice(0, 10),
           counts: [
             { label: 'Level-ups', value: r.levelUps },
             { label: 'Items', value: r.items },

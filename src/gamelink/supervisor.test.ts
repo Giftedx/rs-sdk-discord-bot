@@ -50,6 +50,34 @@ describe('supervisor', () => {
     expect(f.calls.reload).toBe(1);
   });
 
+  test('stop() waits for a reload in flight, and a stopped supervisor reloads no more', async () => {
+    let t = 0;
+    let finish: () => void = () => {};
+    let reloads = 0;
+    let reloadDone = false;
+    const s = createSupervisor({
+      tab: {
+        inGame: async () => false,
+        keepAlive: async () => {},
+        reload: () => { reloads++; return new Promise<void>(r => { finish = () => { reloadDone = true; r(); }; }); },
+      },
+      idleGuard: false, startDelayMs: 0, now: () => t,
+    });
+    const running = s.check();          // first login: the reload hangs
+    expect(reloads).toBe(1);
+    let stopped = false;
+    const stopping = s.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);        // the reload is still in flight
+    finish();
+    await stopping;
+    await running;
+    expect(reloadDone).toBe(true);
+    t = 1_000_000;
+    await s.check();                    // stopped: no check, no reload
+    expect(reloads).toBe(1);
+  });
+
   test('an error from inGame counts as out of the game', async () => {
     const s = createSupervisor({
       tab: { inGame: async () => { throw new Error('page closed'); }, keepAlive: async () => {}, reload: async () => {} },

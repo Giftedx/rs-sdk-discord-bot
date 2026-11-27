@@ -145,4 +145,9 @@ describe('xpForLevel', () => {
     expect(levelProgress(50, 101_333)).toEqual({ toNext: xpForLevel(51) - 101_333, pct: 0 });
     expect(levelProgress(99, 13_034_431)).toBeNull();
   });
+
+  test('levelProgress gives no progress for XP outside the level', () => {
+    expect(levelProgress(50, 0)).toBeNull();
+    expect(levelProgress(50, xpForLevel(51))).toBeNull();
+  });
 });

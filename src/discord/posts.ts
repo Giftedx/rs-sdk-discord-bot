@@ -172,7 +172,11 @@ export class MainPosts {
     const hour = this.o.recapHourUtc;
     this.recapTimer = this.o.timers.setTimeout(() => {
       this.recapTimer = null;
-      void this.postRecap().finally(() => this.start());
+      // A synchronous throw in postRecap() must not stop the later recaps.
+      void Promise.resolve()
+        .then(() => this.postRecap())
+        .catch((err) => this.o.log(`posts: recap failed: ${errText(err)}`))
+        .finally(() => this.start());
     }, msUntilUtcHour(this.o.timers.now(), hour));
   }
 

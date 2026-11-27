@@ -39,7 +39,9 @@ export interface Supervisor {
   reason(): string | null;
   // One check. The timer calls it; tests call it directly.
   check(): Promise<void>;
-  stop(): void;
+  // Stops the timer. Resolves when a check that already runs has finished, so that the caller
+  // can log out with no reload still in flight.
+  stop(): Promise<void>;
   // Starts the timer.
   start(): void;
 }
@@ -85,9 +87,12 @@ export function createSupervisor(opts: SupervisorOptions): Supervisor {
   let failedReloads = 0;
   let updateReloaded = false;
   let busy = false;
+  let stopped = false;
+  let inFlight: Promise<void> | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function reload(line: string): Promise<void> {
+    if (stopped) return;
     status = 'reloading';
     log(line);
     try {
@@ -109,69 +114,70 @@ export function createSupervisor(opts: SupervisorOptions): Supervisor {
     }
   }
 
-  async function check(): Promise<void> {
-    if (busy || status === 'login_refused') return;
+  function check(): Promise<void> {
+    if (busy || stopped || status === 'login_refused') return inFlight ?? Promise.resolve();
     busy = true;
-    try {
-      if (firstLoginAt !== null) {
-        if (now() < firstLoginAt) return;
-        firstLoginAt = null;
-        await reload('first login of the game tab');
-        return;
-      }
-      let inGame = false;
-      try {
-        inGame = await opts.tab.inGame();
-      } catch {
-        inGame = false;   // a page that is loading or closed counts as out of the game
-      }
-      const t = now();
-      if (inGame) {
-        if (status !== 'in_game') {
-          log('game tab is in the game');
-          try { opts.onInGame?.(); } catch { /* a failing hook must not stop the supervisor */ }
-        }
-        status = 'in_game';
-        reason = null;
-        outSince = null;
-        reloadAt = null;
-        failedReloads = 0;
-        updateReloaded = false;
-        if (opts.idleGuard) await opts.tab.keepAlive().catch(() => {});
-        return;
-      }
-      if (outSince === null) outSince = t;
-      if (status === 'in_game') { status = 'out_of_game'; log('game tab left the game'); }
+    inFlight = runCheck().finally(() => { busy = false; inFlight = null; });
+    return inFlight;
+  }
 
-      const message = await readMessage();
-      const cls = classifyLoginMessage(message);
-      if (cls !== null) reason = message!.trim().slice(0, 200);
-      if (cls === 'refused') {
-        status = 'login_refused';
-        log(`the game refused the login (${reason}); no more retries until gamelink restarts`);
-        return;
-      }
-      if (cls === 'updated' && !updateReloaded) {
-        updateReloaded = true;
-        failedReloads++;
-        await reload('the game was updated; reloading the game tab now for the new client');
-        return;
-      }
-
-      if (t - outSince < outGraceMs) return;
-      if (reloadAt === null) {
-        const wait = reloginDelay() * backoffFactor(failedReloads);
-        reloadAt = t + wait;
-        status = 'out_of_game';
-        log(`game tab out of the game for ${Math.round((t - outSince) / 1000)} s; reload in ${Math.round(wait / 1000)} s`);
-        return;
-      }
-      if (t < reloadAt) return;
-      failedReloads++;
-      await reload('reloading the game tab');
-    } finally {
-      busy = false;
+  async function runCheck(): Promise<void> {
+    if (firstLoginAt !== null) {
+      if (now() < firstLoginAt) return;
+      firstLoginAt = null;
+      await reload('first login of the game tab');
+      return;
     }
+    let inGame = false;
+    try {
+      inGame = await opts.tab.inGame();
+    } catch {
+      inGame = false;   // a page that is loading or closed counts as out of the game
+    }
+    const t = now();
+    if (inGame) {
+      if (status !== 'in_game') {
+        log('game tab is in the game');
+        try { opts.onInGame?.(); } catch { /* a failing hook must not stop the supervisor */ }
+      }
+      status = 'in_game';
+      reason = null;
+      outSince = null;
+      reloadAt = null;
+      failedReloads = 0;
+      updateReloaded = false;
+      if (opts.idleGuard) await opts.tab.keepAlive().catch(() => {});
+      return;
+    }
+    if (outSince === null) outSince = t;
+    if (status === 'in_game') { status = 'out_of_game'; log('game tab left the game'); }
+
+    const message = await readMessage();
+    const cls = classifyLoginMessage(message);
+    if (cls !== null) reason = message!.trim().slice(0, 200);
+    if (cls === 'refused') {
+      status = 'login_refused';
+      log(`the game refused the login (${reason}); no more retries until gamelink restarts`);
+      return;
+    }
+    if (cls === 'updated' && !updateReloaded) {
+      updateReloaded = true;
+      failedReloads++;
+      await reload('the game was updated; reloading the game tab now for the new client');
+      return;
+    }
+
+    if (t - outSince < outGraceMs) return;
+    if (reloadAt === null) {
+      const wait = reloginDelay() * backoffFactor(failedReloads);
+      reloadAt = t + wait;
+      status = 'out_of_game';
+      log(`game tab out of the game for ${Math.round((t - outSince) / 1000)} s; reload in ${Math.round(wait / 1000)} s`);
+      return;
+    }
+    if (t < reloadAt) return;
+    failedReloads++;
+    await reload('reloading the game tab');
   }
 
   return {
@@ -179,13 +185,16 @@ export function createSupervisor(opts: SupervisorOptions): Supervisor {
     reason: () => reason,
     check,
     start() {
+      stopped = false;
       if (timer) return;
       timer = setInterval(() => { void check(); }, checkMs);
       void check();
     },
     stop() {
+      stopped = true;
       if (timer) clearInterval(timer);
       timer = null;
+      return inFlight ?? Promise.resolve();
     },
   };
 }

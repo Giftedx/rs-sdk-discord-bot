@@ -170,7 +170,7 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
   let newSupervisor: ((startDelayMs: number) => Supervisor) | null = null;
 
   const stopParts = async () => {
-    sup?.stop();
+    await sup?.stop();
     if (tab) {
       const out = await tab.logout().catch(() => false);
       log(out ? 'logged out of the game' : 'logout did not finish');
@@ -246,12 +246,12 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
       return cards.draw(kind, data, frame && isCardFrame(frame) ? frame : null);
     },
     async logout() {
-      supervisor.stop();
+      await supervisor.stop();
       return gameTab.logout().catch(() => false);
     },
     async relog() {
       if (closed) return false;
-      supervisor.stop();
+      await supervisor.stop();
       const out = await gameTab.logout().catch(() => false);
       if (closed) return out;
       // A new supervisor also clears a refused login; its first login waits reloginDelayMs.

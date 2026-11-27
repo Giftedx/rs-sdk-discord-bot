@@ -84,8 +84,14 @@ export function logThreadHost(channel: TextChannel): LogThreadHost {
       const active = await channel.threads.fetchActive();
       let t = active.threads.find((x) => x.name === name && x.parentId === channel.id);
       if (!t) {
-        const archived = await channel.threads.fetchArchived({ type: 'public' });
-        t = archived.threads.find((x) => x.name === name);
+        // The archived threads come in pages. Read up to 10 pages of 100.
+        let before: ThreadChannel | undefined;
+        for (let page = 0; page < 10 && !t; page++) {
+          const archived = await channel.threads.fetchArchived({ type: 'public', limit: 100, ...(before ? { before } : {}) });
+          t = archived.threads.find((x) => x.name === name);
+          if (!archived.hasMore || archived.threads.size === 0) break;
+          before = archived.threads.last();
+        }
       }
       return t ? logThread(t) : null;
     },
