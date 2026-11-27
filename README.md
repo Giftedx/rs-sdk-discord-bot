@@ -1,71 +1,56 @@
 # rs-sdk Discord bot
 
-**Work in progress. A first version of the Discord bot works. [docs/running-the-bot.md](docs/running-the-bot.md) says how to run it.**
-
-The goal: the people in one Discord channel direct an AI, and the AI plays one shared game account. The game is the RuneScape-style server emulator of [rs-sdk](https://github.com/MaxBittker/rs-sdk), a research kit for game bots. The bot will show in Discord what the AI does. The code runs on Bun and TypeScript.
+A Discord bot that lets the people in one channel play a shared game account together. They talk to the bot in plain words, and an AI plays the account. The game is the RuneScape-style server emulator of [rs-sdk](https://github.com/MaxBittker/rs-sdk), a research kit for game bots. The code runs on Bun and TypeScript.
 
 This is an independent project. It has no affiliation with rs-sdk, with its maintainer, or with Jagex Ltd, the owner of RuneScape. It uses rs-sdk (MIT licence) as a git submodule pinned at one commit.
 
+## What it does
+
+In its Discord channel, the bot reads every message. A small model decides which messages talk to the bot. Talk between people about the bot gets no answer.
+
+- **Requests:** "chop some trees", "get 40 fishing", "buy an axe and bank the logs". The AI writes rs-sdk code, runs it as a job, reads the result and tries again when something fails. A thumbs-up on a waiting request moves it up the queue.
+- **Questions:** "what are you doing?" gets a short answer at once.
+- **Stop:** "stop that" ends the current request.
+- **Status card:** one pinned message with the current task, HP, inventory, XP per hour, the queue, the monthly spend and a recent frame of the game.
+- **Adventure log:** a thread with one first-person line for each level, item haul and death.
+- **Posts:** the main channel gets a post with a drawn card for each finished request, a death, and a skill milestone. By default the milestones are levels 10, 25, 50, 75, 90 and 99 (`MILESTONE_LEVELS`). A daily recap has an XP chart, and a gallery thread keeps the pictures.
+
+The AI keeps saved scripts, notes and a diary between restarts. It searches the rs-sdk learnings and the 2585 pages of the rs-sdk wiki. Built-in protections eat food at low HP and leave combat with no food. Triggers wake the AI on low HP, a death, a full inventory or a stuck job.
+
+The bot has no commands, and nobody can run admin actions through Discord. The operator manages it on the server.
+
 ## Status
 
-What you can do today:
+The bot runs 24 hours a day on one small server, in production on the rs-sdk demo world. All seven milestones of [docs/roadmap.md](docs/roadmap.md) are built. [docs/running-the-bot.md](docs/running-the-bot.md) says how to run it, and [docs/security.md](docs/security.md) lists the known gaps.
 
-- Run the Discord bot (`bun run bot`, Linux) for one channel, or for several channels with `GUILDS_FILE`. People mention the bot with an instruction. The AI writes and runs rs-sdk code, and the bot replies with a summary, a drawn receipt card and a frame of the game. See [docs/running-the-bot.md](docs/running-the-bot.md).
-- Run the tests and the type check (Windows or Linux).
-- Start an rs-sdk game server on your own Linux machine and run an unchanged rs-sdk script against it through the proxy, which keeps the game password away from that script.
-- Prepare an Ubuntu 26.04 server on which the same checks run with the Chromium sandbox on.
+Cost control:
 
-The bot, built and tested:
-
-- The agent loop on the Anthropic API, with tools for jobs, saved scripts, notes, the knowledge pack, the game state and a frame, and with turn and spend limits (`src/agent/`).
-- The job runner: AI-written code runs in a child process with only the boot token of the proxy, as a second Unix user, with the built-in protections and, with `Delegate=yes`, cgroup limits (`src/box/`). Seed scripts in `seed/`.
-- The supervisor, which keeps the game tab in the game, the frame store, and the browser profile on tmpfs (`src/gamelink/`).
-- The orchestrator: a SQLite database for the queue, spend, events, snapshots and timers, wakes on timers, low HP, death and a watchdog, and a daily allowance (`src/orchestrator/`).
-- The Discord front end for one or more guilds: plain-language talk (a small model decides which messages are for the bot), a queue with thumbs-up votes, a **Status** button, a pinned status card, a first-person adventure log thread, a gallery thread, milestone posts and a daily recap with an XP chart (`src/bot/`, `src/discord/`, `src/events/`).
-- Drawn cards from a second browser tab (`src/cards/`, `src/gamelink/card-tab.ts`).
-- A smoke test on the local stack (`scripts/bot-smoke.ts`), a check of the seed scripts (`scripts/seed-check.ts`), and systemd units and server scripts for the bot, the box and game firewalls, the backup and its restore test, the Chrome prune and the revision check (`deploy/systemd/`, `scripts/server-*.sh`).
-
-Not yet run against a real Discord server: the multi-guild wiring. Built in the latest round and not yet run live: the wiki search, diary and personality of the AI, the time limit per instruction, the budget share per guild with the small-model mode at 80%, the deferred and backed-off game login, the wait for actions in flight after each job, the new status card lines and post cards, and the tighter bot unit. Built in the latest round and not yet run live: the direct gateway port, the portrait, the gallery, the XP chart, queue votes, silent posts, the full-inventory and daily review wakes, the job time limit, known-good scripts, the wiki body index, and the game egress rules. [docs/roadmap.md](docs/roadmap.md) has the details.
-
-The base, built and tested:
-
-- The configuration loader (`src/shared/config.ts`).
-- The action policy (`src/gamelink/policy.ts`).
-- The proxy, which holds the game password so that AI-written code never gets it (`src/gamelink/proxy.ts`).
-- The game tab: headless Chromium on the rs-sdk bot page (`/bot`), with the Chromium sandbox on (`src/gamelink/game-tab.ts`).
-- A measurement tool for RAM and CPU (`scripts/measure.ts`, `src/measure/proc.ts`).
-- A script that starts the local stack (`scripts/dev-stack.sh`).
-- The proxy proof: unchanged rs-sdk code plays through the proxy (`scripts/proxy-proof.ts`).
-- An idle test and a re-login test (`scripts/idle-test.ts`).
-- A bootstrap script for an Ubuntu server, with an AppArmor profile (`scripts/server-bootstrap.sh`).
-
-Not built yet:
-
-- A systemd unit of its own for the box, with `RestrictNamespaces=` and no view of `/opt/rs-chrome` (see "Design goals that are not built" in [docs/security.md](docs/security.md)).
-
-[docs/roadmap.md](docs/roadmap.md) lists the milestones and their state.
+- Claude Sonnet 5.5 for routine work, Claude Opus 5.5 for escalation, and Claude Haiku 5.5 to sort messages.
+- A monthly spend cap, a daily allowance with carry-over, an equal share for each Discord server, and only the small model above 80% of the cap.
+- Prompt caching for the 26,000-token system prompt.
 
 ## Architecture
 
-The design has three kinds of process. Each kind holds different secrets. Today only parts of gamelink exist, and scripts stand in for the rest.
+The bot runs as three kinds of process. Each runs as its own Unix user under systemd and holds different secrets.
 
 ```
-  PLANNED                                  PLANNED
-  orchestrator  <------ jobs, results ---> box (runs AI-written code)
-  holds: Discord token, API key            holds: a boot token, no secret
+  bot (rsbot)                               box (rsbox)
+  Discord, AI loop, queue, database  ---->  one job: AI-written rs-sdk code
+  holds: Discord token, API key             holds: a boot token, no secret
        |                                        |
-       | state tap, pictures                    | SDK protocol on 127.0.0.1
+       | Unix socket with a token               | SDK protocol on 127.0.0.1
        v                                        v
-  gamelink: holds the game password
-    game tab  (BUILT)   headless Chromium on the rs-sdk bot page
-    proxy     (BUILT)   checks each action against the action policy,
-                        adds the game password, holds the one control connection
-       |                                        |
-       v                                        v
-  rs-sdk game server and gateway (the local stack, or a remote game server that you may use)
+  gamelink (rsgame): holds the game password and Chromium
+    game tab   headless Chromium on the rs-sdk bot page, kept in the game
+    proxy      checks each action against the action policy,
+               adds the game password, holds the one control connection
+       |
+       v
+  rs-sdk game server and gateway
 ```
 
-[Terms](#terms) explains each name. [docs/design.md](docs/design.md) describes the whole design and marks each part as built or planned.
+Firewall rules let the box reach only the proxy port, and let gamelink reach only the game host. [Terms](#terms) explains each name. [docs/design.md](docs/design.md) describes the whole design.
+
 
 ## Quick start
 

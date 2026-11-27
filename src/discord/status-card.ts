@@ -91,20 +91,26 @@ export function currentSkill(samples: SkillSample[], windowMs = XP_RATE_WINDOW_M
 }
 
 export function renderCard(v: CardView, secrets: string[], watchUrl?: string): CardMessage {
-  const hp = v.hp ? `${v.hp.hp}/${v.hp.maxHp}` : 'unknown';
-  const lines = [
-    `**Status** ${CARD_MARKER}`,
-    `Goal: ${v.goal || 'none'}`,
-    `Step: ${v.step || (v.running ? 'working' : 'waiting')}${v.script ? ` (script ${v.script})` : ''}`,
-  ];
-  const stats = [`HP: ${hp}`];
-  if (v.inventory) stats.push(`Inv: ${v.inventory.used}/${v.inventory.max}`);
+  const hp = v.hp ? `${v.hp.hp}/${v.hp.maxHp}` : '?';
+  // A long goal or step must not push the queue, spend and warning lines off the card.
+  const cap = (s: string | null | undefined, n = 200) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : s ?? null);
+  const lines = [`**Status** ${CARD_MARKER}`];
+  if (v.running || v.goal) {
+    const step = cap(v.step) || 'working';
+    const goal = cap(v.goal);
+    const script = cap(v.script, 60);
+    lines.push(`▶️ ${goal ? `**${goal}**: ` : ''}${step}${script ? ` (script \`${script}\`)` : ''}`);
+  } else {
+    lines.push('💤 Idle. Talk to me in this channel in plain words, for example "chop some trees" or "what are you doing?".');
+  }
+  const stats = [`❤️ HP ${hp}`];
+  if (v.inventory) stats.push(`🎒 ${v.inventory.used}/${v.inventory.max}`);
   const skill = v.xpSamples ? currentSkill(v.xpSamples) : null;
-  if (skill) stats.push(`${skill.name} ${skill.level} (+${skill.xpPerHour.toLocaleString('en-US')} xp/h)`);
-  lines.push(stats.join('   '));
-  if (v.lastEvent) lines.push(`Last: ${v.lastEvent}`);
-  lines.push(`Queue: ${v.queueLength}`, `Budget this month: $${v.spend.usedUsd.toFixed(2)} of $${v.spend.capUsd.toFixed(2)}`);
-  if (v.note) lines.push(`Note: ${v.note}`);
+  if (skill) stats.push(`⭐ ${skill.name} ${skill.level} (+${skill.xpPerHour.toLocaleString('en-US')} xp/h)`);
+  lines.push(stats.join(' · '));
+  if (v.lastEvent) lines.push(`🕑 Last: ${v.lastEvent}`);
+  lines.push(`📋 Queue: ${v.queueLength === 0 ? 'empty' : `${v.queueLength} waiting`} · 💰 $${v.spend.usedUsd.toFixed(2)} of $${v.spend.capUsd.toFixed(2)} this month`);
+  if (v.note) lines.push(`⚠️ ${cap(v.note, 300)}`);
   const buttons: CardMessage['buttons'] = [{ id: STATUS_ID, label: 'Status' }];
   if (watchUrl) buttons.push({ id: WATCH_ID, label: 'Watch live', url: watchUrl });
   return {

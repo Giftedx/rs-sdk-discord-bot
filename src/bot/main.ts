@@ -10,14 +10,14 @@ import { dirname, join, resolve } from 'node:path';
 import { createKnowledgePack } from '../agent/store';
 import { prepareJobCgroup, type JobCgroup } from '../box/cgroup';
 import { reactionInput } from '../discord/adapters';
-import { connectGameLink } from '../gamelink/client';
+import { connectGameLink, GameLinkError } from '../gamelink/client';
 import { openLocalGameLink, readTokenFile, type GameLink } from '../gamelink/link';
 import { openDb } from '../orchestrator/db';
 import { createWakeScheduler } from '../orchestrator/wakes';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 import { loadBotConfig } from './config';
 import { startGuild, type Guild } from './guild';
-import { createKeyedLock, mentionsBot, stripMentions, takeRevisionFlag } from './helpers';
+import { createKeyedLock, mentionsBot, retryUntil, stripMentions, takeRevisionFlag } from './helpers';
 
 const ROOT = resolve(dirname(import.meta.path), '..', '..');
 const TICK_MS = 5_000;
@@ -113,9 +113,17 @@ try {
   if (cfg.gamelink) {
     if (process.env.RS_PASSWORD) log('WARNING: split mode, but RS_PASSWORD is in the environment of the bot. Do not load secrets/account.env in the bot.');
     log(`game parts in the gamelink process at ${cfg.gamelink.socketPath}`);
-    link = await connectGameLink({
-      socketPath: cfg.gamelink.socketPath, token: gamelinkToken, log,
+    // Gamelink can still be starting (a restart, a reboot). Wait up to 2 min for its socket,
+    // so that systemd's start limit does not stop the bot. A refused token or a wrong account
+    // stops at once.
+    const gl = cfg.gamelink;
+    link = await retryUntil(() => connectGameLink({
+      socketPath: gl.socketPath, token: gamelinkToken, log,
       guilds: cfg.guilds.map(g => ({ name: g.name, account: g.game.account.name })),
+    }), {
+      deadlineMs: 120_000, delayMs: 3_000,
+      shouldRetry: err => !(err instanceof GameLinkError) || /HTTP 5\d\d/.test(err.message),
+      onRetry: (err, n) => { if (n === 1 || n % 10 === 0) log(`gamelink is not ready yet (${errText(err)}); waiting`); },
     });
   } else {
     link = await openLocalGameLink({ guilds: cfg.guilds, idleGuard: cfg.idleGuard, cards: cfg.cards, log });

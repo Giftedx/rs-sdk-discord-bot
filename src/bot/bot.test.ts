@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { loadBotConfig } from './config';
+import { loadBotConfig, parseLevels } from './config';
 import { createQueue } from './queue';
 
 const base = {
@@ -134,5 +134,14 @@ describe('queue', () => {
     expect(q.add('u2', 'b', 'go')).toEqual({ ok: false, reason: 'full' });
     t = 20_000;
     expect(q.clear()).toBe(1);
+  });
+});
+
+describe('MILESTONE_LEVELS', () => {
+  test('parses, sorts and refuses bad lists', () => {
+    expect(parseLevels(undefined)).toBeNull();
+    expect(parseLevels('50, 10,25,10')).toEqual([10, 25, 50]);
+    expect(() => parseLevels('10,100')).toThrow(/MILESTONE_LEVELS/);
+    expect(() => parseLevels('ten')).toThrow(/MILESTONE_LEVELS/);
   });
 });

@@ -7,7 +7,9 @@ import { sanitizeForDiscord } from '../shared/sanitize';
 import type { SkillSample } from './status-card';
 import { errText, type Handle, type Logger, type Timers } from './types';
 
-export const SKILL_MILESTONE_STEP = 10;
+// The skill levels that get a post in the main channel. The demo world gives fast XP, so a post
+// every 10 levels floods the channel. Settable with MILESTONE_LEVELS.
+export const MILESTONE_LEVELS: readonly number[] = [10, 25, 50, 75, 90, 99];
 export const DEFAULT_MAX_PER_HOUR = 4;
 export const DEFAULT_MERGE_WINDOW_SEC = 60;
 const HOUR = 3_600_000;
@@ -45,6 +47,8 @@ export interface MainPostsOptions {
   draw?: (subject: CardSubject) => Promise<Uint8Array | null>;
   /** Level-ups within this time become one post. 0 posts each at once. */
   mergeWindowSec?: number;
+  // The skill levels that get a post. Default MILESTONE_LEVELS.
+  milestoneLevels?: readonly number[];
   /** Rows of the events table since a time in ms. With it the recap survives a restart. */
   eventsSince?: (sinceMs: number) => StoredEvent[];
   /** XP gained per skill since a time in ms, for example xpGains() of the stored snapshots. */
@@ -95,17 +99,30 @@ export function mergeLevelUps(list: LevelUp[]): LevelUp[] {
   return [...by.values()];
 }
 
-function levelsText(list: LevelUp[]): string {
-  return `Milestone: ${list.map((e) => `${e.skill} reached level ${e.level}`).join(', ')}.`;
+// The highest milestone level that a level-up passed, or null.
+export function passedMilestone(e: LevelUp, levels: readonly number[] = MILESTONE_LEVELS): number | null {
+  let best: number | null = null;
+  for (const m of levels) if (e.from < m && e.level >= m) best = best === null ? m : Math.max(best, m);
+  return best;
 }
 
-export function isMilestone(e: GameEvent): boolean {
-  if (e.kind === 'level_up') return Math.floor(e.level / SKILL_MILESTONE_STEP) > Math.floor(e.from / SKILL_MILESTONE_STEP);
+function milestonePhrase(e: LevelUp, levels: readonly number[]): string {
+  const m = passedMilestone(e, levels) ?? e.level;
+  return m === e.level ? `${e.skill} ${e.level}` : `${e.skill} ${m} (now ${e.level})`;
+}
+
+function levelsText(list: LevelUp[], levels: readonly number[]): string {
+  const hit = list.filter((e) => passedMilestone(e, levels) !== null);
+  return `🎉 Milestone: ${hit.map((e) => milestonePhrase(e, levels)).join(', ')}!`;
+}
+
+export function isMilestone(e: GameEvent, levels: readonly number[] = MILESTONE_LEVELS): boolean {
+  if (e.kind === 'level_up') return passedMilestone(e, levels) !== null;
   return e.kind === 'death' || e.kind === 'instruction_done';
 }
 
-export function postText(e: GameEvent): string {
-  if (e.kind === 'level_up') return `Milestone: ${e.skill} reached level ${e.level}.`;
+export function postText(e: GameEvent, levels: readonly number[] = MILESTONE_LEVELS): string {
+  if (e.kind === 'level_up') return `🎉 Milestone: ${milestonePhrase(e, levels)}!`;
   if (e.kind === 'instruction_done') return `Receipt: ${eventText(e)}`;
   return eventText(e);
 }
@@ -137,10 +154,12 @@ export class MainPosts {
   private pendingLevels: LevelUp[] = [];
   private readonly maxPerHour: number;
   private readonly mergeMs: number;
+  private readonly levels: readonly number[];
 
   constructor(private readonly o: MainPostsOptions) {
     this.maxPerHour = o.maxPerHour ?? DEFAULT_MAX_PER_HOUR;
     this.mergeMs = Math.max(0, (o.mergeWindowSec ?? DEFAULT_MERGE_WINDOW_SEC) * 1000);
+    this.levels = o.milestoneLevels && o.milestoneLevels.length > 0 ? o.milestoneLevels : MILESTONE_LEVELS;
     if (o.recapHourUtc !== undefined && !(Number.isInteger(o.recapHourUtc) && o.recapHourUtc >= 0 && o.recapHourUtc <= 23)) {
       throw new Error('recapHourUtc must be an integer from 0 to 23');
     }
@@ -180,9 +199,9 @@ export class MainPosts {
       }
       return false;
     }
-    if (!isMilestone(e)) return false;
+    if (!isMilestone(e, this.levels)) return false;
     const portrait = this.o.portrait;
-    return this.post(postText(e), e, e.kind === 'death' && portrait ? () => portrait() : undefined);
+    return this.post(postText(e, this.levels), e, e.kind === 'death' && portrait ? () => portrait() : undefined);
   }
 
   /** Posts the waiting level-ups as one post if one of them is a milestone. */
@@ -191,9 +210,9 @@ export class MainPosts {
     this.mergeTimer = null;
     const merged = mergeLevelUps(this.pendingLevels);
     this.pendingLevels = [];
-    const first = merged.find(isMilestone);
+    const first = merged.find((x) => isMilestone(x, this.levels));
     if (!first) return Promise.resolve(false);
-    return this.post(merged.length === 1 ? postText(first) : levelsText(merged), first);
+    return this.post(levelsText(merged, this.levels), first);
   }
 
   /** Records the event for the recap only. For events that already have their own message. */

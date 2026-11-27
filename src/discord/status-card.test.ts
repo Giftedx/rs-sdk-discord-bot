@@ -53,11 +53,11 @@ describe('StatusCard', () => {
     expect(ch.pins).toEqual(['m1']);
     const m = ch.sent[0]!;
     expect(m.content).toContain(CARD_MARKER);
-    expect(m.content).toContain('Goal: reach 10 attack');
-    expect(m.content).toContain('Step: fighting chickens');
-    expect(m.content).toContain('HP: 8/10');
-    expect(m.content).toContain('Queue: 2');
-    expect(m.content).toContain('$1.50 of $20.00');
+    expect(m.content).toContain('**reach 10 attack**: fighting chickens');
+    expect(m.content).not.toContain('Idle');
+    expect(m.content).toContain('❤️ HP 8/10');
+    expect(m.content).toContain('📋 Queue: 2 waiting');
+    expect(m.content).toContain('💰 $1.50 of $20.00 this month');
     expect(m.frame).toEqual(new Uint8Array([1, 2]));
     expect(m.buttons.map((b) => b.id)).toEqual([STATUS_ID]);
   });
@@ -132,9 +132,9 @@ describe('status card content', () => {
       ...view, inventory: { used: 19, max: 28 }, script: 'chop-willows', lastEvent: 'I reached 36 Woodcutting.',
       xpSamples: [sample(0, 0), sample(15 * MIN, 535)],
     }, []);
-    expect(msg.content).toContain('Step: fighting chickens (script chop-willows)');
-    expect(msg.content).toContain('HP: 8/10   Inv: 19/28   Woodcutting 36 (+2,140 xp/h)');
-    expect(msg.content).toContain('Last: I reached 36 Woodcutting.');
+    expect(msg.content).toContain('fighting chickens (script `chop-willows`)');
+    expect(msg.content).toContain('❤️ HP 8/10 · 🎒 19/28 · ⭐ Woodcutting 36 (+2,140 xp/h)');
+    expect(msg.content).toContain('🕑 Last: I reached 36 Woodcutting.');
     expect(msg.buttons).toEqual([{ id: STATUS_ID, label: 'Status' }]);
   });
 
@@ -152,5 +152,22 @@ describe('status card content', () => {
   test('secrets are removed from the script name and the last event', () => {
     const msg = renderCard({ ...view, script: 'hunter22', lastEvent: 'said hunter22' }, ['hunter22']);
     expect(msg.content).not.toContain('hunter22');
+  });
+});
+
+describe('idle card', () => {
+  test('tells people how to talk to the bot', () => {
+    const m = renderCard({ goal: '', step: null, running: false, hp: { hp: 10, maxHp: 10 }, queueLength: 0, spend: { usedUsd: 0, capUsd: 30 }, frame: null } as never, []);
+    expect(m.content).toContain('💤 Idle. Talk to me in this channel in plain words');
+    expect(m.content).toContain('📋 Queue: empty');
+  });
+});
+
+describe('long text on the card', () => {
+  test('a long goal and step keep the queue, spend and warning lines on the card', () => {
+    const m = renderCard({ goal: 'g'.repeat(1500), step: 's'.repeat(1500), running: true, hp: { hp: 1, maxHp: 10 }, queueLength: 1, spend: { usedUsd: 1, capUsd: 2 }, frame: null, note: 'game tab: login_refused' } as never, []);
+    expect(m.content.length).toBeLessThanOrEqual(2000);
+    expect(m.content).toContain('📋 Queue: 1 waiting');
+    expect(m.content).toContain('⚠️ game tab: login_refused');
   });
 });

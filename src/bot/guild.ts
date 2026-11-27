@@ -33,7 +33,7 @@ import { formatWorldState } from '../../vendor/rs-sdk/sdk/formatter';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
 import type { BotConfig, GuildConfig } from './config';
 import {
-  ADMIT_TEXT, cardFor, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
+  ADMIT_TEXT, cardFor, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
   scriptFromProgress, tabLine, wakeContextText, type Receipt, type createKeyedLock,
 } from './helpers';
 
@@ -65,6 +65,10 @@ export type Guild = Awaited<ReturnType<typeof startGuild>>;
 export async function startGuild(sh: Shared, g: GuildConfig) {
   const { cfg, db } = sh;
   const log = (line: string) => sh.log(`[${g.name}] ${line}`);
+  // Discord text also hides the account name (half of the game login), as the game writes it:
+  // lower case and with a capital first letter.
+  const acct = g.game.account.name;
+  const discordSecrets = [...sh.secrets, acct, acct.charAt(0).toUpperCase() + acct.slice(1)];
   const clean = sh.clean;
   mkdirSync(g.dataDir, { recursive: true });
   const found = sh.link.guilds.get(g.name);
@@ -175,7 +179,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       frame: frames.latest()?.png ?? null,
       inventory: s ? { used: s.inventory.length, max: 28 } : null,
       xpSamples: xpSamples(),
-      lastEvent: db.recentEvents(1, g.name)[0]?.text ?? null,
+      lastEvent: cardLastEvent(db.recentEvents(10, g.name)),
       script,
     });
   }
@@ -200,7 +204,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   // requester: the person who asked for a finished request, for "for <name>" in the log.
   function emit(e: GameEvent, ownMessage = false, requester?: string): void {
     db.addEvent(g.name, e.kind, eventText(e), e);
-    advLog?.add(logLine(e, requester));
+    if (e.kind === 'item_gain') advLog?.addItems(e.items); else advLog?.add(logLine(e, requester));
     void gallery?.onEvent(e);
     if (ownMessage) posts?.record(e);
     else void posts?.onEvent(e);
@@ -396,20 +400,20 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       const ch = await discord.channels.fetch(g.channelId).catch(() => null);
       if (!ch || ch.type !== ChannelType.GuildText) { log('the channel is not a reachable text channel'); return; }
       channel = ch;
-      card = new StatusCard({ channel: cardChannel(ch), view, secrets: sh.secrets, timers: realTimers, log });
+      card = new StatusCard({ channel: cardChannel(ch), view, secrets: discordSecrets, timers: realTimers, log });
       await card.init().catch(err => log(`status card failed: ${errText(err)}`));
       const silent = cfg.suppressNotifications;
-      advLog = new AdventureLog({ host: logThreadHost(ch), secrets: sh.secrets, timers: realTimers, log, name: cfg.logThreadName, silent: silent ?? true });
+      advLog = new AdventureLog({ host: logThreadHost(ch), secrets: discordSecrets, timers: realTimers, log, name: cfg.logThreadName, silent: silent ?? true });
       gallery = new Gallery({
-        host: logThreadHost(ch), secrets: sh.secrets, timers: realTimers, log,
+        host: logThreadHost(ch), secrets: discordSecrets, timers: realTimers, log,
         frame: () => link.frame(), portrait: () => link.portrait(), name: cfg.galleryThreadName, silent: silent ?? true,
       });
       const skillSamples = (since: number): SkillSample[] => db.snapshotsSince<WakeState>(g.name, since)
         .filter(s => s.state && typeof s.state.skills === 'object')
         .map(s => ({ time: s.time, skills: s.state.skills }));
       posts = new MainPosts({
-        channel: postChannel(ch), secrets: sh.secrets, timers: realTimers, log,
-        maxPerHour: cfg.postsPerHour, recapHourUtc: cfg.recapHourUtc, spendSince: guildSpendSince, draw,
+        channel: postChannel(ch), secrets: discordSecrets, timers: realTimers, log,
+        maxPerHour: cfg.postsPerHour, recapHourUtc: cfg.recapHourUtc, ...(cfg.milestoneLevels ? { milestoneLevels: cfg.milestoneLevels } : {}), spendSince: guildSpendSince, draw,
         eventsSince: since => db.eventsSince(g.name, since),
         xpGainedSince: since => xpGains(skillSamples(since)),
         xpSamplesSince: skillSamples,
@@ -528,7 +532,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       card?.stopTimer();
       await posts?.flushLevels().catch(() => false);
       posts?.stop();
-      await advLog?.flush().catch(() => {});
+      await advLog?.drain().catch(() => {});
       advLog?.stop();
       await link.close();
     },

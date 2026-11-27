@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { FakeTimers } from './fake-timers';
-import { MainPosts, isMilestone, mergeLevelUps, msUntilUtcHour, xpGains } from './posts';
+import { MainPosts, isMilestone, passedMilestone, mergeLevelUps, msUntilUtcHour, xpGains } from './posts';
 
 const T0 = Date.UTC(2026, 0, 1, 10, 0, 0);
 
@@ -22,7 +22,11 @@ function setup(o: { maxPerHour?: number; recapHourUtc?: number; spend?: number; 
 }
 
 describe('MainPosts', () => {
-  test('milestones: each 10 levels of a skill, death, instruction receipt', () => {
+  test('milestones: the levels of MILESTONE_LEVELS, death, instruction receipt', () => {
+    expect(isMilestone({ kind: 'level_up', skill: 'Attack', from: 19, level: 20 })).toBe(false);
+    expect(isMilestone({ kind: 'level_up', skill: 'Attack', from: 40, level: 52 })).toBe(true);
+    expect(passedMilestone({ kind: 'level_up', skill: 'Attack', from: 20, level: 80 })).toBe(75);
+    expect(isMilestone({ kind: 'level_up', skill: 'Attack', from: 19, level: 20 }, [20])).toBe(true);
     expect(isMilestone({ kind: 'level_up', skill: 'Attack', from: 9, level: 10 })).toBe(true);
     expect(isMilestone({ kind: 'level_up', skill: 'Attack', from: 8, level: 12 })).toBe(true);
     expect(isMilestone({ kind: 'level_up', skill: 'Attack', from: 10, level: 11 })).toBe(false);
@@ -34,9 +38,9 @@ describe('MainPosts', () => {
 
   test('posts milestones with sanitized text', async () => {
     const { sent, posts } = setup();
-    await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 19, level: 20 });
+    await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 24, level: 25 });
     await posts.onEvent({ kind: 'instruction_done', instruction: 'say hunter22', outcome: 'done' });
-    expect(sent[0]).toBe('Milestone: Attack reached level 20.');
+    expect(sent[0]).toBe('🎉 Milestone: Attack 25!');
     expect(sent[1]).toContain('Receipt:');
     expect(sent[1]).not.toContain('hunter22');
   });
@@ -110,7 +114,8 @@ describe('MainPosts merge and recap from the events table', () => {
     expect(sent).toEqual([]);
     await timers.advance(30_000);
     await Promise.resolve();
-    expect(sent).toEqual(['Milestone: Attack reached level 11, Strength reached level 20.']);
+    // Strength 19 to 20 is not a milestone (20 is not in MILESTONE_LEVELS); Attack passed 10.
+    expect(sent).toEqual(['🎉 Milestone: Attack 10 (now 11)!']);
     // A later burst with no milestone posts nothing.
     await posts.onEvent({ kind: 'level_up', skill: 'Attack', from: 11, level: 12 });
     await timers.advance(60_000);
@@ -134,7 +139,7 @@ describe('MainPosts merge and recap from the events table', () => {
     await posts.onEvent({ kind: 'level_up', skill: 'Magic', from: 9, level: 10 });
     posts.stop();
     expect(timers.pending()).toBe(0);
-    expect(sent).toEqual(['Milestone: Attack reached level 10.']);
+    expect(sent).toEqual(['🎉 Milestone: Attack 10!']);
   });
 
   test('mergeLevelUps keeps one entry per skill', () => {

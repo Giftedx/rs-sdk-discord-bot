@@ -9,6 +9,8 @@ export const LOG_BATCH_MS = 10_000;
 export const LOG_MAX_QUEUE = 500;
 export const LOG_APPEND_MS = 120_000;
 export const LOG_APPEND_MAX = 1_900;
+export const LOG_ITEM_WINDOW_MS = 60_000;
+const ITEM_LINE_MAX = 280;
 const LINE_MAX = 300;
 const NAME_MAX = 40;
 
@@ -43,6 +45,8 @@ export interface AdventureLogOptions {
   silent?: boolean;
   /** A batch is appended to the last message when it is younger than this. 0 turns the append off. */
   appendWithinMs?: number;
+  // Item gains collect this long before they become one line. Default 60 s.
+  itemWindowMs?: number;
 }
 
 function list(items: { name: string; count: number }[]): string {
@@ -96,6 +100,43 @@ export class AdventureLog {
     return this.queue.length;
   }
 
+  // Item gains of a gather loop come one item at a time. They collect here for itemWindowMs
+  // and go out as one line, such as "I got 14 x Logs, 3 x Feathers.".
+  private items = new Map<string, number>();
+  private itemTimer: Handle | null = null;
+
+  addItems(items: { name: string; count: number }[]): void {
+    for (const i of items) if (i.count > 0) this.items.set(i.name, (this.items.get(i.name) ?? 0) + i.count);
+    if (this.items.size === 0 || this.itemTimer !== null) return;
+    this.itemTimer = this.o.timers.setTimeout(() => { this.itemTimer = null; this.flushItems(); }, this.o.itemWindowMs ?? LOG_ITEM_WINDOW_MS);
+  }
+
+  private flushItems(): void {
+    if (this.itemTimer !== null) { this.o.timers.clearTimeout(this.itemTimer); this.itemTimer = null; }
+    if (this.items.size === 0) return;
+    const parts = [...this.items].sort((a, b) => b[1] - a[1]).map(([name, n]) => `${n} x ${name}`);
+    this.items.clear();
+    // One line holds at most ITEM_LINE_MAX characters; more items go to the next line.
+    let line: string[] = [];
+    for (const p of parts) {
+      if (line.length > 0 && `I got ${[...line, p].join(', ')}.`.length > ITEM_LINE_MAX) {
+        this.add(`I got ${line.join(', ')}.`);
+        line = [];
+      }
+      line.push(p);
+    }
+    if (line.length > 0) this.add(`I got ${line.join(', ')}.`);
+  }
+
+  /** For shutdown: sends the waiting items and every queued line, and waits for a send that runs. */
+  async drain(): Promise<void> {
+    this.flushItems();
+    for (let i = 0; i < 20 && (this.queue.length > 0 || this.sending); i++) {
+      if (this.sending) await new Promise(r => setTimeout(r, 100));
+      else await this.flush();
+    }
+  }
+
   add(line: string): void {
     const clean = sanitizeForDiscord(line.replace(/\s*\n\s*/g, ' '), this.o.secrets, LINE_MAX);
     this.queue.push(clean);
@@ -107,12 +148,17 @@ export class AdventureLog {
   }
 
   stop(): void {
+    this.stopped = true;
+    if (this.itemTimer !== null) this.o.timers.clearTimeout(this.itemTimer);
+    this.itemTimer = null;
     if (this.timer !== null) this.o.timers.clearTimeout(this.timer);
     this.timer = null;
   }
 
+  private stopped = false;
+
   private schedule(): void {
-    if (this.timer !== null || this.sending || this.queue.length === 0) return;
+    if (this.stopped || this.timer !== null || this.sending || this.queue.length === 0) return;
     const wait = Math.max(0, this.lastSent + this.batchMs - this.o.timers.now());
     this.timer = this.o.timers.setTimeout(() => {
       this.timer = null;

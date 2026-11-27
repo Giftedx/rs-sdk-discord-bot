@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  cardFor, cardView, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
+  cardFor, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
   scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
 } from './helpers';
 
@@ -229,5 +229,30 @@ describe('createRateLimit', () => {
     expect([allow('a'), allow('a'), allow('a'), allow('b')]).toEqual([true, true, false, true]);
     t = 61_000;
     expect(allow('a')).toBe(true);
+  });
+});
+
+describe('cardLastEvent', () => {
+  test('skips item gains, shortens a finished request, cuts long text at a word', () => {
+    expect(cardLastEvent([{ type: 'item_gain', text: 'Got 1 x Logs.' }, { type: 'level_up', text: 'Woodcutting level 62 (was 61).' }])).toBe('Woodcutting level 62 (was 61).');
+    expect(cardLastEvent([{ type: 'instruction_done', text: 'Instruction ended (finished): chop trees' }])).toBe('Finished: chop trees');
+    const long = cardLastEvent([{ type: 'death', text: 'word '.repeat(40) }])!;
+    expect(long.length).toBeLessThanOrEqual(90);
+    expect(long.endsWith('…')).toBe(true);
+    expect(cardLastEvent([{ type: 'item_gain', text: 'x' }])).toBeNull();
+  });
+});
+
+describe('retryUntil', () => {
+  test('retries until it works, stops on a final error, and gives up at the deadline', async () => {
+    let t = 0;
+    const clock = { now: () => t, sleep: async (ms: number) => { t += ms; } };
+    let calls = 0;
+    expect(await retryUntil(async () => { if (++calls < 3) throw new Error('down'); return 'ok'; }, { deadlineMs: 60_000, delayMs: 2_000, shouldRetry: () => true, ...clock })).toBe('ok');
+    expect(calls).toBe(3);
+    await expect(retryUntil(async () => { throw new Error('bad token'); }, { deadlineMs: 60_000, delayMs: 2_000, shouldRetry: () => false, ...clock })).rejects.toThrow('bad token');
+    t = 0; calls = 0;
+    await expect(retryUntil(async () => { calls++; throw new Error('down'); }, { deadlineMs: 10_000, delayMs: 2_000, shouldRetry: () => true, ...clock })).rejects.toThrow('down');
+    expect(calls).toBe(6);
   });
 });

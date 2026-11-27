@@ -180,3 +180,45 @@ describe('logLine', () => {
     expect(logLine(e, `  ${'n'.repeat(60)}\n`)).toContain(`for ${'n'.repeat(40)} (done)`);
   });
 });
+
+describe('item gains', () => {
+  test('collect for 60 s and go out as one line, most first', async () => {
+    const { host, timers, log } = setup();
+    log.addItems([{ name: 'Logs', count: 1 }]);
+    log.addItems([{ name: 'Logs', count: 2 }, { name: 'Feather', count: 1 }]);
+    await timers.advance(59_000);
+    expect(host.messages).toEqual([]);
+    await timers.advance(1_000);
+    await timers.advance(0);
+    expect(host.messages).toEqual(['I got 3 x Logs, 1 x Feather.']);
+  });
+  test('drain sends the waiting items at once (shutdown)', async () => {
+    const { host, log } = setup();
+    log.addItems([{ name: 'Bones', count: 4 }]);
+    await log.drain();
+    expect(host.messages).toEqual(['I got 4 x Bones.']);
+  });
+});
+
+describe('item gains and batches', () => {
+  test('a log batch does not cut the 60 s item window', async () => {
+    const { host, timers, log } = setup();
+    log.addItems([{ name: 'Logs', count: 1 }]);
+    log.add('I reached Woodcutting 30.');
+    await timers.advance(10_000);
+    expect(host.messages).toEqual(['I reached Woodcutting 30.']);
+    log.addItems([{ name: 'Logs', count: 2 }]);
+    await timers.advance(50_000);
+    await timers.advance(0);
+    expect(host.messages.join('\n')).toContain('I got 3 x Logs.');
+  });
+  test('many items split into lines of at most 280 characters', async () => {
+    const { host, log } = setup();
+    log.addItems(Array.from({ length: 40 }, (_, i) => ({ name: `Item number ${i}`, count: i + 1 })));
+    await log.drain();
+    const lines = host.messages.join('\n').split('\n').filter(l => l.startsWith('I got'));
+    expect(lines.length).toBeGreaterThan(1);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(280);
+    expect(lines.join(' ')).toContain('1 x Item number 0');
+  });
+});

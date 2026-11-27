@@ -55,6 +55,8 @@ export interface BotConfig {
   boxBunPath: string;
   jobLimits: JobLimitConfig;
   postsPerHour: number;
+  // The skill levels that get a main-channel post; null = the default list of posts.ts.
+  milestoneLevels: number[] | null;
   recapHourUtc: number | undefined;
   logThreadName: string;
   // The thread with pictures of deaths and level milestones (DISCORD_GALLERY_THREAD).
@@ -312,6 +314,7 @@ export function loadBotConfig(
       cpuPercent: int(env, 'JOB_CPU_PERCENT', 100, 5, 6_400),
     },
     postsPerHour: int(env, 'DISCORD_POSTS_PER_HOUR', 4, 0, 60),
+    milestoneLevels: parseLevels(env.MILESTONE_LEVELS),
     recapHourUtc: recapRaw === undefined || recapRaw === '' ? undefined : int(env, 'DISCORD_RECAP_HOUR_UTC', 0, 0, 23),
     logThreadName,
     galleryThreadName,
@@ -321,4 +324,14 @@ export function loadBotConfig(
     cards: env.DISCORD_CARDS !== '0',
     gamelink,
   };
+}
+
+// MILESTONE_LEVELS: skill levels split by commas, each from 2 to 99, such as "10,25,50,75,99".
+export function parseLevels(raw: string | undefined): number[] | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  const levels = raw.split(',').map(s => s.trim());
+  if (!levels.every(s => /^\d{1,2}$/.test(s) && Number(s) >= 2 && Number(s) <= 99)) {
+    throw new ConfigError('MILESTONE_LEVELS must be skill levels from 2 to 99, split by commas');
+  }
+  return [...new Set(levels.map(Number))].sort((a, b) => a - b);
 }

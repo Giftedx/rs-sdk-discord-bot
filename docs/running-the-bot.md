@@ -2,7 +2,7 @@
 
 The bot is one process: `src/bot/main.ts`. It serves one Discord channel, or several channels from `GUILDS_FILE`. Each channel ("guild" in the code) has its own game account, game tab, proxy, job runner, saved scripts and queue. All guilds share one browser, one Anthropic client, one SQLite database (`DATA_DIR/bot.sqlite`), one card tab and one spend cap.
 
-People mention the bot with an instruction. The AI then writes and runs rs-sdk code in a child process, and replies in the channel with a summary, a drawn receipt card and a frame of the game. The bot also keeps a pinned status card, an adventure log thread and milestone posts in the channel. It can wake the AI on a timer that the AI set, on low HP and after a death.
+People talk to the bot in plain words in its channel, with or without an @mention. The AI then writes and runs rs-sdk code in a child process, and replies in the channel with a summary, a drawn receipt card and a frame of the game. The bot also keeps a pinned status card, an adventure log thread, a gallery thread and milestone posts in the channel. It can wake the AI on a timer that the AI set, on low HP, after a death, on a full inventory and for a stuck job.
 
 ## What you need
 
@@ -58,6 +58,7 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 | `JOB_PIDS` | | `256` | Process limit of all jobs together. |
 | `JOB_CPU_PERCENT` | | `100` | CPU limit of all jobs together, in percent of one CPU. Needs the `cpu` controller. |
 | `DISCORD_POSTS_PER_HOUR` | | `4` | Milestone posts per hour and guild, the recap included. `0` turns them off. |
+| `MILESTONE_LEVELS` | | `10,25,50,75,90,99` | The skill levels that get a main-channel post. Level-ups within 60 s merge into one post. |
 | `DISCORD_RECAP_HOUR_UTC` | | unset | Hour (0 to 23, UTC) of the daily recap post. Unset: no recap. |
 | `DISCORD_LOG_THREAD` | | `adventure-log` | Name of the adventure log thread. |
 | `DISCORD_GALLERY_THREAD` | | `gallery` | Name of the thread with a picture for each death and each 10 levels of a skill, at most 6 an hour. It must differ from `DISCORD_LOG_THREAD`. |
@@ -112,9 +113,9 @@ The bot posts one message for each instruction. It edits that message with progr
 Other output in the channel:
 
 - **Status card**: one pinned message that the bot edits every 15 s while an instruction runs. It shows the goal, the current step, the HP, the queue length, the spend and a recent frame.
-- **Adventure log**: a thread (`DISCORD_LOG_THREAD`) with level-ups, item gains, deaths, receipts, wake events and the `post` lines of the AI, sent in batches, in the first person ("I reached Attack 20.", "I finished a request for Sam ..."). A batch is added to the last message by an edit when that message is less than 2 minutes old.
+- **Adventure log**: a thread (`DISCORD_LOG_THREAD`) with level-ups, item gains, deaths, receipts, wake events and the `post` lines of the AI, sent in batches, in the first person. Item gains within 60 s become one line ("I got 14 x Logs.") ("I reached Attack 20.", "I finished a request for Sam ..."). A batch is added to the last message by an edit when that message is less than 2 minutes old.
 - **Gallery**: a thread (`DISCORD_GALLERY_THREAD`) with a frame of the game, or a close portrait of the character, for each death and each 10 levels of a skill.
-- **Posts**: a message for each 10 levels of a skill, for a death and for the daily recap, with a drawn card. A death post also has the portrait. The recap has an XP chart of the last 24 hours. At most `DISCORD_POSTS_PER_HOUR` per hour.
+- **Posts**: a message when a skill passes a level of `MILESTONE_LEVELS`, for a death and for the daily recap, with a drawn card. A death post also has the portrait. The recap has an XP chart of the last 24 hours. At most `DISCORD_POSTS_PER_HOUR` per hour.
 
 Wakes: the AI can set a timer (1 to 1440 minutes) with a note. The bot also wakes the AI when the HP falls below 30%, after a death, and when the inventory is full (28 of 28, at most once in 30 minutes, only when nothing else runs or waits). With `NOTES_REVIEW_HOUR_UTC`, a daily review wake tidies the notes. Each wake is an instruction in the queue with no human author. At most 6 timer and trigger wakes per hour and guild, and only while the daily allowance has room.
 
