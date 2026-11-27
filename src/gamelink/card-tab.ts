@@ -21,7 +21,8 @@ export interface CardTabOptions extends IconCacheOptions {
 }
 
 export interface CardTab {
-  draw<K extends CardKind>(kind: K, data: CardDataMap[K]): Promise<Uint8Array>;
+  /** frame: a PNG of the game view. Only the receipt card shows it. */
+  draw<K extends CardKind>(kind: K, data: CardDataMap[K], frame?: Uint8Array | null): Promise<Uint8Array>;
   close(): Promise<void>;
 }
 
@@ -67,18 +68,20 @@ export async function openCardTab(browser: Browser, opts: CardTabOptions = {}): 
   // One page draws one card at a time.
   let chain: Promise<unknown> = Promise.resolve();
 
-  async function drawNow(kind: CardKind, raw: unknown): Promise<Uint8Array> {
+  async function drawNow(kind: CardKind, raw: unknown, frame?: Uint8Array | null): Promise<Uint8Array> {
     if (closed) throw new Error('card tab is closed');
     if (!isCardKind(kind)) throw new CardDataError(`unknown card kind: ${String(kind)}`);
     const data = validateCardData(kind, raw);
     const iconMap = await icons.getMany(cardIconIds(kind, data));
     const { width, height: maxHeight } = CARD_SIZES[kind];
     await page.setViewport({ width, height: maxHeight, deviceScaleFactor: CARD_DEVICE_SCALE });
+    const view = frame && kind === 'instruction_receipt' ? `data:image/png;base64,${Buffer.from(frame).toString('base64')}` : null;
     const content = await page.evaluate(
-      (k, d, i) => (window as unknown as { renderCard(k: string, d: unknown, i: unknown): Promise<number> }).renderCard(k, d, i),
+      (k, d, i, v) => (window as unknown as { renderCard(k: string, d: unknown, i: unknown, v: string | null): Promise<number> }).renderCard(k, d, i, v),
       kind,
       data as unknown as Record<string, unknown>,
       iconMap,
+      view,
     );
     // The picture is as high as the card content, between the minimum and the largest height.
     const height = cardHeight(content, maxHeight);
@@ -95,9 +98,9 @@ export async function openCardTab(browser: Browser, opts: CardTabOptions = {}): 
   }
 
   return {
-    draw(kind, data) {
+    draw(kind, data, frame) {
       // The next draw waits for this one to end on the page, even after its timeout.
-      const run = chain.then(() => drawNow(kind, data));
+      const run = chain.then(() => drawNow(kind, data, frame));
       chain = run.catch(() => {});
       return withTimeout(run);
     },

@@ -92,7 +92,7 @@ describe('cardIconIds', () => {
     expect(cardIconIds('level_up', validateCardData('level_up', SAMPLE_CARDS.level_up))).toEqual([]);
   });
   test('returns the item ids of the receipt rows', () => {
-    expect(cardIconIds('instruction_receipt', validateCardData('instruction_receipt', SAMPLE_CARDS.instruction_receipt))).toEqual([1521, 995]);
+    expect(cardIconIds('instruction_receipt', validateCardData('instruction_receipt', SAMPLE_CARDS.instruction_receipt))).toEqual([1521, 995, 590]);
   });
   test('a death card takes a full inventory of 28 items', () => {
     const items = Array.from({ length: 28 }, (_, i) => ({ id: i, name: `item ${i}`, count: 1 }));

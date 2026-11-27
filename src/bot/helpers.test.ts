@@ -211,6 +211,13 @@ describe('buildReceipt', () => {
     expect(r.summary.length).toBe(600);
     expect(r.skills).toBeUndefined();
     expect(r.inventory).toEqual([{ name: 'Logs', before: 0, after: 2 }]);
+    expect(r.by).toBeUndefined();
+  });
+
+  test('cleans the name of the person who asked', () => {
+    const clean = (t: string) => redactNames(t, ['hero42'], 'my character');
+    const r = buildReceipt({ by: 'Hero42', instruction: 'i', summary: 's', turns: 1, costUsd: 0, durationMs: 1, changes: { skills: [], inventory: [] } }, clean);
+    expect(r.by).toBe('my character');
   });
 });
 

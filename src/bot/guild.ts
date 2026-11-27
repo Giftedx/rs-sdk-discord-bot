@@ -160,10 +160,10 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   // The look tool: the newest stored frame, or a new capture when the store has none that is fresh.
   const frame = (): Promise<Uint8Array | null> => link.frame();
 
-  async function draw(subject: CardSubject): Promise<Uint8Array | null> {
+  async function draw(subject: CardSubject, opts?: { withFrame?: boolean }): Promise<Uint8Array | null> {
     const req = cardFor(subject, prevEvents, lastReceipt, new Date(), itemIds.get);
     if (!req) return null;
-    return link.drawCard(req.kind, req.data as never);
+    return link.drawCard(req.kind, req.data as never, opts);
   }
 
   function view() {
@@ -328,18 +328,25 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
 
       const endState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
       lastReceipt = buildReceipt({
-        instruction: row.text, summary: result.summary, turns: result.turns, costUsd: result.usd,
+        by: wake === 'instruction' ? row.user : `${wake} wake`, instruction: row.text, summary: result.summary, turns: result.turns, costUsd: result.usd,
         durationMs: Date.now() - startedAt, changes: receiptChanges(startState, endState),
       }, clean);
+      // One picture: the receipt card holds the game view, the summary and the changes. The card
+      // tab takes the view from the same frame() as here, so a null here means a card without one.
       const files: AttachmentBuilder[] = [];
-      const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
+      const view = await frame();
+      const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }, { withFrame: view !== null }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
       if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
-      const png = (await frame()) ?? result.lastFrame;
+      const png = receiptPng && view ? null : view ?? result.lastFrame;
       if (png) files.push(new AttachmentBuilder(Buffer.from(png), { name: 'frame.png' }));
       frames.stop();
       const b = budget.status();
-      const footer = `${result.turns} turns, $${result.usd.toFixed(2)} (period: $${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)})`;
-      const done = { content: clean(`**Done** (${from}): ${row.text}\n${result.summary}\n-# ${footer}`), components: [], files, allowedMentions: { parse: [] as [] } };
+      const period = `$${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)} spent this period`;
+      // The card shows the summary, the turns and the cost. Without a card the text holds them.
+      const text = receiptPng
+        ? `**Done** (${from}): ${row.text}\n-# ${period}`
+        : `**Done** (${from}): ${row.text}\n${result.summary}\n-# ${result.turns} turns, $${result.usd.toFixed(2)} · ${period}`;
+      const done = { content: clean(text), components: [], files, allowedMentions: { parse: [] as [] } };
       if (msg) await msg.edit(done).catch(err => log(`edit failed: ${errText(err)}`));
       else await ch.send(done).catch(() => {});
       emit(receiptEvent(row.text, `${result.stopReason}: ${result.summary}`), true, wake === 'instruction' ? row.user : undefined);

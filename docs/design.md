@@ -165,7 +165,7 @@ In split mode, one gamelink process (`src/gamelink/main.ts`, user `rsgame`) serv
 
 **Picture rig. Partly built.** `frame('view')` returns the game view at 2 times the size with sharp pixels, 1024 by 668. `frame('full')` returns the complete canvas, 765 by 503. The rig copies the canvas to a second canvas and never draws on the game canvas. The frame store (`src/gamelink/frame-store.ts`) is **Built**: while an instruction runs and the tab is in the game, it stores one `view` frame every 5 seconds and keeps the last 12. The `look` tool and the status card use the newest stored frame.
 
-**Card tab. Built** (`src/gamelink/card-tab.ts`, `src/cards/`). A second tab draws each drawn card (level-up, death, instruction receipt, daily recap, status) from a template and data. It writes text with `textContent` only, because item names and player names are untrusted. The card page loads nothing from the network. Item icons come from the sprite route of the game host (`/sprite/item/{id}.png`). The bot fetches them, checks that each one is a PNG of at most 64 KB, keeps them in memory, and gives them to the page as `data:` URLs. The skill icons are the `staticons` sprite sheets of the rs-sdk content (`src/cards/skill-icons.ts`). The card page cuts one icon per skill out of them.
+**Card tab. Built** (`src/gamelink/card-tab.ts`, `src/cards/`). A second tab draws each drawn card (level-up, death, instruction receipt, daily recap, status) from a template and data. It writes text with `textContent` only, because item names and player names are untrusted. The card page loads nothing from the network. Item icons come from the sprite route of the game host (`/sprite/item/{id}.png`). The bot fetches them, checks that each one is a PNG of at most 64 KB, keeps them in memory, and gives them to the page as `data:` URLs. The skill icons are the `staticons` sprite sheets of the rs-sdk content (`src/cards/skill-icons.ts`). The card page cuts one icon per skill out of them. The receipt card also shows the game view (512 by 334, from `frame()` on the gamelink side), so the Done message of an instruction carries one picture.
 
 **Proxy. Built** (`src/gamelink/proxy.ts`). Each guild has its own proxy:
 
@@ -259,7 +259,7 @@ The bot has no commands and no admin through Discord. It uses three places: the 
 
 Events come from a comparison of state snapshots in the orchestrator, not from the AI: a level-up, a death, an item gain, and a finished instruction.
 
-Rule for all pictures: this repository holds no game art. The bot gets item icons from the game host at run time. The skill icons are the client sprite sheets `staticons` and `staticons2` of the rs-sdk submodule, read from `vendor/` at run time. A font must have an open licence. The card page uses the system font Inter (package `fonts-inter`) and loads no font file.
+Rule for all pictures: this repository holds no game art. The bot gets item icons from the game host at run time. The skill icons are the client sprite sheets `staticons` and `staticons2` of the rs-sdk submodule, read from `vendor/` at run time. A font must have an open licence. The cards look like the game interface of 2004: brown stone panels, square corners, orange titles and yellow numbers. The card page uses the system font Arial, else Liberation Sans, and loads no font file.
 
 ## 9. Operations
 

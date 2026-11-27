@@ -104,6 +104,7 @@ export function cardView(v: ViewInput): CardView {
 }
 
 export interface Receipt {
+  by?: string;
   instruction: string;
   summary: string;
   turns: number;
@@ -118,10 +119,11 @@ const RECEIPT_ROWS = 12;
 /** The receipt card data of a finished instruction. The texts come from people and the AI, so
  *  clean() (secrets, the account name, mentions) runs on them before they are cut. */
 export function buildReceipt(v: {
-  instruction: string; summary: string; turns: number; costUsd: number; durationMs: number;
+  by?: string; instruction: string; summary: string; turns: number; costUsd: number; durationMs: number;
   changes: { skills: ReceiptSkill[]; inventory: ReceiptItem[] };
 }, clean: (text: string) => string): Receipt {
   return {
+    ...(v.by ? { by: clean(v.by).slice(0, 40) } : {}),
     instruction: clean(v.instruction).slice(0, 300), summary: clean(v.summary).slice(0, 600), turns: v.turns, costUsd: v.costUsd,
     durationMs: v.durationMs,
     ...(v.changes.skills.length > 0 ? { skills: v.changes.skills } : {}),

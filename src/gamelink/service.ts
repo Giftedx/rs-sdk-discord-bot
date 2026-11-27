@@ -170,10 +170,10 @@ async function route(link: GameLink, req: Request, log: (line: string) => void):
       return json({ ok: true });
     }
     case 'POST card': {
-      const body = await readJson(req) as { kind?: unknown; data?: unknown } | undefined;
+      const body = await readJson(req) as { kind?: unknown; data?: unknown; withFrame?: unknown } | undefined;
       if (!isCardKind(body?.kind)) return json({ error: 'unknown card kind' }, 400);
       try {
-        const bytes = await g.drawCard(body.kind as CardKind, body.data as CardDataMap[CardKind]);
+        const bytes = await g.drawCard(body.kind as CardKind, body.data as CardDataMap[CardKind], { withFrame: body.withFrame === true });
         return bytes ? png(bytes) : new Response(null, { status: 204 });
       } catch (err) {
         if (err instanceof CardDataError) return json({ error: err.message }, 400);

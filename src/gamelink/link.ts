@@ -41,7 +41,8 @@ export interface GuildLink {
   // True when no action is in flight within timeoutMs (capped at 30 s). For the end of a job.
   waitIdle(timeoutMs: number): Promise<boolean>;
   // Null when there is no card tab.
-  drawCard<K extends CardKind>(kind: K, data: CardDataMap[K]): Promise<Uint8Array | null>;
+  // withFrame: the receipt card shows the game view, from frame().
+  drawCard<K extends CardKind>(kind: K, data: CardDataMap[K], opts?: { withFrame?: boolean }): Promise<Uint8Array | null>;
   logout(): Promise<boolean>;
   // In-process: log out and stop the parts. Socket client: stop polling; gamelink keeps the session.
   close(): Promise<void>;
@@ -212,6 +213,13 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
   const store = frames!;
   let closed = false;
 
+  async function frame(): Promise<Uint8Array | null> {
+    const f = store.latest();
+    if (f && Date.now() - f.at < FRAME_FRESH_MS) return f.png;
+    if (supervisor.status() !== 'in_game' || store.disabled) return f?.png ?? null;
+    return gameTab.frame('view').catch(() => f?.png ?? null);
+  }
+
   return {
     name: g.name,
     account: g.game.account.name,
@@ -222,12 +230,7 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
     proxyStatus: () => prx.status(),
     state: () => (lastState === null ? null : { state: lastState, at: lastStateAt }),
     latestFrame: () => store.latest(),
-    async frame() {
-      const f = store.latest();
-      if (f && Date.now() - f.at < FRAME_FRESH_MS) return f.png;
-      if (supervisor.status() !== 'in_game' || store.disabled) return f?.png ?? null;
-      return gameTab.frame('view').catch(() => f?.png ?? null);
-    },
+    frame,
     async portrait() {
       if (supervisor.status() !== 'in_game') return null;
       return gameTab.frame('portrait').catch(() => null);
@@ -238,9 +241,10 @@ async function startLocalGuild(pb: ProfiledBrowser, cards: CardTab | null, g: Lo
     async setJobActive(active) { prx.setJobActive(active); },
     actionsInFlight: () => prx.actionsInFlight(),
     waitIdle: timeoutMs => prx.waitIdle(timeoutMs),
-    async drawCard(kind, data) {
+    async drawCard(kind, data, opts) {
       if (!cards) return null;
-      return cards.draw(kind, data);
+      const view = opts?.withFrame ? await frame().catch(() => null) : null;
+      return cards.draw(kind, data, view);
     },
     async logout() {
       supervisor.stop();

@@ -16,13 +16,14 @@ export const SAMPLE_CARDS: { [K in CardKind]: CardDataMap[K] } = {
     ],
   },
   instruction_receipt: {
+    by: 'Robin',
     instruction: 'Chop oak logs near Draynor until the inventory is full, then bank them.',
     summary: 'Walked to the oak trees west of Draynor bank. Chopped 27 oak logs in four trips, banked each load, and stopped at the bank with an empty inventory. No combat on the way.',
     turns: 14,
     costUsd: 0.37,
     durationMs: 4_320_000,
     skills: [{ name: 'Woodcutting', before: 30, after: 31, xp: 4_100 }],
-    inventory: [{ id: 1521, name: 'Oak logs', before: 0, after: 27 }, { id: 995, name: 'Coins', before: 120, after: 95 }],
+    inventory: [{ id: 1521, name: 'Oak logs', before: 0, after: 27 }, { id: 995, name: 'Coins', before: 120, after: 95 }, { id: 590, name: 'Tinderbox', before: 1, after: 0 }],
   },
   daily_recap: {
     date: '2026-11-27',

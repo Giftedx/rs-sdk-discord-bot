@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Browser } from 'puppeteer';
 import { SAMPLE_CARDS } from '../cards/samples';
@@ -77,6 +77,21 @@ describe('card tab', () => {
     if (!LIVE_ICON_HOST) {
       expect(seen.filter(p => p.startsWith('/sprite/item/')).sort()).toEqual(['/sprite/item/1351.png', '/sprite/item/1519.png', '/sprite/item/1521.png', '/sprite/item/590.png', '/sprite/item/995.png']);
     }
+  }, T);
+
+  browserTest('the receipt card shows the game view at its own size', async () => {
+    // CARD_FRAME, when set, is a real game frame for the PNG in CARD_PNG_DIR. Any PNG fills the view.
+    const frame = new Uint8Array(process.env.CARD_FRAME ? readFileSync(process.env.CARD_FRAME) : ONE_PIXEL_PNG);
+    const without = pngSize(await tab!.draw('instruction_receipt', SAMPLE_CARDS.instruction_receipt));
+    const png = await tab!.draw('instruction_receipt', SAMPLE_CARDS.instruction_receipt, frame);
+    const size = pngSize(png);
+    // The view is 334 CSS pixels high, plus its frame.
+    expect(size.height - without.height).toBeGreaterThanOrEqual(340 * CARD_DEVICE_SCALE);
+    expect(size.height).toBeLessThanOrEqual(CARD_SIZES.instruction_receipt.height * CARD_DEVICE_SCALE);
+    // Other cards ignore a frame.
+    const level = await tab!.draw('level_up', SAMPLE_CARDS.level_up, frame);
+    expect(pngSize(level)).toEqual(pngSize(await tab!.draw('level_up', SAMPLE_CARDS.level_up)));
+    if (PNG_DIR) writeFileSync(join(PNG_DIR, 'instruction_receipt-frame.png'), png);
   }, T);
 
   browserTest('draws markup in names as text and loads nothing it names', async () => {
