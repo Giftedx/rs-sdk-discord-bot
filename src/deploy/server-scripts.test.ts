@@ -116,7 +116,7 @@ test.skipIf(!bash)('chrome prune keeps the version of RS_CHROME_PATH and deletes
     }
     mkdirSync(p('proc'));
     writeFileSync(p('server.env'), `RS_CHROME_PATH=${p('chrome/141.0.2/chrome-linux64/chrome')}\n`);
-    const env = { PATH: `${join(p('bin'))}${delimiter}${process.env.PATH ?? ''}`, CHROME_ROOT: p('chrome'), SERVER_ENV: p('server.env'), PROC_DIR: p('proc'), RS_CHROME_PATH: '' };
+    const env = { PATH: `${join(p('bin'))}${delimiter}${process.env.PATH ?? ''}`, CHROME_ROOT: p('chrome'), SERVER_ENV: p('server.env'), PROC_DIR: p('proc'), RS_CHROME_PATH: '', GAMELINK_ENV: p('no-gamelink.env') };
     const dry = run([script('server-chrome-prune.sh')], env);
     expect(dry.code).toBe(0);
     expect(dry.out).toContain('keep   141.0.2');
