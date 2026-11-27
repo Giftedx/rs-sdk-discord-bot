@@ -65,7 +65,7 @@ describe('job runner', () => {
     const flags: boolean[] = [];
     const runner = createJobRunner({
       rootDir: root, scratchDir: join(root, 'scratch'), account: 'abc', bootToken: 'boot-token-1234',
-      secrets: ['gamepass123'], proxy: { port: 1, setJobActive: a => flags.push(a) },
+      secrets: ['gamepass123'], proxy: { port: 1, setJobActive: a => { flags.push(a); } },
     });
     const r = await runner.run('console.log("hello " + typeof bot);', 10_000);
     expect(r.exitCode).toBe(0);

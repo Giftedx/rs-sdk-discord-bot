@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStore, loadKnowledge, searchKnowledge, StoreError } from './store';
 import { costUsd, createSpendTracker } from './spend';
-import { sanitizeForDiscord } from '../shared/sanitize';
+import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 
 describe('store', () => {
   test('saves, lists, reads and deletes a script', () => {
@@ -58,5 +58,13 @@ describe('sanitizeForDiscord', () => {
     expect(out).not.toContain('<@123>');
     expect(out).toContain('<secret>');
     expect(sanitizeForDiscord('x'.repeat(5000), []).length).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe('redactNames', () => {
+  test('replaces the account name in any letter case, as a whole word', () => {
+    expect(redactNames('my character Hero42 is near HERO42.', ['hero42'], 'X')).toBe('my character X is near X.');
+    expect(redactNames('hero423 stays', ['hero42'], 'X')).toBe('hero423 stays');
+    expect(redactNames('ab', ['ab'], 'X')).toBe('ab');
   });
 });

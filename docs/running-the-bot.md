@@ -58,6 +58,8 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 | `DISCORD_LOG_THREAD` | | `adventure-log` | Name of the adventure log thread. |
 | `DISCORD_CARDS` | | `1` | `0` turns the drawn cards off. |
 | `PROXY_PORT` | | `7790` | Loopback port of the proxy. With `GUILDS_FILE`, guild number *n* (from 0) uses `PROXY_PORT` + *n*. |
+| `GAMELINK_SOCKET` | | unset | Split mode: the Unix socket of the gamelink process. With it, the bot opens no browser and does not need `RS_PASSWORD`. See "Split mode". In gamelink, the default is `/run/rs-gamelink/gamelink.sock`. |
+| `GAMELINK_TOKEN_FILE` | with `GAMELINK_SOCKET`, and in gamelink | | An absolute path to a file with one token of at least 32 characters. Every request to the socket must carry it. |
 
 The spend is an estimate from the token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
 
@@ -139,7 +141,7 @@ Prepare the server with [deploy-server.md](deploy-server.md) first, and make the
 1. Write `secrets/bot.env` with `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID`, `ANTHROPIC_API_KEY`, `BOX_USER=rsbox`, and `RS_ALLOW_DEMO=1` if the game server is the demo world. Set its mode to 600.
 2. Make the data directory: `mkdir -p data && chmod 755 data`.
 
-As the admin user:
+As the admin user. The unit file has `Requires=rs-gamelink.service` for split mode. To run the bot in one process, remove that line from the copy in `/etc/systemd/system/` before `daemon-reload`.
 
 ```bash
 sudo cp /opt/rs-discord-bot/deploy/systemd/rs-discord-bot.service /etc/systemd/system/
@@ -177,9 +179,119 @@ All guilds use the same game server settings (`RS_SERVER_HOST` and the URLs). Ea
 
 The job runner kills every process of the box user after a job. So guilds that share a box user run their jobs one at a time. To run jobs of several guilds at the same time, give each guild its own box user, with its own sudoers line.
 
+## Split mode
+
+In split mode, the game parts run in a second process, gamelink (`src/gamelink/main.ts`), as the Unix user `rsgame`. Gamelink holds the game passwords and Chromium. The bot (`rsbot`) holds the Discord token and the API key. The bot does not have the game password and opens no browser.
+
+The bot talks to gamelink through a Unix socket, `/run/rs-gamelink/gamelink.sock`, with HTTP and JSON. Every request must carry `authorization: Bearer <token>`. The token is in `/etc/rs-gamelink/token`. The proxy ports stay on `127.0.0.1`, so the box user reaches the proxy as before.
+
+Without `GAMELINK_SOCKET`, the bot runs the game parts in its own process, as in the earlier sections.
+
+Who can read what:
+
+| File or socket | Owner and mode | rsgame | rsbot | rsbox |
+|---|---|---|---|---|
+| `/etc/rs-gamelink/` | `root:rsgate` 750 | enter | enter | no |
+| `/etc/rs-gamelink/account.env` (game passwords) | `rsgame:rsgame` 600 | read | no | no |
+| `/etc/rs-gamelink/gamelink.env` (optional, no secret) | `root:rsgame` 640 | read | no | no |
+| `/etc/rs-gamelink/token` | `root:rsgate` 640 | read | read | no |
+| `/run/rs-gamelink/` (made by systemd) | `rsgame:rsgate` 750 | write | enter | no |
+| `/run/rs-gamelink/gamelink.sock` | `rsgame:rsgate` 660 | listen | connect | no |
+| `/opt/rs-discord-bot/secrets/` (Discord token, API key) | `rsbot` 700 | no | read | no |
+| `/opt/rs-discord-bot/server.env` (`RS_CHROME_PATH`) | `rsbot` 640 | no (gets `RS_CHROME_PATH` from `gamelink.env`) | read | no |
+
+The unit `rs-gamelink.service` runs with `Group=rsgate`, so the run directory and the socket get the group `rsgate`. `UMask=0007` gives other users no access to the files that gamelink makes.
+
+Setup, as root on the server. Do "The box user" first: it installs `/usr/local/bin/bun`, which `rsgame` runs.
+
+1. Make the user and the shared group:
+
+   ```bash
+   groupadd --system rsgate
+   useradd -m -s /usr/sbin/nologin rsgame
+   usermod -aG rsgate rsgame
+   usermod -aG rsgate rsbot
+   install -d -m 700 -o rsgame -g rsgame /home/rsgame/.cache
+   ```
+
+2. Check that `rsgame` can read the repository but not `secrets/`. "The box user" already set `/opt/rs-discord-bot` to mode 751, so other users can open the files that all users may read:
+
+   ```bash
+   sudo -u rsgame test -r /opt/rs-discord-bot/src/gamelink/main.ts && echo repo-ok
+   sudo -u rsgame test -r /opt/rs-discord-bot/secrets/bot.env || echo secrets-closed
+   ```
+
+   The output must be `repo-ok` and `secrets-closed`.
+
+3. Move the game passwords to gamelink and make the token:
+
+   ```bash
+   systemctl stop rs-discord-bot
+   install -d -m 750 -o root -g rsgate /etc/rs-gamelink
+   mv /opt/rs-discord-bot/secrets/account.env /etc/rs-gamelink/account.env
+   chown rsgame:rsgame /etc/rs-gamelink/account.env
+   chmod 600 /etc/rs-gamelink/account.env
+   ( umask 027; openssl rand -hex 32 > /etc/rs-gamelink/token )
+   chown root:rsgate /etc/rs-gamelink/token
+   chmod 640 /etc/rs-gamelink/token
+   ```
+
+   With `GUILDS_FILE`, put each `passwordEnv` variable in `/etc/rs-gamelink/account.env`, not in `secrets/bot.env`. Remove `RS_PASSWORD` and the `passwordEnv` variables from `secrets/bot.env`.
+
+4. Write the settings that both processes need. Gamelink reads them from `/etc/rs-gamelink/gamelink.env` (`root:rsgame`, mode 640). The bot reads them from `secrets/bot.env`. Use the same values in the two files:
+
+   | Variable | Gamelink | Bot |
+   |---|---|---|
+   | `RS_ACCOUNT` | in `account.env` | yes, without `GUILDS_FILE`; not a secret |
+   | `RS_SERVER_HOST`, `RS_GATEWAY_URL`, `RS_BOT_PAGE_URL`, `RS_ALLOW_DEMO` | yes | yes |
+   | `GUILDS_FILE`, `PROXY_PORT` | yes; `rsgame` must be able to read the file | yes |
+   | `RS_CHROME_PATH` (copy it from `server.env`), `RS_FPS`, `GAMELINK_IDLE_GUARD` | yes | no |
+   | `DISCORD_CARDS` | yes (opens the card tab) | yes (asks for cards) |
+
+   Add these lines to `secrets/bot.env`:
+
+   ```bash
+   GAMELINK_SOCKET=/run/rs-gamelink/gamelink.sock
+   GAMELINK_TOKEN_FILE=/etc/rs-gamelink/token
+   ```
+
+   The unit of gamelink sets the same two variables itself.
+
+5. Install and start the units:
+
+   ```bash
+   cp /opt/rs-discord-bot/deploy/systemd/rs-gamelink.service /opt/rs-discord-bot/deploy/systemd/rs-discord-bot.service /opt/rs-discord-bot/deploy/systemd/rs-alert@.service /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now rs-gamelink
+   journalctl -u rs-gamelink -n 20 --no-pager
+   systemctl start rs-discord-bot
+   journalctl -u rs-discord-bot -n 20 --no-pager
+   ```
+
+   The gamelink log must show `listening on /run/rs-gamelink/gamelink.sock`. The bot log must show `game parts in the gamelink process at /run/rs-gamelink/gamelink.sock`.
+
+6. Check the separation:
+
+   ```bash
+   ls -ld /run/rs-gamelink /run/rs-gamelink/gamelink.sock
+   sudo -u rsbot test -r /etc/rs-gamelink/account.env || echo bot-cannot-read-password
+   sudo -u rsbox test -r /etc/rs-gamelink/token || echo box-cannot-read-token
+   sudo -u rsbot curl -s -o /dev/null -w '%{http_code}\n' --unix-socket /run/rs-gamelink/gamelink.sock http://gamelink/guilds/main/status
+   tr '\0' '\n' < /proc/$(pgrep -u rsbot -f src/bot/main.ts | head -n 1)/environ | grep -c '^RS_PASSWORD='
+   ```
+
+   Expected: `drwxr-x--- rsgame rsgate` and `srw-rw---- rsgame rsgate`, then `bot-cannot-read-password`, `box-cannot-read-token`, `401` (no token), and `0`.
+
+How the two units work together:
+
+- `rs-discord-bot.service` has `Requires=rs-gamelink.service`. A stop of gamelink also stops the bot. Gamelink logs every account out of the game on SIGTERM.
+- A restart of the bot does not log the account out. Gamelink keeps the game session.
+- After each job, the bot turns the job flag of the proxy off through the socket. It tries three times. If all three fail, the log shows `job flag not turned off`.
+- To go back to one process: stop both units, move `account.env` back to `secrets/` (owner `rsbot`, mode 600), remove the `GAMELINK_*` lines from `secrets/bot.env`, remove the `Requires=` line from `/etc/systemd/system/rs-discord-bot.service`, run `systemctl daemon-reload`, and start `rs-discord-bot`.
+
 ## Deploy scripts
 
-These files are in `scripts/` and `deploy/systemd/`. They run as root on the server. Set the exec bit in git once: `git update-index --chmod=+x scripts/server-firewall.sh scripts/server-backup.sh scripts/server-revision-check.sh`.
+These files are in `scripts/` and `deploy/systemd/`. They run as root on the server. Set the exec bit in git once: `git update-index --chmod=+x scripts/server-firewall.sh scripts/server-backup.sh scripts/server-revision-check.sh scripts/server-alert.sh`.
 
 | What | Install | Notes |
 |---|---|---|

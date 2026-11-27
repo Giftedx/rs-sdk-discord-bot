@@ -1,0 +1,43 @@
+# systemd unit of gamelink: the game parts of the bot (browser, game tabs, supervisor, proxies,
+# frame store, card tab) as their own user. docs/running-the-bot.md, "Split mode", says how to
+# install it. It holds the game passwords and Chromium. It never gets the Discord token or the API key.
+# It loads:
+#   /etc/rs-gamelink/account.env   RS_ACCOUNT, RS_PASSWORD (or the passwordEnv variables of GUILDS_FILE)
+#   /opt/rs-discord-bot/server.env RS_CHROME_PATH
+#   /etc/rs-gamelink/gamelink.env  optional: RS_SERVER_HOST, RS_ALLOW_DEMO, GUILDS_FILE, PROXY_PORT, ...
+# The token of the local interface is in /etc/rs-gamelink/token (GAMELINK_TOKEN_FILE).
+[Unit]
+Description=rs-sdk gamelink (game tabs and proxy of the Discord bot)
+After=network-online.target
+Wants=network-online.target
+OnFailure=rs-alert@%n.service
+
+[Service]
+Type=simple
+User=rsgame
+# The primary group is the shared group rsgate, so /run/rs-gamelink and the socket get the group
+# rsgate. The bot user rsbot is in rsgate; no other user can open the socket.
+Group=rsgate
+RuntimeDirectory=rs-gamelink
+RuntimeDirectoryMode=0750
+UMask=0007
+WorkingDirectory=/opt/rs-discord-bot
+Environment=GAMELINK_SOCKET=/run/rs-gamelink/gamelink.sock
+Environment=GAMELINK_TOKEN_FILE=/etc/rs-gamelink/token
+ExecStart=/bin/bash -c 'set -a; . /etc/rs-gamelink/account.env; if [ -r /opt/rs-discord-bot/server.env ]; then . /opt/rs-discord-bot/server.env; fi; if [ -r /etc/rs-gamelink/gamelink.env ]; then . /etc/rs-gamelink/gamelink.env; fi; set +a; exec /usr/local/bin/bun --no-env-file src/gamelink/main.ts'
+Restart=on-failure
+# More than 10 s, so that a new login does not follow the old session at once.
+RestartSec=30
+# Gamelink logs every account out of the game on SIGTERM; give it time.
+TimeoutStopSec=40
+KillMode=mixed
+# Gamelink starts no job and uses no sudo. Chromium sandboxes itself with user namespaces.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/rsgame/.cache
+MemoryMax=2560M
+
+[Install]
+WantedBy=multi-user.target

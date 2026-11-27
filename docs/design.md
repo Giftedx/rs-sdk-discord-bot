@@ -83,7 +83,7 @@ Each fact below comes from the rs-sdk source at commit `3506b20`. Where a file i
 
 ## 5. Architecture
 
-**Partly built.** One server will run three kinds of process. In the design, each kind runs as a different Unix user under systemd. Today only the proxy and the game tab module of gamelink exist, as library code that the scripts in `scripts/` run in one process.
+**Built.** One server runs three kinds of process, each as its own Unix user under systemd, in split mode: the orchestrator (`src/bot/main.ts`, user `rsbot`), gamelink (`src/gamelink/main.ts`, user `rsgame`) and the jobs of the box (user `rsbox`). The orchestrator talks to gamelink over a Unix socket with a bearer token (`src/gamelink/service.ts`, `src/gamelink/client.ts`). Without `GAMELINK_SOCKET`, the orchestrator runs the game parts in its own process.
 
 ```
 Discord  <-->  orchestrator  <-- stdio JSON -->  box (one per account)
@@ -109,7 +109,7 @@ Who will hold which secret:
 
 ### 5.1 Orchestrator
 
-**Built, in one process with gamelink** (`src/bot/main.ts`, `src/bot/guild.ts`, `src/orchestrator/`). One process serves all guilds of `GUILDS_FILE`, or one guild from the single-guild settings. The database is built (`src/orchestrator/db.ts`, bun:sqlite, `DATA_DIR/bot.sqlite`, migrations on `PRAGMA user_version`): it holds the queue with recovery after a restart, the spend of each model call with its guild and instruction, the events, a state snapshot every 30 s while the account is in the game, and the timers. Events come from a comparison of state snapshots (`src/events/diff.ts`). Each guild has its own job runner, not a box process, so the steps below that name the box are still planned. Guilds that share a box user run one job at a time.
+**Built** (`src/bot/main.ts`, `src/bot/guild.ts`, `src/orchestrator/`). One process serves all guilds of `GUILDS_FILE`, or one guild from the single-guild settings. The database is built (`src/orchestrator/db.ts`, bun:sqlite, `DATA_DIR/bot.sqlite`, migrations on `PRAGMA user_version`): it holds the queue with recovery after a restart, the spend of each model call with its guild and instruction, the events, a state snapshot every 30 s while the account is in the game, and the timers. Events come from a comparison of state snapshots (`src/events/diff.ts`). Each guild has its own job runner, not a box process, so the steps below that name the box are still planned. Guilds that share a box user run one job at a time.
 
 The rest of this section is the planned form:
 

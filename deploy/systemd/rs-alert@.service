@@ -1,0 +1,14 @@
+# Posts a warning to the Discord channel of the bot when the unit %i fails.
+# The bot units start it with OnFailure=rs-alert@%n.service.
+[Unit]
+Description=Discord warning for the failure of %i
+
+[Service]
+Type=oneshot
+User=rsbot
+WorkingDirectory=/opt/rs-discord-bot
+ExecStart=/opt/rs-discord-bot/scripts/server-alert.sh %i
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only

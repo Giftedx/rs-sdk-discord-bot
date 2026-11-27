@@ -14,7 +14,8 @@ import { join, resolve } from 'node:path';
 
 export interface JobProxy {
   port: number;
-  setJobActive(active: boolean): void;
+  // A promise when the proxy is in the gamelink process; the runner waits for it.
+  setJobActive(active: boolean): void | Promise<void>;
 }
 
 export interface JobRunnerOptions {
@@ -149,7 +150,7 @@ export function createJobRunner(opts: JobRunnerOptions) {
         if (opts.boxUser) chmodSync(file, 0o644);
         const env = jobChildEnv({ account: opts.account, bootToken: opts.bootToken, proxyPort: opts.proxy.port, secrets: opts.secrets });
         if (opts.boxUser) { env.PATH = '/usr/bin:/bin'; env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = '0'; }
-        opts.proxy.setJobActive(true);
+        await opts.proxy.setJobActive(true);
         const child = Bun.spawn(jobCommand(opts, file), {
           cwd: opts.rootDir, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
         });
@@ -182,7 +183,9 @@ export function createJobRunner(opts: JobRunnerOptions) {
           durationMs: Date.now() - started,
         };
       } finally {
-        opts.proxy.setJobActive(false);
+        await Promise.resolve()
+          .then(() => opts.proxy.setJobActive(false))
+          .catch(err => console.error(`job flag not turned off: ${err instanceof Error ? err.message : String(err)}`));
         running = false;
         rmSync(file, { force: true });
       }

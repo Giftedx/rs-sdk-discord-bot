@@ -1,6 +1,7 @@
-// The Discord bot in one process. It serves one guild, or several from GUILDS_FILE. Each guild
-// has its own game tab, proxy, job runner, store and queue (src/bot/guild.ts). The guilds share
-// one browser, one Anthropic client, one SQLite database, one card tab and the spend cap.
+// The Discord bot. It serves one guild, or several from GUILDS_FILE. Each guild has its own job
+// runner, store and queue (src/bot/guild.ts) and a game link (src/gamelink/link.ts). Without
+// GAMELINK_SOCKET the game parts run in this process: one browser, one card tab. With it, they run
+// in the gamelink process (src/gamelink/main.ts) and this process holds no game password.
 // Start: bun src/bot/main.ts (docs/running-the-bot.md).
 import Anthropic from '@anthropic-ai/sdk';
 import { Client, Events, GatewayIntentBits, type Interaction, type Message } from 'discord.js';
@@ -8,11 +9,11 @@ import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { knowledgeFiles, loadKnowledge } from '../agent/store';
 import { prepareJobCgroup, type JobCgroup } from '../box/cgroup';
-import { launchBrowserWithProfile, sweepStaleProfiles, type ProfiledBrowser } from '../gamelink/browser-profile';
-import { openCardTab, type CardTab } from '../gamelink/card-tab';
+import { connectGameLink } from '../gamelink/client';
+import { openLocalGameLink, readTokenFile, type GameLink } from '../gamelink/link';
 import { openDb } from '../orchestrator/db';
 import { createWakeScheduler } from '../orchestrator/wakes';
-import { sanitizeForDiscord } from '../shared/sanitize';
+import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 import { loadBotConfig } from './config';
 import { startGuild, type Guild } from './guild';
 import { createKeyedLock, mentionsBot, stripMentions } from './helpers';
@@ -29,12 +30,22 @@ const cfg = (() => {
     process.exit(2);
   }
 })();
+const gamelinkToken = (() => {
+  if (!cfg.gamelink) return '';
+  try {
+    return readTokenFile(cfg.gamelink.tokenFile);
+  } catch (err) {
+    console.error(`configuration error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+})();
 const secrets = [
-  ...cfg.guilds.map(g => g.game.account.password), cfg.discordToken,
+  ...cfg.guilds.map(g => g.game.account.password), cfg.discordToken, gamelinkToken,
   process.env.ANTHROPIC_API_KEY ?? '', process.env.ANTHROPIC_AUTH_TOKEN ?? '',
 ].filter(s => s.length >= 4);
 const accounts = cfg.guilds.map(g => g.game.account.name);
-const clean = (text: string) => sanitizeForDiscord(text, secrets);
+// The account name is half of the game login: it never goes to Discord.
+const clean = (text: string) => sanitizeForDiscord(redactNames(text, accounts, 'my character'), secrets);
 const log = (line: string) => {
   let out = clean(`[bot ${new Date().toISOString()}] ${line}`);
   for (const a of accounts) out = out.split(a).join('<account>');
@@ -47,8 +58,6 @@ const dbPath = join(cfg.dataDir, 'bot.sqlite');
 const db = openDb(dbPath);
 // The box user must not read the database. SQLite gives -wal and -shm the mode of the main file.
 for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) { try { chmodSync(p, 0o600); } catch { /* not created yet */ } }
-const swept = sweepStaleProfiles();
-if (swept > 0) log(`removed ${swept} browser profile(s) left by an earlier run`);
 const recovered = db.recoverAfterRestart();
 if (recovered > 0) log(`${recovered} instruction(s) that ran at the last stop wait in the queue again`);
 
@@ -66,8 +75,7 @@ if (!cg.ok) {
   log(`job cgroup ${cgroup.path}: memory ${lim.memoryBytes / 1_048_576} MB, ${lim.pids} processes, ${cpu.ok ? `${lim.cpuPercent}% CPU` : 'no CPU limit'} for all jobs together`);
 }
 
-let pb: ProfiledBrowser | null = null;
-let cards: CardTab | null = null;
+let link: GameLink | null = null;
 const guilds: Guild[] = [];
 let shuttingDown = false;
 let ticker: ReturnType<typeof setInterval> | null = null;
@@ -84,8 +92,7 @@ async function shutdown(code: number) {
   if (ticker) clearInterval(ticker);
   await Promise.all(guilds.map(g => g.stop().catch(err => log(`[${g.name}] stop failed: ${errText(err)}`))));
   await discord.destroy().catch(() => {});
-  await cards?.close().catch(() => {});
-  await pb?.close().catch(() => {});
+  await link?.close().catch(() => {});
   try { db.close(); } catch { /* already closed */ }
   process.exit(code);
 }
@@ -96,14 +103,18 @@ process.on('unhandledRejection', err => { log(`unhandled rejection: ${errText(er
 
 try {
   log(`${cfg.guilds.length} guild(s), model ${cfg.model}, effort ${cfg.effort}${cfg.escalationModel ? `, escalation ${cfg.escalationModel}` : ''}`);
-  pb = await launchBrowserWithProfile(cfg.game.chromePath ? { executablePath: cfg.game.chromePath } : {});
-  log(pb.profile.onTmpfs ? 'browser profile on tmpfs' : 'WARNING: /dev/shm is missing; the browser profile is on disk');
-  if (cfg.cards) {
-    cards = await openCardTab(pb.browser, { iconHost: new URL(cfg.game.botPageUrl).origin })
-      .catch(err => { log(`card tab not open, posts go without cards: ${errText(err)}`); return null; });
+  if (cfg.gamelink) {
+    if (process.env.RS_PASSWORD) log('WARNING: split mode, but RS_PASSWORD is in the environment of the bot. Do not load secrets/account.env in the bot.');
+    log(`game parts in the gamelink process at ${cfg.gamelink.socketPath}`);
+    link = await connectGameLink({
+      socketPath: cfg.gamelink.socketPath, token: gamelinkToken, log,
+      guilds: cfg.guilds.map(g => ({ name: g.name, account: g.game.account.name })),
+    });
+  } else {
+    link = await openLocalGameLink({ guilds: cfg.guilds, idleGuard: cfg.idleGuard, cards: cfg.cards, log });
   }
   const shared = {
-    cfg, root: ROOT, browser: pb.browser, anthropic: new Anthropic(), db, cards, cgroup, discord,
+    cfg, root: ROOT, link, anthropic: new Anthropic(), db, cgroup, discord,
     knowledge: loadKnowledge(knowledgeFiles(ROOT)),
     apiReference: readFileSync(join(ROOT, 'vendor', 'rs-sdk', 'sdk', 'API.md'), 'utf8'),
     secrets, clean, log,
@@ -111,7 +122,6 @@ try {
     withLock: createKeyedLock(),
   };
   for (const g of cfg.guilds) {
-    log(`[${g.name}] game server ${g.game.serverHost}, proxy port ${g.game.proxyPort}`);
     guilds.push(await startGuild(shared, g));
   }
   if (!cfg.boxUser && cfg.guilds.some(g => !g.boxUser)) {

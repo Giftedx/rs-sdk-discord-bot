@@ -10,3 +10,16 @@ export function sanitizeForDiscord(text: string, secrets: string[], max = DISCOR
   if (out.length > max) out = `${out.slice(0, max - 15)}\n[... cut ...]`;
   return out;
 }
+
+// Replaces each name in any letter case, as a whole word. The game shows the account name with
+// a capital letter, so a plain match would miss it.
+export function redactNames(text: string, names: string[], replacement: string): string {
+  let out = text;
+  for (const n of names) {
+    // Account names match ^[a-z0-9]{1,12}$ (src/shared/config.ts), so they need no escape.
+    if (n.length < 3 || !/^[a-z0-9]+$/i.test(n)) continue;
+    const re = new RegExp(`(?<![A-Za-z0-9_])${n}(?![A-Za-z0-9_])`, 'gi');
+    out = out.replace(re, replacement);
+  }
+  return out;
+}

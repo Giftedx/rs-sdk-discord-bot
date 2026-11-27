@@ -54,6 +54,64 @@ export interface BotConfig {
   recapHourUtc: number | undefined;
   logThreadName: string;
   cards: boolean;
+  // Split mode: the game parts run in the gamelink process (src/gamelink/main.ts). Then the bot
+  // opens no browser and holds no game password. Null: the game parts run in this process.
+  gamelink: GamelinkClientConfig | null;
+}
+
+export interface GamelinkClientConfig {
+  socketPath: string;
+  tokenFile: string;
+}
+
+// The settings of the gamelink process. It needs no Discord token and no API key.
+export interface GameConfig {
+  guilds: { name: string; game: Config }[];
+  idleGuard: boolean;
+  cards: boolean;
+  socketPath: string;
+  tokenFile: string;
+}
+
+export const DEFAULT_GAMELINK_SOCKET = '/run/rs-gamelink/gamelink.sock';
+
+function absPath(name: string, raw: string): string {
+  if (!isAbsolute(raw)) throw new ConfigError(`${name} must be an absolute path`);
+  return raw;
+}
+
+function readGuildsFile(env: Record<string, string | undefined>, rootDir: string, readFile: (path: string) => string): string {
+  const path = isAbsolute(env.GUILDS_FILE!) ? env.GUILDS_FILE! : resolve(rootDir, env.GUILDS_FILE!);
+  try {
+    return readFile(path);
+  } catch {
+    throw new ConfigError('GUILDS_FILE cannot be read');
+  }
+}
+
+export function loadGameConfig(
+  env: Record<string, string | undefined>,
+  rootDir: string,
+  readFile: (path: string) => string = p => readFileSync(p, 'utf8'),
+): GameConfig {
+  const tokenFile = env.GAMELINK_TOKEN_FILE ?? '';
+  if (tokenFile === '') throw new ConfigError('GAMELINK_TOKEN_FILE must be set');
+  let guilds: { name: string; game: Config }[];
+  if (env.GUILDS_FILE) {
+    // The data directory and the box users are settings of the bot; gamelink does not use them.
+    guilds = parseGuildsFile(readGuildsFile(env, rootDir, readFile), env, rootDir, null).map(g => ({ name: g.name, game: g.game }));
+  } else {
+    const game = loadConfig(env);
+    checkDemo(game, env);
+    guilds = [{ name: 'main', game }];
+  }
+  return {
+    guilds,
+    idleGuard: env.GAMELINK_IDLE_GUARD !== '0',
+    cards: env.DISCORD_CARDS !== '0',
+    socketPath: absPath('GAMELINK_SOCKET', env.GAMELINK_SOCKET || DEFAULT_GAMELINK_SOCKET),
+    tokenFile: absPath('GAMELINK_TOKEN_FILE', tokenFile),
+  };
 }
 
 const SNOWFLAKE = /^\d{17,20}$/;
@@ -102,7 +160,9 @@ interface GuildEntry {
 
 // GUILDS_FILE holds a JSON list of guild entries. Passwords are never in the file: each entry
 // names the environment variable that holds its password.
-export function parseGuildsFile(text: string, env: Record<string, string | undefined>, dataDir: string, defaultBoxUser: string | null): GuildConfig[] {
+export function parseGuildsFile(
+  text: string, env: Record<string, string | undefined>, dataDir: string, defaultBoxUser: string | null, requirePassword = true,
+): GuildConfig[] {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -135,7 +195,7 @@ export function parseGuildsFile(text: string, env: Record<string, string | undef
         RS_ACCOUNT: typeof e.account === 'string' ? e.account : '',
         RS_PASSWORD: env[passwordEnv] ?? '',
         PROXY_PORT: String(basePort + i),
-      });
+      }, { requirePassword });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new ConfigError(`${at}: ${msg.replace('RS_ACCOUNT', 'account').replace('RS_PASSWORD', `the variable named by passwordEnv`)}`);
@@ -172,19 +232,18 @@ export function loadBotConfig(
     throw new ConfigError('BOX_USER must be set (docs/running-the-bot.md, "The box user"). For local development only, set BOT_ALLOW_UNSANDBOXED=1.');
   }
   const boxUser = parseBoxUser(env.BOX_USER);
+  let gamelink: GamelinkClientConfig | null = null;
+  if (env.GAMELINK_SOCKET) {
+    if (!env.GAMELINK_TOKEN_FILE) throw new ConfigError('GAMELINK_TOKEN_FILE must be set when GAMELINK_SOCKET is set');
+    gamelink = { socketPath: absPath('GAMELINK_SOCKET', env.GAMELINK_SOCKET), tokenFile: absPath('GAMELINK_TOKEN_FILE', env.GAMELINK_TOKEN_FILE) };
+  }
+  const requirePassword = gamelink === null;
 
   let guilds: GuildConfig[];
   if (env.GUILDS_FILE) {
-    const path = isAbsolute(env.GUILDS_FILE) ? env.GUILDS_FILE : resolve(rootDir, env.GUILDS_FILE);
-    let text: string;
-    try {
-      text = readFile(path);
-    } catch {
-      throw new ConfigError('GUILDS_FILE cannot be read');
-    }
-    guilds = parseGuildsFile(text, env, dataDir, boxUser);
+    guilds = parseGuildsFile(readGuildsFile(env, rootDir, readFile), env, dataDir, boxUser, requirePassword);
   } else {
-    const game = loadConfig(env);
+    const game = loadConfig(env, { requirePassword });
     checkDemo(game, env);
     const channelId = env.DISCORD_CHANNEL_ID ?? '';
     if (!SNOWFLAKE.test(channelId)) throw new ConfigError('DISCORD_CHANNEL_ID must be a Discord channel ID');
@@ -192,6 +251,8 @@ export function loadBotConfig(
     // The single-guild form keeps the data layout of earlier versions: DATA_DIR itself.
     guilds = [{ name: 'main', channelId, allowedRoleId: role, game, dataDir, boxUser }];
   }
+  // In split mode the bot never keeps a game password, even when the environment has one.
+  if (gamelink) guilds = guilds.map(g => ({ ...g, game: { ...g.game, account: { ...g.game.account, password: '' } } }));
   const first = guilds[0]!;
   const recapRaw = env.DISCORD_RECAP_HOUR_UTC;
   const logThreadName = env.DISCORD_LOG_THREAD || 'adventure-log';
@@ -228,5 +289,6 @@ export function loadBotConfig(
     recapHourUtc: recapRaw === undefined || recapRaw === '' ? undefined : int(env, 'DISCORD_RECAP_HOUR_UTC', 0, 0, 23),
     logThreadName,
     cards: env.DISCORD_CARDS !== '0',
+    gamelink,
   };
 }

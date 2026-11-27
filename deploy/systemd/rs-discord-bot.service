@@ -1,18 +1,24 @@
 # systemd unit of the Discord bot. docs/running-the-bot.md says how to install it.
 # It loads three files of /opt/rs-discord-bot the same way the documented commands do:
-#   secrets/account.env  RS_ACCOUNT, RS_PASSWORD (from scripts/server-bootstrap.sh)
+#   secrets/account.env  RS_ACCOUNT, RS_PASSWORD (from scripts/server-bootstrap.sh); only if it exists
 #   secrets/bot.env      DISCORD_TOKEN, DISCORD_CHANNEL_ID, ANTHROPIC_API_KEY and the bot settings
 #   server.env           RS_CHROME_PATH (from scripts/server-bootstrap.sh)
+# Split mode (docs/running-the-bot.md, "Split mode"): rs-gamelink.service runs the game parts,
+# secrets/account.env is moved to /etc/rs-gamelink, and secrets/bot.env sets GAMELINK_SOCKET and
+# GAMELINK_TOKEN_FILE. Then this unit holds no game password and opens no browser.
+# Wants=, not Requires=: the bot stays up while gamelink restarts (the client reconnects and
+# reads the new boot token), and the unit also runs alone, with no rs-gamelink unit installed.
 [Unit]
 Description=rs-sdk Discord bot
-After=network-online.target
-Wants=network-online.target
+After=network-online.target rs-gamelink.service
+Wants=network-online.target rs-gamelink.service
+OnFailure=rs-alert@%n.service
 
 [Service]
 Type=simple
 User=rsbot
 WorkingDirectory=/opt/rs-discord-bot
-ExecStart=/bin/bash -c 'set -a; . secrets/account.env; . secrets/bot.env; . server.env; set +a; exec /home/rsbot/.bun/bin/bun --no-env-file src/bot/main.ts'
+ExecStart=/bin/bash -c 'set -a; if [ -r secrets/account.env ]; then . secrets/account.env; fi; . secrets/bot.env; . server.env; set +a; exec /home/rsbot/.bun/bin/bun --no-env-file src/bot/main.ts'
 Restart=on-failure
 # More than 10 s, so that a new login does not follow the old session at once.
 RestartSec=30

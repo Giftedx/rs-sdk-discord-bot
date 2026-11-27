@@ -1,15 +1,14 @@
-// One guild of the bot: its game tab, supervisor, proxy, job runner, store, frame store, queue,
-// wakes and Discord output. main.ts makes one per guild and shares the browser, the Anthropic
-// client, the database, the card tab and the job cgroup between them.
+// One guild of the bot: its job runner, store, queue, wakes and Discord output. The game parts
+// (game tab, supervisor, proxy, frame store, card tab) are behind a GuildLink (src/gamelink/link.ts),
+// in this process or in the gamelink process. main.ts makes one per guild and shares the game
+// link, the Anthropic client, the database and the job cgroup between them.
 import type Anthropic from '@anthropic-ai/sdk';
 import {
   AttachmentBuilder, ChannelType,
   type ButtonInteraction, type Client, type GuildMember, type Message, type TextChannel,
 } from 'discord.js';
 import { mkdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import type { Browser } from 'puppeteer';
 import { runInstruction, type AgentDeps, type AgentJobResult, type InstructionResult, type WakeKind } from '../agent/loop';
 import { createStore, type KnowledgeChunk } from '../agent/store';
 import type { JobCgroup } from '../box/cgroup';
@@ -22,12 +21,7 @@ import { StatusCard, STATUS_ID } from '../discord/status-card';
 import { classifyMessage, type ChannelLine } from './addressee';
 import { realTimers } from '../discord/types';
 import { compactState as eventState, diffStates, eventText, type CompactState as EventState, type GameEvent } from '../events/diff';
-import type { CardTab } from '../gamelink/card-tab';
-import { createFrameStore } from '../gamelink/frame-store';
-import { openGameTab, type GameTab } from '../gamelink/game-tab';
-import { createActionPolicy } from '../gamelink/policy';
-import { startProxy, type ProxyHandle } from '../gamelink/proxy';
-import { createSupervisor, type Supervisor } from '../gamelink/supervisor';
+import type { GameLink } from '../gamelink/link';
 import { createBudget } from '../orchestrator/budget';
 import type { InstructionRow, OrchestratorDb } from '../orchestrator/db';
 import { compactState as wakeState, type WakeScheduler } from '../orchestrator/wakes';
@@ -39,10 +33,9 @@ import { ADMIT_TEXT, cardFor, cardView, createAdmission, createRateLimit, jobSig
 export interface Shared {
   cfg: BotConfig;
   root: string;
-  browser: Browser;
+  link: GameLink;
   anthropic: Anthropic;
   db: OrchestratorDb;
-  cards: CardTab | null;
   cgroup: JobCgroup | null;
   discord: Client;
   knowledge: KnowledgeChunk[];
@@ -56,7 +49,6 @@ export interface Shared {
 
 const STATE_FRESH_MS = 30_000;
 const SNAPSHOT_MS = 30_000;
-const FRAME_FRESH_MS = 15_000;
 const WAKES: readonly WakeKind[] = ['instruction', 'timer', 'trigger'];
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -67,48 +59,22 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   const log = (line: string) => sh.log(`[${g.name}] ${line}`);
   const clean = sh.clean;
   mkdirSync(g.dataDir, { recursive: true });
-  const bootToken = randomBytes(24).toString('base64url');
-
-  let tab: GameTab | null = null;
-  let supervisor: Supervisor | null = null;
-  let proxy: ProxyHandle | null = null;
-  let lastState: BotWorldState | null = null;
-  let lastStateAt = 0;
-
-  const stopGame = async () => {
-    supervisor?.stop();
-    if (tab) {
-      const out = await tab.logout().catch(() => false);
-      log(out ? 'logged out of the game' : 'logout did not finish');
-    }
-    await proxy?.stop().catch(() => {});
-    await tab?.close().catch(() => {});
+  const found = sh.link.guilds.get(g.name);
+  if (!found) throw new Error('the game link has no such guild');
+  const link = found;
+  const sup = { status: () => link.tabStatus() };
+  const prx = { status: () => link.proxyStatus() };
+  const frames = {
+    latest: () => link.latestFrame(),
+    get active() { return link.framesActive(); },
+    start: () => link.startFrames(),
+    stop: () => link.stopFrames(),
   };
-
-  try {
-    tab = await openGameTab({ browser: sh.browser, botPageUrl: g.game.botPageUrl, account: g.game.account.name, password: g.game.account.password, fps: g.game.fps });
-    supervisor = createSupervisor({ tab, idleGuard: cfg.idleGuard, log });
-    supervisor.start();
-    proxy = await startProxy({
-      upstreamUrl: g.game.gatewayUrl,
-      account: g.game.account.name,
-      password: g.game.account.password,
-      bootToken,
-      listenPort: g.game.proxyPort,
-      policy: createActionPolicy(),
-      onState: (state, at) => { lastState = state as BotWorldState; lastStateAt = at; },
-      log,
-    });
-  } catch (err) {
-    await stopGame();
-    throw err;
-  }
-  const gameTab = tab;
-  const sup = supervisor;
-  const prx = proxy;
+  const lastGame = () => link.state() as { state: BotWorldState; at: number } | null;
 
   const runner = createJobRunner({
-    rootDir: sh.root, scratchDir: join(g.dataDir, 'jobs'), account: g.game.account.name, bootToken, secrets: sh.secrets, proxy: prx,
+    rootDir: sh.root, scratchDir: join(g.dataDir, 'jobs'), account: link.account, get bootToken() { return link.bootToken; }, secrets: sh.secrets,
+    proxy: { get port() { return link.proxyPort; }, setJobActive: active => link.setJobActive(active) },
     boxUser: g.boxUser, ...(g.boxUser ? { bunPath: cfg.boxBunPath } : {}),
     ...(sh.cgroup ? {
       onSpawn: (pid: number) => {
@@ -120,7 +86,6 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   const store = createStore(g.dataDir);
   const added = seedStore(store, join(sh.root, 'seed'));
   log(added.length > 0 ? `seed scripts added: ${added.join(', ')}` : 'seed scripts: none new');
-  const frames = createFrameStore({ source: gameTab, log });
 
   let current: { row: InstructionRow; abort: AbortController; job: ReturnType<typeof jobSignal> | null } | null = null;
   const budget = createBudget(db, cfg.monthlyCapUsd, {
@@ -140,29 +105,27 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   let lastSnapshotAt = 0;
   let stopping = false;
 
-  const freshState = (): BotWorldState | null => (lastState && Date.now() - lastStateAt < STATE_FRESH_MS ? lastState : null);
+  const freshState = (): BotWorldState | null => {
+    const s = lastGame();
+    return s && Date.now() - s.at < STATE_FRESH_MS ? s.state : null;
+  };
 
   function gameState(): string {
     const ps = prx.status();
     const head = `Game tab: ${sup.status()}. Gateway connection: ${ps.connected ? 'up' : `down${ps.lastError ? ` (${ps.lastError})` : ''}`}.`;
-    if (!lastState) return `${head}\nNo game state yet.`;
-    const text = formatWorldState(lastState, Date.now() - lastStateAt, { brief: true });
+    const last = lastGame();
+    if (!last) return `${head}\nNo game state yet.`;
+    const text = formatWorldState(last.state, Date.now() - last.at, { brief: true });
     return `${head}\n${text.length > 8_000 ? `${text.slice(0, 8_000)}\n[... cut ...]` : text}`;
   }
 
   // The look tool: the newest stored frame, or a new capture when the store has none that is fresh.
-  async function frame(): Promise<Uint8Array | null> {
-    const f = frames.latest();
-    if (f && Date.now() - f.at < FRAME_FRESH_MS) return f.png;
-    if (sup.status() !== 'in_game') return f?.png ?? null;
-    return gameTab.frame('view').catch(() => f?.png ?? null);
-  }
+  const frame = (): Promise<Uint8Array | null> => link.frame();
 
   async function draw(subject: CardSubject): Promise<Uint8Array | null> {
-    if (!sh.cards) return null;
     const req = cardFor(subject, prevEvents, lastReceipt, new Date());
     if (!req) return null;
-    return sh.cards.draw(req.kind, req.data as never);
+    return link.drawCard(req.kind, req.data as never);
   }
 
   function view() {
@@ -266,7 +229,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
 
     lastReceipt = { instruction: row.text.slice(0, 300), summary: result.summary.slice(0, 600), turns: result.turns, costUsd: result.usd };
     const files: AttachmentBuilder[] = [];
-    const receiptPng = sh.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
+    const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
     if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
     const png = (await frame()) ?? result.lastFrame;
     if (png) files.push(new AttachmentBuilder(Buffer.from(png), { name: 'frame.png' }));
@@ -446,7 +409,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       posts?.stop();
       await advLog?.flush().catch(() => {});
       advLog?.stop();
-      await stopGame();
+      await link.close();
     },
   };
 }

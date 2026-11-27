@@ -164,11 +164,11 @@ Continuous integration:
 
 ## Design goals that are not built
 
-- Three Unix users under systemd: one each for the orchestrator, gamelink and the box.
+- Built, in split mode (docs/running-the-bot.md): three Unix users under systemd. `rsbot` runs the bot, `rsgame` runs gamelink (`rs-gamelink.service`) and `rsbox` runs the jobs. Without split mode, the bot and gamelink share the `rsbot` process.
 - systemd hardening for the box: limits for memory, CPU and tasks, a read-only root file system, no view of the processes of other users. The memory limit must allow for the start-up peak (about 491 MB in the local run of the box stand-in).
 - No user namespaces for the box (`RestrictNamespaces=yes`) and no access to `/opt/rs-chrome` (`InaccessiblePaths=`), each with a test.
 - Network limits: the box reaches only the loopback port of the proxy, and gamelink reaches only the game host.
 - The Chromium profile on a memory file system that is removed when the browser stops.
-- A token for each local interface of gamelink.
+- Built: the local interface of gamelink is a Unix socket (`rsgame:rsgate` 660) with one bearer token (`/etc/rs-gamelink/token`, readable by `rsgame` and `rsbot` only). It is one token for the interface, not one for each guild.
 
 Built since milestone 1: the bot launches Chromium with DevTools on a pipe, so no debug port exists, and it enforces a monthly spend cap that you set (`AI_MONTHLY_CAP_USD`).

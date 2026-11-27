@@ -47,8 +47,9 @@ function parseInteger(name: string, raw: string | undefined, fallback: number): 
 }
 
 // Error messages name the variable only. They never include a value,
-// because RS_PASSWORD is a secret.
-export function loadConfig(env: Record<string, string | undefined>): Config {
+// because RS_PASSWORD is a secret. With requirePassword false (the bot in split mode, where
+// gamelink holds the password), an empty RS_PASSWORD gives an empty password.
+export function loadConfig(env: Record<string, string | undefined>, opts: { requirePassword?: boolean } = {}): Config {
   const serverHost = env.RS_SERVER_HOST || DEFAULT_HOST;
   if (REJECTED_HOSTS.has(serverHost)) {
     throw new ConfigError('RS_SERVER_HOST names a retired host; use rs-sdk.maxbittker.com');
@@ -70,7 +71,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   }
 
   const password = env.RS_PASSWORD ?? '';
-  if (password === '') {
+  if (password === '' && opts.requirePassword !== false) {
     throw new ConfigError('RS_PASSWORD must not be empty');
   }
   // The rs-sdk client and engine refuse a password longer than 20 characters
