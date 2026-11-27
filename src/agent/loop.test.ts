@@ -197,6 +197,22 @@ describe('context, diary, time cap and escalation from the start', () => {
     expect(m.indexOf('Context now')).toBeLessThan(m.indexOf('Instruction from Discord user'));
   });
 
+  test('an instruction gets a knowledge search in its first message; a wake does not', async () => {
+    const knowledge = [{ source: 'knowledge/axes.md', text: '## Axes\nNo axe needs a Woodcutting level.' }];
+    const a = deps([reply([{ type: 'text', text: 'ok' }], 'end_turn')], { knowledge });
+    await runInstruction(a.d, 'check which axe you can use', 'alice', new AbortController().signal);
+    const m = first(a.calls[0]);
+    expect(m).toContain('Game knowledge: a search of the knowledge pack for this instruction');
+    expect(m).toContain('[knowledge/axes.md]\n## Axes\nNo axe needs a Woodcutting level.');
+    expect(m.indexOf('Game knowledge')).toBeLessThan(m.indexOf('Instruction from Discord user'));
+    const none = deps([reply([{ type: 'text', text: 'ok' }], 'end_turn')], { knowledge });
+    await runInstruction(none.d, 'zzz qqq', 'alice', new AbortController().signal);
+    expect(first(none.calls[0])).not.toContain('Game knowledge');
+    const timer = deps([reply([{ type: 'text', text: 'ok' }], 'end_turn')], { knowledge });
+    await runInstruction(timer.d, 'check the axe', 'timer', new AbortController().signal, 'timer');
+    expect(first(timer.calls[0])).not.toContain('Game knowledge');
+  });
+
   test('a failing wakeContext does not stop the instruction', async () => {
     const { d, calls } = deps([reply([{ type: 'text', text: 'ok' }], 'end_turn')], { wakeContext: () => { throw new Error('no link'); } });
     const r = await runInstruction(d, 'x', 'bob', new AbortController().signal);

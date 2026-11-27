@@ -181,12 +181,24 @@ export function wakeContextBlock(deps: Pick<AgentDeps, 'store' | 'wakeContext'>)
   return parts.join('\n\n');
 }
 
+/**
+ * The knowledge search for the instruction, done by the code before the first model call, so
+ * that the model has the game facts even if it does not call search_knowledge. Empty when the
+ * search finds nothing.
+ */
+export function knowledgeBlock(knowledge: AgentDeps['knowledge'], instruction: string): string {
+  let found = '';
+  try { found = searchKnowledge(knowledge, instruction.slice(0, 1_000)); } catch { return ''; }
+  if (!found || found === 'No match.' || found === 'Give some search words.') return '';
+  return `Game knowledge: a search of the knowledge pack for this instruction, done for you. Answer game facts from it. Call search_knowledge for other facts.\n${found}`;
+}
+
 export function systemPrompt(apiReference: string): string {
   return `You play one shared RuneScape-style game account on an rs-sdk game server. People in a Discord channel give you instructions. You act in the game only through jobs: TypeScript code that runs against the rs-sdk \`bot\` and \`sdk\` objects.
 
 How to work:
 - Read your notes first if the instruction may relate to earlier work. Check game_state before you act.
-- For a game fact (an item, a level, a requirement, a drop, a price, a place), call search_knowledge first and answer from what it returns. This server is the 2004 game, not today's Old School RuneScape: many items, levels and rules are different, and some items (such as the dragon axe) do not exist. Do not fill a gap from memory. If the knowledge pack and the game state do not tell you, say that you do not know.
+- For a game fact (an item, a level, a requirement, a drop, a price, a place), answer from the knowledge pack. The first message has a search for the instruction. For any other fact, call search_knowledge and answer from what it returns. This server is the 2004 game, not today's Old School RuneScape: many items, levels and rules are different, and some items (such as the dragon axe) do not exist. Do not fill a gap from memory. If the knowledge pack and the game state do not tell you, say that you do not know.
 - A knowledge/ page was checked against the server code. When it disagrees with a wiki page, the knowledge/ page is correct.
 - Prefer saved scripts. Test new code with a short run_code, then save the code that works.
 - A long task (such as training a skill for a while) is one job with a loop and a time limit, not many short jobs. Each of your turns costs money; a job costs nothing while it runs.
@@ -246,7 +258,11 @@ function formatJob(r: AgentJobResult): string {
 export async function runInstruction(deps: AgentDeps, instruction: string, user: string, signal: AbortSignal, wake: WakeKind = 'instruction', options: RunOptions = {}): Promise<InstructionResult> {
   const now = deps.now ?? Date.now;
   const startedAt = now();
-  const messages: MessageParam[] = [{ role: 'user', content: firstMessage(instruction, user, wake, wakeContextBlock(deps)) }];
+  // A Discord instruction always gets a knowledge search first. A wake (timer, trigger, review) has
+  // the AI's own note as its text, so it gets none.
+  const facts = wake === 'instruction' ? knowledgeBlock(deps.knowledge, instruction) : '';
+  const context = [wakeContextBlock(deps), facts].filter(Boolean).join('\n\n');
+  const messages: MessageParam[] = [{ role: 'user', content: firstMessage(instruction, user, wake, context) }];
   const system = systemPrompt(deps.apiReference);
   const fromStart = !!((options.escalateFromStart || wake === 'review') && deps.escalationModel);
   // After an escalation from the start, the escalate tool has nothing left to do.
