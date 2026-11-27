@@ -18,6 +18,9 @@ export function createKeyedLock() {
     const mine = new Promise<void>(r => { release = r; });
     const tail = before.then(() => mine);
     tails.set(key, tail);
+    // Delete the key only when this tail settles. An aborted waiter releases early, while the
+    // holder before it still runs; a delete then would let the next caller pass that holder.
+    void tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
     if (signal && !signal.aborted) {
       let onAbort: () => void = () => {};
       const aborted = new Promise<void>(r => { onAbort = r; signal.addEventListener('abort', onAbort, { once: true }); });
@@ -30,7 +33,6 @@ export function createKeyedLock() {
       return await fn();
     } finally {
       release();
-      if (tails.get(key) === tail) tails.delete(key);
     }
   };
 }

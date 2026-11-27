@@ -52,6 +52,16 @@ describe('Gallery', () => {
     expect(isGalleryEvent({ kind: 'instruction_done', instruction: 'x', outcome: 'done' })).toBe(false);
   });
 
+  test('uses the milestone levels of its options, the same as the main posts', async () => {
+    const host = new Host();
+    const g = new Gallery({
+      host, secrets: [], timers: new FakeTimers(0), log: () => {}, frame: async () => PNG, milestoneLevels: [20],
+    });
+    expect(await g.onEvent(LV)).toBe(false);
+    expect(await g.onEvent({ kind: 'level_up', skill: 'Mining', from: 19, level: 20 })).toBe(true);
+    expect(host.sent).toHaveLength(1);
+  });
+
   test('posts the frame in the default thread, silent, in the first person', async () => {
     const { host, g } = setup();
     expect(await g.onEvent(LV)).toBe(true);

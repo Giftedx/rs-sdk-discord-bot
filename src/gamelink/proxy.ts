@@ -283,14 +283,19 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     }
 
     if (ws !== box || msg.type !== 'sdk_action') return;
+    // The gateway check comes first: the policy counts each chat action that it allows, and an
+    // action that cannot go out must not use up the chat limit.
+    if (!upstream || !upstreamReady) {
+      ws.send(JSON.stringify({ type: 'sdk_action_result', actionId: msg.actionId, result: { success: false, message: 'upstream not connected' } }));
+      return;
+    }
     const verdict = opts.policy.check(msg.action, { jobActive, nowMs: now() });
-    if (verdict.allow && upstream && upstreamReady) {
+    if (verdict.allow) {
       inFlight.set(actionKey(msg.actionId), now());
       upstream.send(JSON.stringify(rebuildAction(msg)));
       return;
     }
-    const message = verdict.allow ? 'upstream not connected' : `blocked by policy: ${verdict.reason}`;
-    ws.send(JSON.stringify({ type: 'sdk_action_result', actionId: msg.actionId, result: { success: false, message } }));
+    ws.send(JSON.stringify({ type: 'sdk_action_result', actionId: msg.actionId, result: { success: false, message: `blocked by policy: ${verdict.reason}` } }));
   };
 
   const clearHandshakeTimer = (ws: ServerWebSocket<BoxData>) => {

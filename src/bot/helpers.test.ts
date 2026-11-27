@@ -42,6 +42,25 @@ describe('createKeyedLock', () => {
     await expect(withLock('k', async () => { throw new Error('x'); })).rejects.toThrow('x');
     expect(await withLock('k', async () => 7)).toBe(7);
   });
+
+  test('an aborted last waiter does not let a new caller pass the holder', async () => {
+    const withLock = createKeyedLock();
+    const order: string[] = [];
+    let open!: () => void;
+    const gate = new Promise<void>(r => { open = r; });
+    const holder = withLock('w', async () => { await gate; order.push('holder end'); });
+    const ac = new AbortController();
+    const waiting = withLock('w', async () => { order.push('aborted'); }, ac.signal);
+    ac.abort();
+    await waiting;
+    const late = withLock('w', async () => { order.push('late'); });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(['aborted']);
+    open();
+    await Promise.all([holder, late]);
+    expect(order).toEqual(['aborted', 'holder end', 'late']);
+  });
 });
 
 describe('createAdmission', () => {

@@ -345,6 +345,22 @@ test('answers an allowed action while upstream is down and does not queue it', a
   expect(gw.received.filter(m => m.type === 'sdk_action')).toEqual([]);
 });
 
+test('a chat action refused while upstream is down does not use up the chat limit', async () => {
+  const { gw, proxy } = await setup({ reconnectDelayMs: () => 150 });
+  const box = await connectBox(proxy.port);
+  proxy.setJobActive(true);
+  gw.dropConnection();
+  await waitFor(() => !proxy.upstreamConnected());
+  const say = (id: string) => ({ type: 'sdk_action', username: 'abc123', actionId: id, action: { type: 'say', message: 'hi' }, actionTimeoutMs: 1000 });
+  for (let i = 0; i < 6; i++) box.ws.send(JSON.stringify(say(`d${i}`)));
+  await waitFor(() => box.msgs.length > 6);
+  expect(box.msgs.slice(1).every(m => m.result.message === 'upstream not connected')).toBe(true);
+  await waitFor(() => proxy.upstreamConnected());
+  await Bun.sleep(30);
+  box.ws.send(JSON.stringify(say('after')));
+  await waitFor(() => gw.received.some(m => m.type === 'sdk_action' && m.actionId === 'after'));
+});
+
 test('closes a box socket that sends no sdk_connect within the handshake timeout', async () => {
   const { proxy } = await setup({ handshakeTimeoutMs: 30 });
   const box = openBox(proxy.port);

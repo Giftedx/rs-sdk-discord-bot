@@ -202,11 +202,14 @@ function attachHandlers(client: Client) {
       }
       return;
     }
-    const before = await message.channel.messages.fetch({ limit: HISTORY_LINES, before: message.id }).catch(() => null);
-    const history = before
-      ? [...before.values()].reverse().map(m => ({ author: m.member?.displayName ?? m.author.username, isBot: m.author.id === client.user!.id, text: m.content }))
-      : [];
-    await g.onMessage(message, stripMentions(message.content), direct, history, client.user.username)
+    const botId = client.user.id;
+    const loadHistory = async () => {
+      const before = await message.channel.messages.fetch({ limit: HISTORY_LINES, before: message.id }).catch(() => null);
+      return before
+        ? [...before.values()].reverse().map(m => ({ author: m.member?.displayName ?? m.author.username, isBot: m.author.id === botId, text: m.content }))
+        : [];
+    };
+    await g.onMessage(message, stripMentions(message.content), direct, loadHistory, client.user.username)
       .catch(err => log(`[${g.name}] message failed: ${errText(err)}`));
   });
 

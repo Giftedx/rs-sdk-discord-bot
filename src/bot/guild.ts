@@ -446,6 +446,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       gallery = new Gallery({
         host: logThreadHost(ch), secrets: discordSecrets, timers: realTimers, log,
         frame: () => link.frame(), portrait: () => link.portrait(), name: cfg.galleryThreadName, silent: silent ?? true,
+        ...(cfg.milestoneLevels ? { milestoneLevels: cfg.milestoneLevels } : {}),
       });
       const skillSamples = (since: number): SkillSample[] => db.snapshotsSince<WakeState>(g.name, since)
         .filter(s => s.state && typeof s.state.skills === 'object')
@@ -511,7 +512,9 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     },
 
     // Every message of the channel comes here. A small model decides if it talks to the bot.
-    async onMessage(message: Message, text: string, direct: boolean, history: ChannelLine[], botName: string): Promise<void> {
+    // loadHistory reads the lines before the message from Discord. It runs only after the cheap
+    // checks, so a member without the role or a fast sender costs no Discord request.
+    async onMessage(message: Message, text: string, direct: boolean, loadHistory: () => Promise<ChannelLine[]>, botName: string): Promise<void> {
       const reply = (content: string) => message.reply({ content: clean(content), allowedMentions: { parse: [], repliedUser: false } }).catch(() => {});
       if (budget.overCap()) {
         if (direct) await reply('My monthly spend cap is reached, so I cannot take new requests until it resets.');
@@ -523,6 +526,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
         return;
       }
       if (!classifyLimit(message.author.id)) return;
+      const history = await loadHistory();
       const author = message.member?.displayName ?? message.author.username;
       const addr = await classifyMessage({ botName, history, author, text, direct }, small, log);
       if (!addr.toBot) return;

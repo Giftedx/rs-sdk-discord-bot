@@ -2,7 +2,7 @@
 import type { GameEvent } from '../events/diff';
 import { sanitizeForDiscord } from '../shared/sanitize';
 import { logLine, type LogThread, type LogThreadHost } from './adventure-log';
-import { isMilestone } from './posts';
+import { isMilestone, MILESTONE_LEVELS } from './posts';
 import { errText, type Logger, type Timers } from './types';
 
 export const GALLERY_THREAD_NAME = 'gallery';
@@ -22,11 +22,13 @@ export interface GalleryOptions {
   maxPerHour?: number;
   /** Default true. */
   silent?: boolean;
+  /** The skill levels that get a picture, the same as the main posts. Default MILESTONE_LEVELS. */
+  milestoneLevels?: readonly number[];
 }
 
 /** True for the events that get a picture: a level milestone or a death. */
-export function isGalleryEvent(e: GameEvent): boolean {
-  return e.kind === 'death' || (e.kind === 'level_up' && isMilestone(e));
+export function isGalleryEvent(e: GameEvent, levels: readonly number[] = MILESTONE_LEVELS): boolean {
+  return e.kind === 'death' || (e.kind === 'level_up' && isMilestone(e, levels));
 }
 
 export class Gallery {
@@ -38,7 +40,8 @@ export class Gallery {
 
   /** Posts a picture for a milestone or a death. Returns true if a post went out. */
   async onEvent(e: GameEvent): Promise<boolean> {
-    if (!isGalleryEvent(e)) return false;
+    const levels = this.o.milestoneLevels && this.o.milestoneLevels.length > 0 ? this.o.milestoneLevels : MILESTONE_LEVELS;
+    if (!isGalleryEvent(e, levels)) return false;
     const now = this.o.timers.now();
     this.sent = this.sent.filter((t) => t > now - HOUR);
     const max = this.o.maxPerHour ?? GALLERY_MAX_PER_HOUR;
