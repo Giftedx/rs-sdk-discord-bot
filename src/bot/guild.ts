@@ -421,6 +421,11 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   // The card for a question about the account, and the facts behind it for the answer. Null when
   // the question asks for no card, or the bot has no data for it (no fresh state, bank never seen).
   function infoCard(kind: InfoKind): { req: CardRequest; facts: string } | null {
+    // Saved data from an older version can have another shape. No card is better than a lost reply.
+    try { return infoCardOf(kind); } catch (err) { log(`${kind} card data failed: ${errText(err)}`); return null; }
+  }
+
+  function infoCardOf(kind: InfoKind): { req: CardRequest; facts: string } | null {
     const now = Date.now();
     const saved = <T,>(key: SeenKey) => db.getSeen<T>(g.name, key);
     let req: CardRequest | null = null;
@@ -509,7 +514,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
         onFatal('channel fetch failed');
         return;
       }
-      if (!ch || ch.type !== ChannelType.GuildText) { log('the channel is not a reachable text channel'); return; }
+      if (!ch || ch.type !== ChannelType.GuildText) { log('ALERT the channel is not a reachable text channel: the bot takes no requests here'); return; }
       card = new StatusCard({ channel: cardChannel(ch), view, secrets: discordSecrets, timers: realTimers, log });
       await card.init().catch(err => log(`status card failed: ${errText(err)}`));
       const silent = cfg.suppressNotifications;
@@ -590,6 +595,11 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     // checks, so a member without the role or a fast sender costs no Discord request.
     async onMessage(message: Message, text: string, direct: boolean, loadHistory: () => Promise<ChannelLine[]>, botName: string): Promise<void> {
       const reply = (content: string, files: AttachmentBuilder[] = []) => message.reply({ content: clean(content), files, allowedMentions: { parse: [], repliedUser: false } }).catch(() => {});
+      // attach() did not finish: nothing can run, so take no request.
+      if (!channel) {
+        if (direct) await reply('I am not ready in this channel. The server log has the reason.');
+        return;
+      }
       if (budget.overCap()) {
         if (direct) await reply('My monthly spend cap is reached, so I cannot take new requests until it resets.');
         return;

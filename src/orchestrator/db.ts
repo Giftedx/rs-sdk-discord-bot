@@ -113,7 +113,12 @@ const MIGRATIONS: string[] = [
      json TEXT NOT NULL,
      PRIMARY KEY (guild, key)
    );`,
+  // How many times the bot restarted while the row was running. recoverAfterRestart() stops a row
+  // at MAX_RESTARTS, so a request that crashes the bot does not run again and again.
+  `ALTER TABLE instructions ADD COLUMN restarts INTEGER NOT NULL DEFAULT 0;`,
 ];
+
+const MAX_RESTARTS = 3;
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -204,15 +209,24 @@ export function openDb(path: string, now: () => number = Date.now) {
       return db.query('UPDATE instructions SET status = \'running\', started_at = ? WHERE id = ? AND status = \'waiting\'').run(now(), id).changes === 1;
     },
     finishInstruction(id: number, status: 'done' | 'stopped', summary: string, usd: number): void {
-      db.query('UPDATE instructions SET status = ?, ended_at = ?, summary = ?, usd = ? WHERE id = ?').run(status, now(), summary, usd, id);
+      // Only a running row: a row that already ended keeps its result.
+      db.query('UPDATE instructions SET status = ?, ended_at = ?, summary = ?, usd = ? WHERE id = ? AND status = \'running\'').run(status, now(), summary, usd, id);
     },
     /** Stops one waiting instruction. Returns false when it is not waiting. */
     cancelWaiting(id: number): boolean {
       return db.query('UPDATE instructions SET status = \'stopped\', ended_at = ?, summary = \'Removed from the queue.\' WHERE id = ? AND status = \'waiting\'').run(now(), id).changes === 1;
     },
-    /** After a restart no instruction runs. Each running row goes back to waiting. */
+    /**
+     * After a restart no instruction runs. Each running row goes back to waiting, and returns the
+     * count of these. A row that was running at MAX_RESTARTS restarts is stopped.
+     */
     recoverAfterRestart(): number {
-      return db.query('UPDATE instructions SET status = \'waiting\', started_at = NULL WHERE status = \'running\'').run().changes;
+      return db.transaction(() => {
+        db.query('UPDATE instructions SET restarts = restarts + 1 WHERE status = \'running\'').run();
+        db.query('UPDATE instructions SET status = \'stopped\', ended_at = ?, summary = ? WHERE status = \'running\' AND restarts >= ?')
+          .run(now(), `Stopped: the bot restarted ${MAX_RESTARTS} times while this ran.`, MAX_RESTARTS);
+        return db.query('UPDATE instructions SET status = \'waiting\', started_at = NULL WHERE status = \'running\'').run().changes;
+      })();
     },
 
     // Spend.

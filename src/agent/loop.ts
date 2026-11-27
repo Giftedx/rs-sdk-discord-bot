@@ -327,11 +327,14 @@ export async function runInstruction(deps: AgentDeps, instruction: string, user:
 
     const results: ToolResult[] = [];
     let finished: string | null = null;
+    // At max_tokens the last tool call can be cut off: its input is not complete.
+    const cutOff = response.stop_reason === 'max_tokens' ? uses.at(-1) : undefined;
     for (const use of uses) {
       const input = (use.input ?? {}) as Record<string, unknown>;
       let content: ToolResult['content'];
       let isError = false;
       try {
+        if (use === cutOff) throw new Error(`Your reply was cut off at the output limit, so ${use.name} did not run. Send it again, shorter.`);
         if (!allowed.has(use.name)) throw new Error(`${use.name} is not available in this wake.`);
         switch (use.name) {
           case 'run_code': {

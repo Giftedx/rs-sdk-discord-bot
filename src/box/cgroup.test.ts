@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectOwnCgroup, prepareJobCgroup } from './cgroup';
@@ -102,6 +102,12 @@ test('setLimits, addProcess, pids', () => {
   expect(readFileSync(join(jobs.path, 'cpu.max'), 'utf8')).toBe('50000 100000');
   expect(jobs.setLimits({ memoryBytes: 'max' })).toEqual({ ok: true });
   expect(readFileSync(join(jobs.path, 'memory.max'), 'utf8')).toBe('max');
+  expect(existsSync(join(jobs.path, 'memory.swap.max'))).toBe(false);
+  writeFileSync(join(jobs.path, 'memory.swap.max'), 'max');
+  expect(jobs.setLimits({ memoryBytes: 1024 })).toEqual({ ok: true });
+  expect(readFileSync(join(jobs.path, 'memory.swap.max'), 'utf8')).toBe('0');
+  expect(jobs.setLimits({ memoryBytes: 'max' })).toEqual({ ok: true });
+  expect(readFileSync(join(jobs.path, 'memory.swap.max'), 'utf8')).toBe('max');
   expect(jobs.addProcess(4242)).toEqual({ ok: true });
   expect(jobs.pids()).toEqual([4242]);
   expect(jobs.addProcess(0).ok).toBe(false);

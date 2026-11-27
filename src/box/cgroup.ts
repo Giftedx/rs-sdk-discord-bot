@@ -130,6 +130,12 @@ function jobCgroupAt(path: string, controllers: string[], kill: (pid: number) =>
       if (limits.memoryBytes !== undefined) {
         const r = write('memory.max', String(limits.memoryBytes));
         if (!r.ok) return r;
+        // Without this, a job past memory.max goes to swap instead of the OOM killer. The file is
+        // there only when the kernel counts swap.
+        if (existsSync(join(path, 'memory.swap.max'))) {
+          const s = write('memory.swap.max', limits.memoryBytes === 'max' ? 'max' : '0');
+          if (!s.ok) return s;
+        }
       }
       if (limits.pids !== undefined) {
         const r = write('pids.max', String(limits.pids));

@@ -152,7 +152,7 @@ Other output in the channel:
 
 The bot also wakes the AI with no human request. A wake comes on a timer that the AI set (1 to 1440 minutes, with a note), at HP below 30%, after a death, for a stuck job and for the daily review (`NOTES_REVIEW_HOUR_UTC`). A full inventory (28 of 28) wakes the AI at most once in 30 minutes, and only when nothing else runs or waits. Each wake is an instruction in the queue. Each guild gets at most 6 timer and trigger wakes per hour, and only while the daily allowance has room.
 
-The queue is in the database. A restart stops the current job. After the restart, its instruction starts again from the queue.
+The queue is in the database. A restart stops the current job. After the restart, its instruction starts again from the queue. An instruction that was running at 3 restarts does not start again: the bot marks it stopped, so a request that crashes the bot cannot run without end.
 
 Every job has built-in protections. At HP 40% or less, the job eats the food that heals most. At 25% or less with no food, it runs away. The AI can disable them in a job with `protections.off()`. At start, the bot copies the seed scripts from `seed/` to the saved scripts of each guild. It does not overwrite a script with the same name.
 

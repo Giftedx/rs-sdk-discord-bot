@@ -109,6 +109,29 @@ describe('orchestrator db', () => {
     expect(db.recoverAfterRestart()).toBe(0);
   });
 
+  test('recoverAfterRestart stops a row that was running at 3 restarts', () => {
+    const db = openDb(':memory:');
+    const a = db.enqueueInstruction('g1', 'alice', 'one');
+    for (let i = 0; i < 2; i++) {
+      expect(db.startInstruction(a)).toBe(true);
+      expect(db.recoverAfterRestart()).toBe(1);
+      expect(db.getInstruction(a)!.status).toBe('waiting');
+    }
+    expect(db.startInstruction(a)).toBe(true);
+    expect(db.recoverAfterRestart()).toBe(0);
+    expect(db.getInstruction(a)).toMatchObject({ status: 'stopped' });
+    expect(db.getInstruction(a)!.summary).toContain('restarted');
+  });
+
+  test('finishInstruction does not change a row that already ended', () => {
+    const db = openDb(':memory:');
+    const a = db.enqueueInstruction('g1', 'alice', 'one');
+    db.startInstruction(a);
+    db.finishInstruction(a, 'done', 'Chopped.', 0.1);
+    db.finishInstruction(a, 'stopped', 'Error: x', 0);
+    expect(db.getInstruction(a)).toMatchObject({ status: 'done', summary: 'Chopped.' });
+  });
+
   test('spend sums by time range', () => {
     const db = openDb(':memory:');
     const row = { guild: 'g1', instructionId: null, model: 'm', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 };

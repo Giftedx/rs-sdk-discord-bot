@@ -159,6 +159,7 @@ try {
 
 const byChannel = new Map(guilds.map(g => [g.channelId, g]));
 let lastPrune = 0;
+let lastRevision: string | null = null;
 ticker = setInterval(() => {
   for (const g of guilds) {
     try { g.tick(); } catch (err) { log(`[${g.name}] tick failed: ${errText(err)}`); }
@@ -166,7 +167,9 @@ ticker = setInterval(() => {
   // scripts/server-revision-check.sh writes this file when the game client changed. Gamelink restarts
   // on its own (rs-revision-check.service); the bot logs the change once and draws the cards again.
   const revision = takeRevisionFlag(REVISION_FLAG, { read: p => readFileSync(p, 'utf8'), remove: p => rmSync(p, { force: true }) });
-  if (revision !== null) {
+  // A flag that cannot be removed gives the same line at each tick: act on it once.
+  if (revision !== null && revision !== lastRevision) {
+    lastRevision = revision;
     log(`game revision changed: ${revision}`);
     for (const g of guilds) g.refreshCard();
   }

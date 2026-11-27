@@ -194,7 +194,8 @@ export function createJobRunner(opts: JobRunnerOptions) {
         const stopChild = (graceMs = KILL_GRACE_MS) => {
           child.kill('SIGTERM');
           clearTimeout(killTimer);
-          killTimer = setTimeout(() => { child.kill('SIGKILL'); void killBox(); }, graceMs);
+          // A rejection in a timer is unhandled, and main.ts stops the bot on one.
+          killTimer = setTimeout(() => { child.kill('SIGKILL'); killBox().catch(() => { /* the await after child.exited tries again */ }); }, graceMs);
         };
         // runScript has its own timeout; this one is the backstop, with room to print the state.
         const deadline = setTimeout(() => { timedOut = true; stopChild(); }, limit + 15_000);

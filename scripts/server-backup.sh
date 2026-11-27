@@ -20,8 +20,8 @@
 #      This replaces secrets/ and data/. Databases are in data/ at their usual paths.
 #   4. Make sure that the owner is correct:
 #        sudo chown -R rsbot:rsbot /opt/rs-discord-bot/data
-#        sudo chown -R root:rsbot /opt/rs-discord-bot/secrets   (use the owner that
-#        scripts/server-bootstrap.sh gave; tar -p keeps the modes)
+#        sudo chown -R rsbot:rsbot /opt/rs-discord-bot/secrets   (the owner that
+#        scripts/server-bootstrap.sh gives, mode 700; tar -p keeps the modes)
 #   5. Split mode only: the archive put rs-gamelink-etc/ in the app directory. Move it back to
 #      /etc/rs-gamelink with its owners and modes, and delete the copy in the app directory:
 #        sudo install -d -m 750 -o root -g rsgate /etc/rs-gamelink
@@ -77,17 +77,28 @@ fi
 if [ -d "$APP_DIR/data" ]; then
   while IFS= read -r -d '' db; do
     rel="${db#"$APP_DIR"/}"
-    rm -f "$stage/$rel-wal" "$stage/$rel-shm" "$stage/$rel-journal"
+    # One file that is not a database, or a locked one, must not stop the whole backup. On a
+    # failure the plain copy of cp -a above stays, with its -wal and -shm files.
     if command -v sqlite3 >/dev/null; then
-      rm -f "$stage/$rel"
-      sqlite3 "$db" ".backup '$stage/$rel'"
-      log "database $rel: sqlite3 .backup"
+      if sqlite3 "$db" ".backup '$stage/$rel.consistent'" && [ -s "$stage/$rel.consistent" ]; then
+        mv -f "$stage/$rel.consistent" "$stage/$rel"
+        rm -f "$stage/$rel-wal" "$stage/$rel-shm" "$stage/$rel-journal"
+        log "database $rel: sqlite3 .backup"
+      else
+        rm -f "$stage/$rel.consistent"
+        log "warning: sqlite3 .backup of $rel failed; $rel is a plain copy and can be inconsistent"
+      fi
     elif [ -x "${BUN:-/usr/local/bin/bun}" ]; then
-      rm -f "$stage/$rel"
       # VACUUM INTO writes one consistent copy, also while the bot writes the database.
-      DB_SRC="$db" DB_DST="$stage/$rel" "${BUN:-/usr/local/bin/bun}" --no-env-file -e \
-        'const { Database } = require("bun:sqlite"); const d = new Database(process.env.DB_SRC, { readonly: true }); d.run("VACUUM INTO ?", [process.env.DB_DST]); d.close();'
-      log "database $rel: VACUUM INTO (bun:sqlite)"
+      if DB_SRC="$db" DB_DST="$stage/$rel.consistent" "${BUN:-/usr/local/bin/bun}" --no-env-file -e \
+        'const { Database } = require("bun:sqlite"); const d = new Database(process.env.DB_SRC, { readonly: true }); d.run("VACUUM INTO ?", [process.env.DB_DST]); d.close();' && [ -s "$stage/$rel.consistent" ]; then
+        mv -f "$stage/$rel.consistent" "$stage/$rel"
+        rm -f "$stage/$rel-wal" "$stage/$rel-shm" "$stage/$rel-journal"
+        log "database $rel: VACUUM INTO (bun:sqlite)"
+      else
+        rm -f "$stage/$rel.consistent"
+        log "warning: VACUUM INTO of $rel failed; $rel is a plain copy and can be inconsistent"
+      fi
     else
       log "warning: sqlite3 is not installed; $rel is a plain copy and can be inconsistent"
     fi

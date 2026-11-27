@@ -53,6 +53,25 @@ describe('runInstruction', () => {
     expect(r.usd).toBeGreaterThan(0);
   });
 
+  test('a reply cut off at max_tokens does not run its last tool call', async () => {
+    const { d, calls, jobs } = deps([
+      reply([
+        { type: 'tool_use', id: 't1', name: 'game_state', input: {} },
+        { type: 'tool_use', id: 't2', name: 'save_script', input: { name: 'fish', description: 'd', code: 'await bot.fi' } },
+      ], 'max_tokens'),
+      reply([{ type: 'tool_use', id: 't3', name: 'finish', input: { summary: 's' } }]),
+    ]);
+    const r = await runInstruction(d, 'x', 'bob', new AbortController().signal);
+    expect(r.stopReason).toBe('finished');
+    expect(jobs).toEqual([]);
+    expect(d.store.listScripts()).toEqual([]);
+    const results = (calls[1] as { messages: { content: { tool_use_id: string; is_error?: boolean; content: unknown }[] }[] }).messages.at(-1)!.content;
+    expect(results.find(x => x.tool_use_id === 't1')!.is_error).toBeUndefined();
+    const cut = results.find(x => x.tool_use_id === 't2')!;
+    expect(cut.is_error).toBe(true);
+    expect(String(cut.content)).toContain('cut off');
+  });
+
   test('a tool error goes back as is_error and the loop goes on', async () => {
     const { d, calls } = deps([
       reply([{ type: 'tool_use', id: 't1', name: 'read_script', input: { name: 'missing' } }]),
