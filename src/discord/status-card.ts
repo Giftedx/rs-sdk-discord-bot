@@ -3,7 +3,6 @@ import { sanitizeForDiscord } from '../shared/sanitize';
 import { errText, type Handle, type Logger, type Timers } from './types';
 
 export const CARD_MARKER = '[status card]';
-export const STOP_ID = 'stop';
 export const STATUS_ID = 'status';
 export const CARD_INTERVAL_MS = 15_000;
 
@@ -58,7 +57,6 @@ export function renderCard(v: CardView, secrets: string[]): CardMessage {
     content: sanitizeForDiscord(lines.join('\n'), secrets),
     frame: v.frame,
     buttons: [
-      { id: STOP_ID, label: 'Stop', danger: true },
       { id: STATUS_ID, label: 'Status' },
     ],
   };

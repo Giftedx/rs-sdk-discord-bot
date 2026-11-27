@@ -32,8 +32,8 @@ export function cardChannel(channel: TextChannel): CardChannel {
   return {
     async fetchPinned() {
       const own = channel.client.user?.id;
-      const pins = await channel.messages.fetchPinned();
-      return [...pins.values()].filter((m) => m.author.id === own).map((m) => ({ id: m.id, content: m.content }));
+      const pins = await channel.messages.fetchPins();
+      return pins.items.map((p) => p.message).filter((m) => m.author.id === own).map((m) => ({ id: m.id, content: m.content }));
     },
     async send(msg) {
       const m = await channel.send(cardPayload(msg) as MessageCreateOptions);

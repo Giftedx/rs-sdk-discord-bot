@@ -93,10 +93,10 @@ Each item is a plain limit of the code today. Each heading names the milestone o
 
 Proxy (`src/gamelink/proxy.ts`), milestone 2:
 
-- The connection to the gateway has no handshake timeout and no health check. If the gateway accepts the socket and never answers, or the connection goes half-open, the proxy does not connect again.
-- If the gateway refuses the login of the proxy (a wrong password, or an outdated client), the proxy tries again every 11 to 16 s with no limit and no report.
-- The proxy writes no log.
-- The box listener has no backpressure limit. A box that stops reading its socket can make the proxy host use more memory.
+- Closed: the proxy closes a gateway socket that sends no `sdk_connected` within 10 s (`upstreamHandshakeTimeoutMs`), or no message for 60 s after the handshake (`staleMs`), and connects again after the normal delay. Tests check both with a fake gateway, not with a live gateway.
+- Closed: after a refused login of the proxy, the delay doubles from the normal delay up to 5 minutes, and a successful connect resets it. `status()` of the proxy handle reports `connected`, `lastError` and `reconnects`. The bot does not show `status()` yet.
+- The proxy has a `log` option, with one line for each gateway event. The log line holds the error text of the gateway, with the password removed, and never the raw message. The bot (`src/bot/guild.ts`) does not pass the option yet, so no line goes to the log of the bot.
+- Closed: when more than 4 MB waits to go to the box, the proxy drops state messages for the box, and still sends other messages. At 8 MB, Bun closes the box socket. A test checks the drop with a socket that stops reading.
 - The proxy forwards the whole action message of the box, not only the fields that the gateway reads.
 - The proxy itself does not set the job flag to off when the box disconnects. The job runner of the bot (`src/box/job-runner.ts`) sets it to off after each job.
 - The proxy relays the gateway text "another controller connected" to the box, and the SDK then stops its reconnects.
@@ -109,7 +109,7 @@ Configuration (`src/shared/config.ts`), milestone 2:
 
 Game tab (`src/gamelink/game-tab.ts`), milestone 2:
 
-- `inGame()` is not a readiness signal. It is true while the client still loads the map. See [measurements.md](measurements.md).
+- Closed in the code: `inGame()` is true only when `gameClient.ingame === true` and `gameClient.sceneState === 2`. The fixture page has the field, but no test on a live page has confirmed that `sceneState` is 2 when the map is ready. See [measurements.md](measurements.md).
 - Closed: the browser environment is now an allow list (`BROWSER_ENV_ALLOW` in `src/gamelink/game-tab.ts`), and the four secret names stay out of it.
 - `close()` does not log the account out. The bot calls `logout()` before `close()` when it stops.
 - The crash reporter is off (`--disable-crash-reporter`, `--disable-breakpad`). This was checked only by a clean start, not by a search for crash dumps.
@@ -136,6 +136,7 @@ Bot (`src/bot/`, `src/agent/`, `src/box/`):
 - The queue, the spend, the events, the snapshots and the timers are in `DATA_DIR/bot.sqlite`, which the box user must not read. Keep `DATA_DIR` at mode 755 with the database at 600, or keep the box user out of `DATA_DIR` except for the job folders.
 - A timer or a trigger starts the AI with no human author. The daily allowance (the cap divided by the days of the period) and a limit of 6 wakes per hour and guild bound the spend of these wakes.
 - The bot gives the AI the text of a Discord instruction and the output of each job. Game chat is in that output. A hostile instruction or chat text can make the AI act badly inside the action policy, or spend API credit up to the limits.
+- The bot reads every message of its channel and sends it, with the 8 messages before it, to the small model (`SMALL_MODEL`) to decide if it is for the bot. A message written to look like it talks to the bot can start a request. The small model has no tools; its answer only picks the kind of message.
 - The spend record is an estimate from token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
 - Bun on Windows has no box user. Run the bot on Linux.
 

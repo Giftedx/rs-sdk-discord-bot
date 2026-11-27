@@ -4,12 +4,14 @@ export interface FakeGateway {
   url: string;
   received: any[];                       // every parsed message from the proxy, in order
   connectCount: number;                  // count of sdk_connect messages
+  rejectPassword: boolean;               // answer sdk_connect with sdk_error; can change during a test
+  silent: boolean;                       // never answer sdk_connect; can change during a test
   send(msg: object): void;               // to the proxy
   dropConnection(): void;
   stop(): Promise<void>;
 }
 
-export function startFakeGateway(opts: { rejectPassword?: boolean } = {}): Promise<FakeGateway> {
+export function startFakeGateway(opts: { rejectPassword?: boolean; silent?: boolean; rejectError?: string } = {}): Promise<FakeGateway> {
   const sockets = new Set<ServerWebSocket<unknown>>();
 
   const server = Bun.serve({
@@ -27,8 +29,9 @@ export function startFakeGateway(opts: { rejectPassword?: boolean } = {}): Promi
         gw.received.push(msg);
         if (msg.type !== 'sdk_connect') return;
         gw.connectCount++;
-        if (opts.rejectPassword) {
-          ws.send(JSON.stringify({ type: 'sdk_error', error: 'Invalid credentials' }));
+        if (gw.silent) return;
+        if (gw.rejectPassword) {
+          ws.send(JSON.stringify({ type: 'sdk_error', error: opts.rejectError ?? 'Invalid credentials' }));
           return;
         }
         ws.send(JSON.stringify({ type: 'sdk_connected', success: true, mode: 'control', otherControllers: 0, maxMessageLength: 80 }));
@@ -40,6 +43,8 @@ export function startFakeGateway(opts: { rejectPassword?: boolean } = {}): Promi
     url: `ws://127.0.0.1:${server.port}`,
     received: [],
     connectCount: 0,
+    rejectPassword: opts.rejectPassword ?? false,
+    silent: opts.silent ?? false,
     send(msg) { for (const ws of sockets) ws.send(JSON.stringify(msg)); },
     dropConnection() { for (const ws of sockets) ws.close(); },
     // Not awaited: see the note in proxy.ts stop(). The listener closes synchronously.

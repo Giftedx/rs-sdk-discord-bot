@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { FakeTimers } from './fake-timers';
-import { CARD_MARKER, STATUS_ID, STOP_ID, StatusCard, type CardChannel, type CardMessage, type CardView } from './status-card';
+import { CARD_MARKER, STATUS_ID, StatusCard, type CardChannel, type CardMessage, type CardView } from './status-card';
 
 class FakeChannel implements CardChannel {
   pinned: { id: string; content: string }[] = [];
@@ -59,7 +59,7 @@ describe('StatusCard', () => {
     expect(m.content).toContain('Queue: 2');
     expect(m.content).toContain('$1.50 of $20.00');
     expect(m.frame).toEqual(new Uint8Array([1, 2]));
-    expect(m.buttons.map((b) => b.id)).toEqual([STOP_ID, STATUS_ID]);
+    expect(m.buttons.map((b) => b.id)).toEqual([STATUS_ID]);
   });
 
   test('reuses the old pinned card after a restart', async () => {

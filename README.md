@@ -21,7 +21,7 @@ The bot, built and tested:
 - The job runner: AI-written code runs in a child process with only the boot token of the proxy, as a second Unix user, with the built-in protections and, with `Delegate=yes`, cgroup limits (`src/box/`). Seed scripts in `seed/`.
 - The supervisor, which keeps the game tab in the game, the frame store, and the browser profile on tmpfs (`src/gamelink/`).
 - The orchestrator: a SQLite database for the queue, spend, events, snapshots and timers, wakes on timers, low HP, death and a watchdog, and a daily allowance (`src/orchestrator/`).
-- The Discord front end for one or more guilds: mentions, a queue, **Stop** and **Status** buttons, `status`, a pinned status card, an adventure log thread, milestone posts and a daily recap (`src/bot/`, `src/discord/`, `src/events/`).
+- The Discord front end for one or more guilds: plain-language talk (a small model decides which messages are for the bot), a queue, a **Status** button, a pinned status card, an adventure log thread, milestone posts and a daily recap (`src/bot/`, `src/discord/`, `src/events/`).
 - Drawn cards from a second browser tab (`src/cards/`, `src/gamelink/card-tab.ts`).
 - A smoke test on the local stack (`scripts/bot-smoke.ts`), a check of the seed scripts (`scripts/seed-check.ts`), and systemd units and server scripts for the bot, the box firewall, the backup and the revision check (`deploy/systemd/`, `scripts/server-*.sh`).
 

@@ -33,6 +33,10 @@ export interface BotConfig {
   allowedRoleId: string | null;
   model: string;
   escalationModel: string | null;
+  // The small model that sorts channel messages and answers short questions.
+  smallModel: string;
+  // Read every message of the channel (needs the Message Content intent in the portal).
+  readAll: boolean;
   effort: Effort;
   maxTurns: number;
   maxInstructionUsd: number;
@@ -158,6 +162,8 @@ export function loadBotConfig(
   const model = env.AI_MODEL || 'claude-opus-5-5';
   if (!/^[a-z0-9.-]+$/.test(model)) throw new ConfigError('AI_MODEL must be a model ID');
   const escalationModel = env.ESCALATION_MODEL || null;
+  const smallModel = env.SMALL_MODEL || 'claude-haiku-5-5';
+  if (!/^[a-z0-9.-]+$/.test(smallModel)) throw new ConfigError('SMALL_MODEL must be a model ID');
   if (escalationModel !== null && !/^[a-z0-9.-]+$/.test(escalationModel)) throw new ConfigError('ESCALATION_MODEL must be a model ID');
   const dataRaw = env.DATA_DIR || 'data';
   const dataDir = isAbsolute(dataRaw) ? dataRaw : resolve(rootDir, dataRaw);
@@ -199,6 +205,8 @@ export function loadBotConfig(
     allowedRoleId: first.allowedRoleId,
     model,
     escalationModel,
+    smallModel,
+    readAll: env.DISCORD_READ_ALL !== '0',
     effort,
     maxTurns: num(env, 'AI_MAX_TURNS', 25, 1, 200),
     maxInstructionUsd: num(env, 'AI_MAX_INSTRUCTION_USD', 2, 0.01, 100),

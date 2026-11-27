@@ -15,7 +15,7 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 
 1. Open the Discord developer portal and make a new application.
 2. On the **Bot** page, reset the token and copy it. This is `DISCORD_TOKEN`. Keep it secret.
-3. The bot needs no privileged intent. Messages that mention the bot include their text without the Message Content intent.
+3. On the same page, turn on **Message Content Intent**, then save. With it, the bot reads every message of its channel. Without it, the bot logs a line at start and answers only messages that mention it.
 4. On the **OAuth2** page, make an invite URL with the scope `bot` and these permissions: View Channels, Send Messages, Read Message History, Add Reactions, Attach Files, Manage Messages (to pin the status card), Create Public Threads and Send Messages in Threads (for the adventure log).
 5. Open the URL and add the bot to your Discord server.
 6. In Discord, turn on Developer Mode. Right-click the channel for the bot and copy its ID. This is `DISCORD_CHANNEL_ID`.
@@ -40,6 +40,8 @@ People mention the bot with an instruction. The AI then writes and runs rs-sdk c
 | `AI_MONTHLY_CAP_USD` | | `30` | At this spend in one period (UTC), the bot takes no new instructions. The cap is for all guilds together. |
 | `SPEND_RESET_DAY` | | `1` | Day of the month (1 to 28) when the spend period starts. The daily allowance for timer and trigger wakes is the cap divided by the days of the period. |
 | `ESCALATION_MODEL` | | unset | A model ID. When set, the AI gets the `escalate` tool and can move the rest of one instruction to this model, once. |
+| `SMALL_MODEL` | | `claude-haiku-5-5` | The model that decides if a channel message talks to the bot, and answers short questions. |
+| `DISCORD_READ_ALL` | | `1` | `0` makes the bot answer only messages that mention it or reply to it. |
 | `WATCHDOG_MINUTES` | | `5` | The watchdog stops a job that changes no XP, position or inventory for this time. |
 | `DATA_DIR` | | `data` | The database `bot.sqlite` (queue, spend, events, snapshots, timers) and, per guild, the saved scripts, notes and job files. |
 | `GAMELINK_IDLE_GUARD` | | `1` | `0` turns off the reset of the 10-minute idle logout. |
@@ -84,13 +86,17 @@ bash scripts/dev-stack.sh start
 
 `x` is a dummy password. The local stack accepts any password.
 
-In the channel, write `@bot help`.
+In the channel, write `hi rs-bot, what can you do?`.
 
 ## 4. Use it in Discord
 
-- `@bot <instruction>`: for example `@bot chop trees until 10 woodcutting`. The bot adds a reaction: a check mark when nothing runs, an hourglass when the instruction waits.
-- `@bot status`, or the **Status** button of the status card: what runs, the goal, the queue, the timers, the spend and the game state.
-- `@bot stop` or a **Stop** button: ends the current instruction and kills its job.
+People talk to the bot in plain words. There are no commands.
+
+- The bot reads every message of its channel. A small model decides for each message if it talks to the bot, with or without an @mention. People who talk to each other about the bot, or leave notes for each other, get no answer.
+- A request to do something in the game goes to the queue. The bot adds a reaction: a check mark when nothing runs, an hourglass when the request waits.
+- A question, such as "what are you doing?", gets a short answer at once.
+- Telling the bot to stop, such as "stop that", ends the current request and kills its job.
+- The **Status** button of the status card shows what runs, the goal, the queue, the timers, the spend and the game state.
 
 The bot posts one message for each instruction. It edits that message with progress, then puts the summary, the cost, a drawn receipt card and a frame of the game in it.
 

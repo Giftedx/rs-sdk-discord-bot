@@ -72,7 +72,10 @@ const guilds: Guild[] = [];
 let shuttingDown = false;
 let ticker: ReturnType<typeof setInterval> | null = null;
 
-const discord = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
+const makeClient = (content: boolean) => new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, ...(content ? [GatewayIntentBits.MessageContent] : [])],
+});
+let discord = makeClient(cfg.readAll);
 
 async function shutdown(code: number) {
   if (shuttingDown) return;
@@ -132,33 +135,64 @@ ticker = setInterval(() => {
   }
 }, TICK_MS);
 
-discord.on(Events.MessageCreate, async (message: Message) => {
-  if (message.author.bot || !discord.user) return;
-  const g = byChannel.get(message.channelId);
-  if (!g) return;
-  const botRoleId = message.guild?.members.me?.roles.botRole?.id ?? null;
-  if (!mentionsBot(message.mentions.users.keys(), message.mentions.roles.keys(), discord.user.id, botRoleId)) return;
-  // Without the Message Content intent, Discord sends the text only when the message mentions
-  // the bot user. A mention of the bot role then arrives with no text at all.
-  if (message.content === '' && message.attachments.size === 0) {
-    await message.reply({
-      content: `I cannot read that message. Mention me as a user: type @${discord.user.username} and pick the entry with my picture, not the role.`,
-      allowedMentions: { parse: [], repliedUser: false },
-    }).catch(() => {});
-    return;
+const HISTORY_LINES = 8;
+let readAll = cfg.readAll;
+
+function attachHandlers(client: Client) {
+  client.on(Events.MessageCreate, async (message: Message) => {
+    if (message.author.bot || !client.user) return;
+    const g = byChannel.get(message.channelId);
+    if (!g) return;
+    const botRoleId = message.guild?.members.me?.roles.botRole?.id ?? null;
+    const mentioned = mentionsBot(message.mentions.users.keys(), message.mentions.roles.keys(), client.user.id, botRoleId);
+    const direct = mentioned || message.mentions.repliedUser?.id === client.user.id;
+    if (!readAll && !direct) return;
+    // Without the Message Content intent, Discord sends the text only when the message mentions
+    // the bot user. A mention of the bot role then arrives with no text at all.
+    if (message.content === '' && message.attachments.size === 0) {
+      if (direct) {
+        await message.reply({
+          content: `I cannot read that message. Mention me as a user: type @${client.user.username} and pick the entry with my picture, not the role.`,
+          allowedMentions: { parse: [], repliedUser: false },
+        }).catch(() => {});
+      }
+      return;
+    }
+    const before = await message.channel.messages.fetch({ limit: HISTORY_LINES, before: message.id }).catch(() => null);
+    const history = before
+      ? [...before.values()].reverse().map(m => ({ author: m.member?.displayName ?? m.author.username, isBot: m.author.id === client.user!.id, text: m.content }))
+      : [];
+    await g.onMessage(message, stripMentions(message.content), direct, history, client.user.username)
+      .catch(err => log(`[${g.name}] message failed: ${errText(err)}`));
+  });
+
+  client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+    if (!interaction.isButton()) return;
+    const g = interaction.channelId ? byChannel.get(interaction.channelId) : undefined;
+    if (g) await g.onButton(interaction);
+  });
+
+  client.once(Events.ClientReady, c => {
+    log(`Discord ready as ${c.user.tag}${readAll ? ', reading every message of the channel' : ', answering mentions only'}`);
+    for (const g of guilds) void g.attach(client).catch(err => log(`[${g.name}] attach failed: ${errText(err)}`));
+  });
+  client.on(Events.Error, err => log(`Discord error: ${errText(err)}`));
+}
+
+attachHandlers(discord);
+try {
+  await discord.login(cfg.discordToken);
+} catch (err) {
+  // Close code 4014: the portal has the Message Content intent off. Go on with mentions only.
+  if (readAll && /disallowed intents/i.test(errText(err))) {
+    log('Discord refused the Message Content intent. Turn it on in the developer portal (Bot > Message Content Intent) so that I read every message. Until then I answer mentions only.');
+    readAll = false;
+    await discord.destroy().catch(() => {});
+    discord = makeClient(false);
+    attachHandlers(discord);
+    await discord.login(cfg.discordToken).catch(async e => { log(`Discord login failed: ${errText(e)}`); await shutdown(1); });
+  } else {
+    log(`Discord login failed: ${errText(err)}`);
+    await shutdown(1);
   }
-  await g.onMessage(message, stripMentions(message.content));
-});
-
-discord.on(Events.InteractionCreate, async (interaction: Interaction) => {
-  if (!interaction.isButton()) return;
-  const g = interaction.channelId ? byChannel.get(interaction.channelId) : undefined;
-  if (g) await g.onButton(interaction);
-});
-
-discord.once(Events.ClientReady, c => {
-  log(`Discord ready as ${c.user.tag}`);
-  for (const g of guilds) void g.attach(discord).catch(err => log(`[${g.name}] attach failed: ${errText(err)}`));
-});
-discord.on(Events.Error, err => log(`Discord error: ${errText(err)}`));
-await discord.login(cfg.discordToken).catch(async err => { log(`Discord login failed: ${errText(err)}`); await shutdown(1); });
+}

@@ -13,16 +13,34 @@ export interface ProxyOptions {
   reconnectDelayMs?: () => number;  // default: 11_000 + random 0..5_000
   now?: () => number;
   handshakeTimeoutMs?: number;      // default 5000: a box socket without a valid sdk_connect by then is closed
+  upstreamHandshakeTimeoutMs?: number; // default 10_000: a gateway socket without sdk_connected by then is closed
+  staleMs?: number;                 // default 60_000: a ready gateway socket with no message for this long is closed
+  maxReconnectDelayMs?: number;     // default 300_000: the cap of the backoff after a refused login
+  log?: (line: string) => void;     // one line per event; never holds the password or a raw gateway message
+  timers?: ProxyTimers;             // default: the global setTimeout and clearTimeout
+}
+
+export interface ProxyTimers {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(id: unknown): void;
+}
+
+export interface ProxyStatus {
+  connected: boolean;
+  lastError: string | null;         // the last gateway problem; null after a successful connect
+  reconnects: number;               // count of gateway connect attempts after the first
 }
 
 export interface ProxyHandle {
   port: number;
   setJobActive(active: boolean): void;
   upstreamConnected(): boolean;
+  status(): ProxyStatus;
   stop(): Promise<void>;
 }
 
 const MAX_BOX_MESSAGE_BYTES = 65_536;
+export const BOX_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024;
 const RELAYED_TYPES: ReadonlySet<string> = new Set(['sdk_state', 'sdk_action_result', 'sdk_info']);
 
 interface BoxData { authed: boolean; handshakeTimer: ReturnType<typeof setTimeout> | null; }
@@ -35,6 +53,19 @@ function tokenEquals(given: string, expected: string): boolean {
   // timingSafeEqual needs equal lengths; compare b with itself so the work does not depend on `given`.
   if (a.length !== b.length) return timingSafeEqual(b, b) && false;
   return timingSafeEqual(a, b);
+}
+
+/** Sends to the box. A droppable message (state) is dropped while the box has more than
+ *  BOX_BUFFER_LIMIT_BYTES unsent. Returns false when the message was not queued. */
+export function sendLimited(ws: { send(text: string): number; getBufferedAmount(): number }, text: string, droppable: boolean): boolean {
+  if (droppable && ws.getBufferedAmount() > BOX_BUFFER_LIMIT_BYTES) return false;
+  return ws.send(text) !== 0;
+}
+
+function errorText(v: unknown, password: string): string {
+  let t = typeof v === 'string' ? v : 'unknown error';
+  if (password && t.includes(password)) t = t.split(password).join('[redacted]');
+  return t.replace(/[\r\n]+/g, ' ').slice(0, 200);
 }
 
 function parseObject(text: string): Record<string, unknown> | null {
@@ -50,47 +81,97 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
   const now = opts.now ?? Date.now;
   const reconnectDelayMs = opts.reconnectDelayMs ?? defaultReconnectDelayMs;
   const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? 5_000;
+  const upstreamHandshakeTimeoutMs = opts.upstreamHandshakeTimeoutMs ?? 10_000;
+  const staleMs = opts.staleMs ?? 60_000;
+  const maxReconnectDelayMs = opts.maxReconnectDelayMs ?? 300_000;
+  const log = (line: string) => { try { opts.log?.(`gamelink proxy: ${line}`); } catch { /* a failing log must not stop the proxy */ } };
+  const timers: ProxyTimers = opts.timers ?? { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id as ReturnType<typeof setTimeout>) };
 
   let stopped = false;
   let jobActive = false;
   let upstream: WebSocket | null = null;
   let upstreamReady = false;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectTimer: unknown = null;
+  let upstreamTimer: unknown = null;         // the handshake timeout, then the stale timer
+  let refusals = 0;                          // consecutive refused logins
+  let lastError: string | null = null;
+  let attempts = 0;
   let lastConnected: string | null = null;   // last upstream sdk_connected, as received
   let lastInfo: string | null = null;        // last upstream sdk_info, as received
   let box: ServerWebSocket<BoxData> | null = null;
 
-  const sendToBox = (text: string) => { if (box && box.data.authed) box.send(text); };
-
-  const scheduleReconnect = () => {
-    if (stopped || reconnectTimer) return;
-    reconnectTimer = setTimeout(() => { reconnectTimer = null; connectUpstream(); }, reconnectDelayMs());
+  let droppingState = false;
+  const sendToBox = (text: string, droppable = false) => {
+    if (!box || !box.data.authed) return;
+    const sent = sendLimited(box, text, droppable);
+    if (droppable && sent === droppingState) {
+      droppingState = !sent;
+      log(sent ? 'box buffer drained, state relay resumed' : `box has more than ${BOX_BUFFER_LIMIT_BYTES} bytes unsent, dropping state`);
+    }
   };
+
+  const clearUpstreamTimer = () => { if (upstreamTimer !== null) { timers.clearTimeout(upstreamTimer); upstreamTimer = null; } };
+  const armUpstreamTimer = (ws: WebSocket, ms: number, reason: string) => {
+    clearUpstreamTimer();
+    upstreamTimer = timers.setTimeout(() => { upstreamTimer = null; dropUpstream(ws, reason, false); }, ms);
+  };
+
+  const scheduleReconnect = (refused: boolean) => {
+    if (stopped || reconnectTimer !== null) return;
+    refusals = refused ? refusals + 1 : 0;
+    const base = reconnectDelayMs();
+    const delay = refused ? Math.min(base * 2 ** (refusals - 1), maxReconnectDelayMs) : base;
+    log(`reconnect to the gateway in ${delay} ms`);
+    reconnectTimer = timers.setTimeout(() => { reconnectTimer = null; connectUpstream(); }, delay);
+  };
+
+  // Forgets the socket at once, so a half-open socket whose close never completes cannot block the reconnect.
+  function dropUpstream(ws: WebSocket, reason: string, refused: boolean) {
+    if (upstream !== ws) return;
+    upstream = null;
+    upstreamReady = false;
+    clearUpstreamTimer();
+    lastError = reason;
+    log(reason);
+    try { ws.close(); } catch { /* already closed */ }
+    scheduleReconnect(refused);
+  }
 
   function connectUpstream() {
     if (stopped || upstream) return;
+    if (attempts++ > 0) log('connecting to the gateway again');
     const ws = new WebSocket(opts.upstreamUrl);
     upstream = ws;
     upstreamReady = false;
+    armUpstreamTimer(ws, upstreamHandshakeTimeoutMs, `no sdk_connected from the gateway within ${upstreamHandshakeTimeoutMs} ms`);
 
     ws.onopen = () => {
+      if (upstream !== ws) return;
       ws.send(JSON.stringify({ type: 'sdk_connect', username: opts.account, password: opts.password, mode: 'control', clientId: 'gamelink-proxy' }));
     };
     ws.onmessage = event => {
-      if (upstream !== ws || typeof event.data !== 'string') return;
+      if (upstream !== ws) return;
+      if (upstreamReady) armUpstreamTimer(ws, staleMs, `no message from the gateway for ${staleMs} ms`);
+      if (typeof event.data !== 'string') return;
       const text = event.data;
       const msg = parseObject(text);
       if (!msg) return;
       if (msg.type === 'sdk_connected') {
+        if (!upstreamReady) {
+          upstreamReady = true;
+          refusals = 0;
+          lastError = null;
+          log('connected to the gateway');
+          armUpstreamTimer(ws, staleMs, `no message from the gateway for ${staleMs} ms`);
+        }
         lastConnected = text;
-        upstreamReady = true;
         sendToBox(text);
         return;
       }
       if (msg.type === 'sdk_error') {
-        // An answer to the proxy's own sdk_connect counts as a closed connection:
-        // onclose waits reconnectDelayMs(). It never reaches the box.
-        if (upstreamReady) sendToBox(text); else ws.close();
+        // An answer to the proxy's own sdk_connect is a refused login. It never reaches the box.
+        if (upstreamReady) sendToBox(text);
+        else dropUpstream(ws, `the gateway refused the login: ${errorText(msg.error, opts.password)}`, true);
         return;
       }
       if (!RELAYED_TYPES.has(msg.type as string)) return;
@@ -98,14 +179,9 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
       if (msg.type === 'sdk_state' && opts.onState) {
         try { opts.onState(msg.state, now()); } catch { /* a failing tap must not stop the relay */ }
       }
-      sendToBox(text);
+      sendToBox(text, msg.type === 'sdk_state');
     };
-    ws.onclose = () => {
-      if (upstream !== ws) return;
-      upstream = null;
-      upstreamReady = false;
-      scheduleReconnect();
-    };
+    ws.onclose = () => dropUpstream(ws, 'the gateway connection closed', false);
   }
 
   const handleBoxMessage = (ws: ServerWebSocket<BoxData>, raw: string | Buffer) => {
@@ -156,11 +232,15 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     },
     websocket: {
       maxPayloadLength: MAX_BOX_MESSAGE_BYTES,
+      // A hard cap above the state drop limit: action results still pass the drop limit, but a box
+      // that never reads is closed before its buffer grows without bound.
+      backpressureLimit: 2 * BOX_BUFFER_LIMIT_BYTES,
+      closeOnBackpressureLimit: true,
       open(ws) {
         ws.data.handshakeTimer = setTimeout(() => { ws.data.handshakeTimer = null; if (!ws.data.authed) ws.close(); }, handshakeTimeoutMs);
       },
       message: handleBoxMessage,
-      close(ws) { clearHandshakeTimer(ws); if (box === ws) box = null; },
+      close(ws) { clearHandshakeTimer(ws); if (box === ws) { box = null; droppingState = false; } },
     },
   });
 
@@ -170,9 +250,11 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     port: server.port as number,
     setJobActive(active) { jobActive = active; },
     upstreamConnected: () => upstreamReady && upstream?.readyState === WebSocket.OPEN,
+    status: () => ({ connected: upstreamReady && upstream?.readyState === WebSocket.OPEN, lastError, reconnects: Math.max(0, attempts - 1) }),
     async stop() {
       stopped = true;
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (reconnectTimer !== null) { timers.clearTimeout(reconnectTimer); reconnectTimer = null; }
+      clearUpstreamTimer();
       const ws = upstream;
       upstream = null;
       upstreamReady = false;

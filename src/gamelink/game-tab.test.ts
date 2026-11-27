@@ -167,9 +167,18 @@ describe('game tab', () => {
     expect(Date.now() - start).toBeLessThan(6000);
   }, T);
 
-  browserTest('inGame reads gameClient.ingame', async () => {
+  browserTest('inGame needs gameClient.ingame and a loaded map (sceneState 2)', async () => {
     const t = await tab();
     expect(await t.inGame()).toBe(true);
+    const found = await gamePage();
+    await found.evaluate(() => { (window as any).gameClient.sceneState = 1; });
+    expect(await t.inGame()).toBe(false);
+    await found.evaluate(() => { delete (window as any).gameClient.sceneState; });
+    expect(await t.inGame()).toBe(false);
+    await found.evaluate(() => { (window as any).gameClient.sceneState = 2; (window as any).gameClient.ingame = false; });
+    expect(await t.inGame()).toBe(false);
+    await found.evaluate(() => { delete (window as any).gameClient; });
+    expect(await t.inGame()).toBe(false);
   }, T);
 
   browserTest('keepAlive raises gameClient.idleTimer', async () => {

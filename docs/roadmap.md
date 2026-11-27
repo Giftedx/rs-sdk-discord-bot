@@ -18,8 +18,5 @@ No milestone has a date.
 
 The code of milestone 1 has known limits. [security.md](security.md) lists each one under "Known gaps in the current code", with the milestone that must close it. The largest:
 
-- The proxy has no handshake timeout and no health check for its gateway connection.
-- The proxy retries a refused gateway login with no limit, no report and no log line.
-- `inGame()` is true while the map still loads. The map is ready at `sceneState === 2`.
+- `inGame()` reads `sceneState === 2`, but no test on a live page has confirmed that signal.
 - The security helpers are in `scripts/`, not in `src/`.
-- The box listener of the proxy has no backpressure limit.

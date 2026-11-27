@@ -191,8 +191,9 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
 
     async inGame() {
       return page.evaluate(() => {
-        const gc = (window as unknown as { gameClient?: { ingame?: unknown } }).gameClient;
-        return gc?.ingame === true;
+        // The map is loaded only at sceneState 2; ingame is true already while it loads (docs/design.md section 4).
+        const gc = (window as unknown as { gameClient?: { ingame?: unknown; sceneState?: unknown } }).gameClient;
+        return gc?.ingame === true && gc.sceneState === 2;
       });
     },
 

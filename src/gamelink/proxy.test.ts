@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { connect as netConnect } from 'node:net';
 import { startFakeGateway, type FakeGateway } from '../testing/fake-gateway';
 import { createActionPolicy } from './policy';
-import { startProxy, type ProxyHandle } from './proxy';
+import { BOX_BUFFER_LIMIT_BYTES, sendLimited, startProxy, type ProxyHandle, type ProxyTimers } from './proxy';
 
 const UPSTREAM_CONNECT = { type: 'sdk_connect', username: 'abc123', password: 'real-pw', mode: 'control', clientId: 'gamelink-proxy' };
 
@@ -25,18 +25,27 @@ interface SetupOptions {
   reconnectDelayMs?: () => number;
   handshakeTimeoutMs?: number;
   rejectPassword?: boolean;
+  rejectError?: string;
+  silent?: boolean;
+  upstreamHandshakeTimeoutMs?: number;
+  staleMs?: number;
+  maxReconnectDelayMs?: number;
+  log?: (line: string) => void;
+  timers?: ProxyTimers;
 }
 
 async function setup(o: SetupOptions = {}): Promise<{ gw: FakeGateway; proxy: ProxyHandle }> {
-  const gw = await startFakeGateway({ rejectPassword: o.rejectPassword });
+  const gw = await startFakeGateway({ rejectPassword: o.rejectPassword, rejectError: o.rejectError, silent: o.silent });
   cleanups.push(() => gw.stop());
   const proxy = await startProxy({
     upstreamUrl: gw.url, account: 'abc123', password: 'real-pw', bootToken: 'tok',
     listenPort: 0, policy: createActionPolicy(), onState: o.onState,
     reconnectDelayMs: o.reconnectDelayMs ?? (() => 20), handshakeTimeoutMs: o.handshakeTimeoutMs,
+    upstreamHandshakeTimeoutMs: o.upstreamHandshakeTimeoutMs, staleMs: o.staleMs,
+    maxReconnectDelayMs: o.maxReconnectDelayMs, log: o.log, timers: o.timers,
   });
   cleanups.push(() => proxy.stop());
-  if (o.rejectPassword) await waitFor(() => gw.connectCount >= 1);
+  if (o.rejectPassword || o.silent) await waitFor(() => gw.connectCount >= 1);
   else await waitFor(() => proxy.upstreamConnected());
   return { gw, proxy };
 }
@@ -283,8 +292,120 @@ test('an upstream sdk_error on the handshake backs off and never reaches the box
   expect(box.msgs).toEqual([{ type: 'sdk_error', error: 'upstream not ready' }]);
   for (const m of box.msgs) expect(JSON.stringify(m)).not.toContain('real-pw');
   await Bun.sleep(250);
-  // One attempt per 50 ms delay: about 6 after ~300 ms. A tight loop would make hundreds.
-  expect(gw.connectCount).toBeGreaterThanOrEqual(3);
-  expect(gw.connectCount).toBeLessThanOrEqual(8);
+  // Delays 50, 100, 200 ms: 3 or 4 attempts after ~300 ms. A tight loop would make hundreds.
+  expect(gw.connectCount).toBeGreaterThanOrEqual(2);
+  expect(gw.connectCount).toBeLessThanOrEqual(5);
   expect(proxy.upstreamConnected()).toBe(false);
+});
+
+const delaysIn = (lines: string[]) =>
+  lines.map(l => /reconnect to the gateway in (\d+) ms/.exec(l)?.[1]).filter((d): d is string => d !== undefined).map(Number);
+
+test('a refused login doubles the delay up to the cap, logs the error text, and a connect resets it', async () => {
+  const lines: string[] = [];
+  const { gw, proxy } = await setup({ rejectPassword: true, reconnectDelayMs: () => 10, maxReconnectDelayMs: 40, log: l => lines.push(l) });
+  await waitFor(() => gw.connectCount >= 5);
+  expect(delaysIn(lines).slice(0, 4)).toEqual([10, 20, 40, 40]);
+  expect(lines).toContain('gamelink proxy: the gateway refused the login: Invalid credentials');
+  expect(proxy.status()).toMatchObject({ connected: false, lastError: 'the gateway refused the login: Invalid credentials' });
+  expect(proxy.status().reconnects).toBeGreaterThanOrEqual(4);
+
+  gw.rejectPassword = false;
+  await waitFor(() => proxy.upstreamConnected());
+  expect(proxy.status().lastError).toBeNull();
+  lines.length = 0;
+  gw.dropConnection();
+  await waitFor(() => delaysIn(lines).length > 0);
+  expect(delaysIn(lines)[0]).toBe(10);
+  for (const l of lines) expect(l).not.toContain('real-pw');
+});
+
+test('the log redacts the password in a gateway error text', async () => {
+  const lines: string[] = [];
+  const { proxy } = await setup({ rejectPassword: true, rejectError: 'bad password real-pw\nline2', log: l => lines.push(l) });
+  await waitFor(() => proxy.status().lastError !== null);
+  expect(proxy.status().lastError).toBe('the gateway refused the login: bad password [redacted] line2');
+  for (const l of lines) expect(l).not.toContain('real-pw');
+});
+
+test('closes a gateway socket that gives no sdk_connected within the handshake timeout and reconnects', async () => {
+  const { gw, proxy } = await setup({ silent: true, upstreamHandshakeTimeoutMs: 30, reconnectDelayMs: () => 20 });
+  await waitFor(() => gw.connectCount >= 2);
+  expect(proxy.status()).toMatchObject({ connected: false, lastError: 'no sdk_connected from the gateway within 30 ms' });
+  expect(proxy.status().reconnects).toBeGreaterThanOrEqual(1);
+  gw.silent = false;
+  await waitFor(() => proxy.upstreamConnected());
+  expect(proxy.status()).toMatchObject({ connected: true, lastError: null });
+});
+
+function fakeTimers() {
+  let next = 1;
+  const pending = new Map<number, { fn: () => void; ms: number }>();
+  const armed: number[] = [];
+  const timers: ProxyTimers = {
+    setTimeout(fn, ms) { const id = next++; pending.set(id, { fn, ms }); armed.push(ms); return id; },
+    clearTimeout(id) { pending.delete(id as number); },
+  };
+  const fire = (ms: number) => {
+    for (const [id, t] of [...pending]) if (t.ms === ms) { pending.delete(id); t.fn(); }
+  };
+  return { timers, armed, fire, has: (ms: number) => [...pending.values()].some(t => t.ms === ms) };
+}
+
+test('a ready gateway socket with no message for staleMs is closed and reconnected', async () => {
+  const ft = fakeTimers();
+  const { gw, proxy } = await setup({ timers: ft.timers, reconnectDelayMs: () => 20 });
+  expect(ft.has(60_000)).toBe(true);           // the default staleMs
+  const before = ft.armed.filter(ms => ms === 60_000).length;
+  gw.send({ type: 'sdk_state', state: { tick: 1 } });
+  await waitFor(() => ft.armed.filter(ms => ms === 60_000).length > before);   // each message restarts the timer
+  ft.fire(60_000);
+  expect(proxy.status()).toMatchObject({ connected: false, lastError: 'no message from the gateway for 60000 ms' });
+  expect(ft.has(20)).toBe(true);
+  ft.fire(20);
+  await waitFor(() => proxy.upstreamConnected());
+  expect(gw.connectCount).toBe(2);
+  expect(proxy.status().reconnects).toBe(1);
+});
+
+function maskedTextFrame(text: string): Buffer {
+  const payload = Buffer.from(text, 'utf8');
+  if (payload.length > 125) throw new Error('short frames only');
+  const mask = Buffer.from([1, 2, 3, 4]);
+  const body = Buffer.from(payload.map((b, i) => b ^ mask[i % 4]!));
+  return Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, body]);
+}
+
+test('a box that stops reading gets no more state, and the proxy does not buffer it', async () => {
+  const lines: string[] = [];
+  const { gw, proxy } = await setup({ log: l => lines.push(l) });
+  const sock = netConnect(proxy.port, '127.0.0.1');
+  cleanups.push(() => { sock.destroy(); });
+  await new Promise<void>(r => sock.once('connect', () => r()));
+  sock.write('GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n');
+  await new Promise<void>(r => sock.once('data', () => r()));
+  sock.write(maskedTextFrame(JSON.stringify({ type: 'sdk_connect', username: 'abc123', password: 'tok' })));
+  await Bun.sleep(50);
+  sock.pause();
+  const big = 'x'.repeat(60_000);
+  for (let i = 0; i < 400 && !lines.some(l => l.includes('dropping state')); i++) {
+    gw.send({ type: 'sdk_state', state: { pad: big, i } });
+    if (i % 20 === 0) await Bun.sleep(5);
+  }
+  await waitFor(() => lines.some(l => l.includes('dropping state')), 5000);
+  expect(proxy.upstreamConnected()).toBe(true);
+}, 15_000);
+
+test('sendLimited drops state above the box buffer limit and still sends other messages', () => {
+  let buffered = BOX_BUFFER_LIMIT_BYTES + 1;
+  const sent: string[] = [];
+  const ws = { send: (t: string) => { sent.push(t); return -1; }, getBufferedAmount: () => buffered };
+  expect(sendLimited(ws, 'state', true)).toBe(false);
+  expect(sendLimited(ws, 'result', false)).toBe(true);
+  expect(sent).toEqual(['result']);
+  buffered = 0;
+  expect(sendLimited(ws, 'state2', true)).toBe(true);
+  expect(sent).toEqual(['result', 'state2']);
+  const full = { send: () => 0, getBufferedAmount: () => 0 };
+  expect(sendLimited(full, 'x', false)).toBe(false);
 });
