@@ -1,10 +1,12 @@
-# Posts a warning to the private operator channel (ALERT_CHANNEL_ID) when the unit %i fails.
-# The bot units start it with OnFailure=rs-alert@%n.service.
+# Posts a warning to the private operator channel (ALERT_CHANNEL_ID) when the unit %i fails and
+# is still down 5 minutes later. The bot units start it with OnFailure=rs-alert@%n.service.
 [Unit]
-Description=Discord warning for the failure of %i
+Description=Discord warning for a unit that stays down: %i
 
 [Service]
 Type=oneshot
+# The script waits 300 s before it looks at the unit again.
+TimeoutStartSec=420
 User=rsbot
 WorkingDirectory=/opt/rs-discord-bot
 ExecStart=/opt/rs-discord-bot/scripts/server-alert.sh %i

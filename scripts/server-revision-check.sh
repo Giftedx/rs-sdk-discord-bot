@@ -18,8 +18,7 @@
 #   - writes RESTART_FILE (default data/revision-restart). ExecStartPost= of
 #     rs-revision-check.service then restarts rs-gamelink.service (a fresh client), if it runs,
 #     and removes the file. This script runs as rsbot and cannot restart a unit itself;
-#   - runs ALERT_SCRIPT --revision (default scripts/server-alert.sh). That posts one line to
-#     ALERT_CHANNEL_ID only if it is set, and never to the player channel.
+#   - posts nothing to Discord: gamelink restarts by itself, so this is not for the operator.
 #
 # Exit status: 0 when the page did not change, or on the first run; 0 when it changed (the
 # log line is the signal); 1 on an error.
@@ -30,7 +29,6 @@ STATE_FILE="${STATE_FILE:-$APP_DIR/data/revision.txt}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/secrets/bot.env}"
 FLAG_FILE="${FLAG_FILE:-$APP_DIR/data/revision-changed}"
 RESTART_FILE="${RESTART_FILE:-$APP_DIR/data/revision-restart}"
-ALERT_SCRIPT="${ALERT_SCRIPT:-$APP_DIR/scripts/server-alert.sh}"
 
 log() { echo "rs-revision-check: $*"; }
 die() { echo "rs-revision-check: $*" >&2; exit 1; }
@@ -90,11 +88,6 @@ elif [ "$hash" != "$last" ]; then
   echo "$now $last $hash" >"$FLAG_FILE"
   echo "$now" >"$RESTART_FILE"
   log "restart of rs-gamelink.service requested ($RESTART_FILE)"
-  if [ -x "$ALERT_SCRIPT" ]; then
-    "$ALERT_SCRIPT" --revision || log "the alert script failed; see the lines above"
-  else
-    log "no alert script at $ALERT_SCRIPT"
-  fi
 else
   log "no change: $shown sha256 $hash"
 fi

@@ -248,7 +248,7 @@ Rule for all pictures: this repository holds no game art. The bot gets icons fro
 - `rsgame-egress.service` and `rsgame-egress.timer`: the egress firewall of gamelink, with an hourly refresh.
 - `rs-backup.service` and `rs-backup.timer`: a daily backup of `secrets/`, `data/` and `/etc/rs-gamelink` (`scripts/server-backup.sh`).
 - `rs-revision-check.service` and `rs-revision-check.timer`: a check for a new revision of the game server (`scripts/server-revision-check.sh`).
-- `rs-alert@.service`: one warning to `ALERT_CHANNEL_ID` when a unit fails (`scripts/server-alert.sh`).
+- `rs-alert@.service`: one warning to `ALERT_CHANNEL_ID` when a unit fails and is still down 5 minutes later (`scripts/server-alert.sh`).
 
 Planned: a separate systemd unit for Chromium, and one box process per account.
 

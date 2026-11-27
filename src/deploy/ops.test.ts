@@ -1,7 +1,7 @@
-// Checks of the systemd units and of scripts/server-revision-check.sh. The script test runs
-// bash with stand-ins for curl and the alert script; it is skipped when bash is not found.
+// Checks of the systemd units, scripts/server-revision-check.sh and scripts/server-alert.sh. The
+// script tests run bash with stand-ins for curl and systemctl; they are skipped when bash is not found.
 import { expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +49,7 @@ test('the revision unit restarts gamelink only if it runs, with "$" escaped for 
 // Not the bash.exe of System32: that one starts WSL.
 const found = Bun.which('bash');
 const bash = found && !/[\\/]system32[\\/]/i.test(found) ? found : null;
-test.skipIf(!bash)('revision check: a changed hash writes the flag files and calls the alert once', () => {
+test.skipIf(!bash)('revision check: a changed hash writes the flag files and posts no alert', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rs-rev-'));
   const p = (n: string) => join(dir, n).replace(/\\/g, '/');
   try {
@@ -76,8 +76,50 @@ test.skipIf(!bash)('revision check: a changed hash writes the flag files and cal
     expect(run('page two')).toContain('REVISION CHANGED');
     expect(readFileSync(p('revision-changed'), 'utf8')).toMatch(/^\S+ [0-9a-f]{64} [0-9a-f]{64}\n$/);
     expect(existsSync(p('revision-restart'))).toBe(true);
-    expect(readFileSync(p('alert.log'), 'utf8')).toBe('--revision\n');
+    expect(existsSync(p('alert.log'))).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the alert unit gives the script time for its wait', () => {
+  const alert = lines(read('../../deploy/systemd/rs-alert@.service'));
+  expect(alert).toContain('TimeoutStartSec=420');
+  expect(read('../../scripts/server-alert.sh')).toContain('ALERT_WAIT_SEC="${ALERT_WAIT_SEC:-300}"');
+});
+
+test.skipIf(!bash)('alert: no message when the unit runs again; one message when it stays down', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rs-alert-'));
+  const p = (n: string) => join(dir, n).replace(/\\/g, '/');
+  mkdirSync(join(dir, 'data'));
+  try {
+    writeFileSync(p('bot.env'), 'DISCORD_TOKEN=tok-123\nDISCORD_CHANNEL_ID=11111111111111111\nALERT_CHANNEL_ID=22222222222222222\n');
+    // Stand-ins: systemctl prints $UNIT_STATE; curl logs its last argument (the URL) and answers 200.
+    writeFileSync(p('systemctl'), '#!/usr/bin/env bash\necho "$UNIT_STATE"\n[ "$UNIT_STATE" = active ]\n');
+    writeFileSync(p('curl'), '#!/usr/bin/env bash\nfor a; do last="$a"; done\necho "$last" >>"$CURL_LOG"\nprintf 200\n');
+    chmodSync(p('systemctl'), 0o755);
+    chmodSync(p('curl'), 0o755);
+    const run = (state: string) => Bun.spawnSync([bash!, path('../../scripts/server-alert.sh'), 'rs-gamelink.service'], {
+      env: {
+        ...process.env, APP_DIR: dir.replace(/\\/g, '/'), ENV_FILE: p('bot.env'), ALERT_WAIT_SEC: '0',
+        SYSTEMCTL: p('systemctl'), CURL: p('curl'), CURL_LOG: p('curl.log'), UNIT_STATE: state,
+      },
+    });
+
+    const healed = run('active');
+    expect(healed.exitCode).toBe(0);
+    expect(healed.stdout.toString()).toContain('runs again; no Discord message');
+    expect(existsSync(p('curl.log'))).toBe(false);
+
+    const down = run('failed');
+    expect(down.exitCode).toBe(0);
+    expect(down.stdout.toString()).toContain('HTTP status 200');
+    expect(readFileSync(p('curl.log'), 'utf8')).toBe('https://discord.com/api/v10/channels/22222222222222222/messages\n');
+
+    const again = run('failed');
+    expect(again.stdout.toString()).toContain('less than an hour ago');
+    expect(readFileSync(p('curl.log'), 'utf8').split('\n').filter(Boolean)).toHaveLength(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);
