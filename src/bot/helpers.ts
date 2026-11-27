@@ -364,12 +364,3 @@ export async function retryUntil<T>(
     }
   }
 }
-
-// Bun says "Was there a typo in the url or port?" for a Unix socket that does not exist yet.
-// That text sends the operator to the wrong place while gamelink starts, so name the cause.
-export function gamelinkWaitReason(err: unknown, socketPath: string): string {
-  const code = (err as { code?: unknown } | null)?.code;
-  if (code === 'FailedToOpenSocket' || code === 'ENOENT') return `no socket at ${socketPath} yet`;
-  if (code === 'ConnectionRefused' || code === 'ECONNREFUSED') return `nothing listens on ${socketPath} yet`;
-  return err instanceof Error ? err.message : String(err);
-}

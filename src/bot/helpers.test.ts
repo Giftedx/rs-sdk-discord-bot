@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildReceipt, cardFor, retryBackoff, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
-  gamelinkWaitReason, scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
+  scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
 } from './helpers';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
+import { gamelinkWaitReason } from '../gamelink/client';
 
 const state = { hp: 5, maxHp: 10, x: 3222, z: 3218, plane: 0, skills: { Woodcutting: { level: 10, xp: 1200 } }, inventory: {}, inCombat: false };
 

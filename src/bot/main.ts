@@ -10,14 +10,14 @@ import { dirname, join, resolve } from 'node:path';
 import { createKnowledgePack } from '../agent/store';
 import { prepareJobCgroup, type JobCgroup } from '../box/cgroup';
 import { reactionInput } from '../discord/adapters';
-import { connectGameLink, GameLinkError } from '../gamelink/client';
+import { connectGameLink, GameLinkError, gamelinkWaitReason } from '../gamelink/client';
 import { openLocalGameLink, readTokenFile, type GameLink } from '../gamelink/link';
 import { openDb } from '../orchestrator/db';
 import { createWakeScheduler } from '../orchestrator/wakes';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 import { loadBotConfig } from './config';
 import { startGuild, type Guild } from './guild';
-import { createKeyedLock, gamelinkWaitReason, mentionsBot, retryUntil, stripMentions, takeRevisionFlag } from './helpers';
+import { createKeyedLock, mentionsBot, retryUntil, stripMentions, takeRevisionFlag } from './helpers';
 
 const ROOT = resolve(dirname(import.meta.path), '..', '..');
 const TICK_MS = 5_000;
