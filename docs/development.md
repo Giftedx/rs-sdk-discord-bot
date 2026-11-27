@@ -4,7 +4,7 @@ This page tells you how to build, test and run this project on your own machine.
 
 ## Tools
 
-- You need git and Bun 1.3.14. CI uses that version. Other versions are not tested.
+- You need git and Bun 1.4.5. CI uses that version. Other versions are not tested.
 - The tests (`bun test`) and the type check (`bunx tsc --noEmit`) run on Windows and on Linux. macOS is not tested.
 - The local stack, the proxy proof and the other scripts need Linux. On Windows, use WSL2. We tested this guide with WSL2 Ubuntu 24.04.
 - Run the local stack, the browser and the scripts as a non-root user. Chromium does not start as root with its sandbox on. Do not use `--no-sandbox`.
@@ -25,7 +25,7 @@ This page tells you how to build, test and run this project on your own machine.
 3. As your non-root user:
 
    ```bash
-   curl -fsSL https://bun.sh/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v1.3.14
+   curl -fsSL https://bun.sh/install -o /tmp/bun-install.sh && bash /tmp/bun-install.sh bun-v1.4.5
    export PATH="$HOME/.bun/bin:$PATH"
    git clone --recurse-submodules https://github.com/Giftedx/rs-sdk-discord-bot.git
    cd rs-sdk-discord-bot

@@ -115,7 +115,7 @@ This command stops with a message, because `RS_ALLOW_DEMO` is not set. Put `RS_A
 | Phase | Runs as | Changes |
 |---|---|---|
 | `facts` | root | Nothing. It prints the CPU count, the memory, the disk, the kernel, the OS and two sysctl values. |
-| `prepare` | root | Installs the apt packages `git`, `unzip`, `curl`, `ca-certificates` and the libraries that Chrome needs. apt can upgrade these packages and install their dependencies. Creates the user `rsbot` with no sudo right. Installs Bun 1.3.14 in the home of `rsbot`. Creates the empty bare repository `/home/rsbot/repo.git`. |
+| `prepare` | root | Installs the apt packages `git`, `unzip`, `curl`, `ca-certificates` and the libraries that Chrome needs. apt can upgrade these packages and install their dependencies. Creates the user `rsbot` with no sudo right. Installs Bun 1.4.5 in the home of `rsbot`. Creates the empty bare repository `/home/rsbot/repo.git`. |
 | `install <branch>` | root, and `rsbot` for each step in the clone | Creates `/opt/rs-discord-bot` (owner `rsbot`, mode 750) and clones the branch with submodules into it, or updates the clone with `git reset --hard`. Creates `secrets/` (mode 700) and `measurements/raw/`. Runs `bun install --frozen-lockfile` with no browser download. Removes `/home/rsbot/.cache/puppeteer`. |
 | `chrome` | root | Downloads Chrome for Testing to `/opt/rs-chrome/<version>/chrome-linux64/`, owned by `root:root`. Installs and loads `/etc/apparmor.d/rsbot-chrome-for-testing`. Sets `/home/rsbot/.cache` to mode 700. Writes `RS_CHROME_PATH` to `/opt/rs-discord-bot/server.env`. Adds one line to `/home/rsbot/.profile` that loads `server.env`. |
 | `create-account-env <account>` | `rsbot` | Writes `/opt/rs-discord-bot/secrets/account.env` (mode 600) once. |

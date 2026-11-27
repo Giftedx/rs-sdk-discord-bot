@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/Giftedx/rs-sdk-discord-bot/actions/workflows/ci.yml"><img src="https://github.com/Giftedx/rs-sdk-discord-bot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-3dd6b5" alt="MIT licence"></a>
-  <img src="https://img.shields.io/badge/Bun-1.3.14-f5b841" alt="Bun 1.3.14">
+  <img src="https://img.shields.io/badge/Bun-1.4.5-f5b841" alt="Bun 1.4.5">
   <img src="https://img.shields.io/badge/TypeScript-strict-6aa8ff" alt="TypeScript">
 </p>
 
@@ -43,7 +43,7 @@ The game is the RuneScape-style server of [rs-sdk](https://github.com/MaxBittker
 
 The bot needs Linux. On Windows, use WSL2. The tests also run on Windows.
 
-You need git and [Bun](https://bun.sh) 1.3.14. On Ubuntu, first install the Chrome libraries listed in [docs/development.md](docs/development.md).
+You need git and [Bun](https://bun.sh) 1.4.5. On Ubuntu, first install the Chrome libraries listed in [docs/development.md](docs/development.md).
 
 ```bash
 git clone --recurse-submodules https://github.com/Giftedx/rs-sdk-discord-bot.git

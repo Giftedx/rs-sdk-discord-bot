@@ -12,7 +12,7 @@
     "bot": "bun --no-env-file src/bot/main.ts"
   },
   "devDependencies": {
-    "@types/bun": "~1.3.14",
+    "@types/bun": "~1.4.5",
     "typescript": "^7"
   },
   "dependencies": {

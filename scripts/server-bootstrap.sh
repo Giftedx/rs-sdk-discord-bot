@@ -36,7 +36,7 @@
 # /opt/rs-chrome and /etc/apparmor.d/rsbot-chrome-for-testing.
 set -euo pipefail
 
-BUN_VERSION=1.3.14
+BUN_VERSION=1.4.5
 APP_USER=rsbot
 APP_DIR=/opt/rs-discord-bot
 BARE_REPO=/home/$APP_USER/repo.git
