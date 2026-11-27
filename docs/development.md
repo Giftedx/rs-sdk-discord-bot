@@ -54,13 +54,13 @@ bun test
 
 ### Tests that launch Chromium
 
-13 tests in `src/gamelink/game-tab.test.ts` launch headless Chromium with its sandbox on. The page that they load is a fixture in this repository. They contact no game server.
+The tests that launch Chromium (in `src/gamelink/game-tab.test.ts` and `src/gamelink/card-tab.test.ts`) run it headless with its sandbox on. The page that they load is a fixture in this repository. They contact no game server.
 
 On Ubuntu 23.10 and later, AppArmor restricts unprivileged user namespaces, and Chromium can stop with `No usable sandbox!`. This depends on the Chrome path and on your system. [deploy-server.md](deploy-server.md) explains the cause.
 
 If Chromium stops with `No usable sandbox!` on your development machine, you have two options:
 
-1. Skip the 13 tests with `RS_SKIP_BROWSER_TESTS=1 bun test`. The command prints a line that says so, and the other tests run. The proxy proof, the measurement tool and the idle test cannot run on this machine then.
+1. Skip the tests that launch Chromium with `RS_SKIP_BROWSER_TESTS=1 bun test`. The command prints a line that says so, and the other tests run. The proxy proof, the measurement tool and the idle test cannot run on this machine then.
 2. Give your Chrome an AppArmor profile as the server bootstrap does. Install a root-owned Chrome copy at a path that matches `/opt/rs-chrome/*/chrome-linux64/chrome`, load the profile in `deploy/apparmor/rsbot-chrome-for-testing`, and set `RS_CHROME_PATH` to that Chrome. This project tested this option only on a server through `scripts/server-bootstrap.sh`, not on a desktop. Read "Residual risk" in [deploy-server.md](deploy-server.md) first.
 
 On WSL2 Ubuntu 24.04, where this guide was tested, Chromium started its sandbox with neither option.
@@ -71,7 +71,7 @@ Never add `--no-sandbox` to make a test pass. A test checks that the launch argu
 
 The CI workflow (`.github/workflows/ci.yml`) has two jobs:
 
-- Job `check` runs the type check and the tests with `RS_SKIP_BROWSER_TESTS=1`. GitHub's Ubuntu runners restrict user namespaces in the same way as Ubuntu 23.10, so this job skips the 13 tests.
+- Job `check` runs the type check and the tests with `RS_SKIP_BROWSER_TESTS=1`. GitHub's Ubuntu runners restrict user namespaces in the same way as Ubuntu 23.10, so this job skips the tests that launch Chromium.
 - Job `browser-tests` installs Chrome for Testing, sets `kernel.apparmor_restrict_unprivileged_userns` to 0 on the runner, and runs all tests. Chromium keeps its own sandbox. The runner is a throwaway machine. Do not change that sysctl on a server.
 
 Run the full `bun test` on your own machine before you change `src/gamelink/game-tab.ts`.
@@ -80,13 +80,22 @@ Run the full `bun test` on your own machine before you change `src/gamelink/game
 
 | Path | Content |
 |---|---|
-| `src/shared/` | The configuration loader. |
+| `src/bot/` | The Discord bot: start, settings, the guilds, the queue, and the small model that sorts messages. |
+| `src/agent/` | The agent loop, the spend record, the knowledge pack, and the store of saved scripts and notes. |
+| `src/orchestrator/` | The SQLite database, the wake rules and the budget. |
+| `src/box/` | The job runner, the job cgroup, the built-in protections and the seed scripts loader. |
+| `src/discord/` | The status card, the adventure log, the gallery, the posts, the queue votes and the discord.js adapters. |
+| `src/cards/` | The templates of the drawn cards, the item icons and the XP chart. |
+| `src/events/` | The comparison of state snapshots that makes events. |
+| `src/shared/` | The configuration loader, the sanitizer of Discord text, and the secret helpers of the scripts. |
 | `src/gamelink/` | The action policy, the proxy, the game tab and the re-login delay. |
 | `src/measure/` | The `/proc` reader of the measurement tool. |
 | `src/deploy/`, `src/scripts/` | Tests of the bootstrap script and of the script helpers. |
 | `src/testing/` | A fake gateway and a fixture page for the tests. |
 | `scripts/` | The local stack, the proxy proof, the idle test, the measurement tool and the server bootstrap. |
+| `seed/` | The seed scripts that each guild gets at the start. |
 | `deploy/apparmor/` | The readable copy of the AppArmor profile. |
+| `deploy/systemd/` | The systemd units of the bot, gamelink, the firewalls, the backup, the revision check and the alerts. |
 | `vendor/rs-sdk/` | The rs-sdk submodule, pinned at commit `3506b20`. This project never edits it. |
 | `docs/` | The guides and the design. |
 
@@ -179,6 +188,10 @@ Scripts that you run:
 | `scripts/measure.ts` | Measures RAM and CPU of one account. | Linux (WSL2 included) | `local` or `demo`, `--quick` | A table, `measure-<mode>-<date>.json`, `measure-<mode>-<date>-box.log` |
 | `scripts/idle-test.ts` | Tests if an idle account stays logged in, and times a re-login. | Linux (WSL2 included) | `local` or `demo`, `idle` or `relogin`, `--quick` | JSON lines, a console log |
 | `scripts/server-bootstrap.sh` | Prepares an Ubuntu server. See [deploy-server.md](deploy-server.md). | Ubuntu 26.04 | a phase | Progress lines |
+| `scripts/ai-check.ts` | One real call chain to the Anthropic API through the agent loop, with a fake game. It costs a few cents. `AI_CHECK_FULL=1` sends the real SDK reference and prints the cache tokens (about $0.08). | any | none. Load `secrets/bot.env` in a subshell first. | Lines on stdout |
+| `scripts/box-check.ts` | Runs jobs through the real job runner as `BOX_USER`, and checks that a job cannot read the secrets of the bot. | Linux | none. Run as the bot user with `BOX_USER=<user>`. | One JSON line. Exit code 0 when every check passed. |
+| `scripts/live-check.ts` | Live check of the served game client and of the gateway, in one session of less than 3 minutes. | Linux | `local` or `demo` | `live-check-<mode>-<date>.json` |
+| `scripts/seed-check.ts` | Runs each seed script on the local stack as a job, with a short limit. | Linux (WSL2 included), local stack only | none. Optional: `SEED_CHECK_MS`, `SEED_ONLY`, `SEED_DIR`. | One JSON line per script and a summary line, `seed-check-<name>.txt` |
 
 Support files:
 

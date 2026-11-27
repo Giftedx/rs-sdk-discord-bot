@@ -142,7 +142,7 @@ describe('orchestrator db', () => {
 });
 
 describe('orchestrator db: since queries', () => {
-  test('snapshotsSince and eventsSince return the rows of one guild from a time, oldest first', () => {
+  test('snapshotsSince (oldest first) and eventsSince (newest first) return the rows of one guild from a time', () => {
     let t = 1_000;
     const db = openDb(tmpFile(), () => t);
     db.addSnapshot('g1', { skills: { Attack: { level: 1, xp: 0 } } }, 500);
@@ -155,7 +155,25 @@ describe('orchestrator db: since queries', () => {
     db.addEvent('g1', 'level_up', 'new', { kind: 'level_up', skill: 'Attack', from: 1, level: 2 });
     db.addEvent('g2', 'death', 'other guild');
     expect(db.eventsSince('g1', 2_000)).toEqual([{ time: 3_000, type: 'level_up', data: { kind: 'level_up', skill: 'Attack', from: 1, level: 2 } }]);
-    expect(db.eventsSince('g1', 0).map(e => e.data)).toEqual([null, { kind: 'level_up', skill: 'Attack', from: 1, level: 2 }]);
+    expect(db.eventsSince('g1', 0).map(e => e.data)).toEqual([{ kind: 'level_up', skill: 'Attack', from: 1, level: 2 }, null]);
     db.close();
+  });
+
+  test('eventsSince puts item gains last, so a limit never drops a level-up or a death', () => {
+    const db = openDb(':memory:', () => 1_000);
+    db.addEvent('g1', 'level_up', 'a');
+    for (let i = 0; i < 5; i++) db.addEvent('g1', 'item_gain', `item ${i}`);
+    db.addEvent('g1', 'death', 'b');
+    expect(db.eventsSince('g1', 0, 3).map(e => e.type)).toEqual(['death', 'level_up', 'item_gain']);
+  });
+
+  test('pruneEvents removes the events before a time', () => {
+    let t = 100;
+    const db = openDb(':memory:', () => t);
+    db.addEvent('g1', 'item_gain', 'old');
+    t = 200;
+    db.addEvent('g1', 'death', 'new');
+    expect(db.pruneEvents(150)).toBe(1);
+    expect(db.recentEvents(10).map(e => e.text)).toEqual(['new']);
   });
 });

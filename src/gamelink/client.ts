@@ -60,14 +60,19 @@ async function connectGuild(opts: ClientOptions, name: string, account: string):
   let statusAt = Date.now();
   let state: { state: unknown; at: number } | null = null;
   let stored: StoredFrame | null = null;
+  // The local intent of the last start or stop call. The polled status replaces it once a status
+  // newer than the call arrived, so a restart of gamelink (frames off) shows as off.
   let framesWanted = first.framesActive;
+  let framesSetAt = 0;
   let failing = false;
   let closed = false;
 
   async function poll(): Promise<void> {
     try {
+      const asked = Date.now();
       status = await (await req('GET', `${base}/status`)).json() as StatusBody;
       statusAt = Date.now();
+      if (asked > framesSetAt) framesWanted = status.framesActive;
       const s = await (await req('GET', `${base}/state`)).json() as { state: unknown; ageMs: number | null };
       state = s.state === null || s.ageMs === null ? null : { state: s.state, at: Date.now() - s.ageMs };
       if (status.frameAt !== null && status.frameAt !== stored?.at) {
@@ -131,13 +136,16 @@ async function connectGuild(opts: ClientOptions, name: string, account: string):
         return null;
       }
     },
+    // A stale status cannot tell: keep the local intent.
     framesActive: () => framesWanted,
     startFrames() {
       framesWanted = true;
+      framesSetAt = Date.now();
       void post('frames/start').catch(err => log(`frames start failed: ${errText(err)}`));
     },
     stopFrames() {
       framesWanted = false;
+      framesSetAt = Date.now();
       void post('frames/stop').catch(err => log(`frames stop failed: ${errText(err)}`));
     },
     // The job flag must turn off after a job. Try three times, 1 s apart; then the error goes to

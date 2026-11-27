@@ -80,6 +80,10 @@ describe('sanitizeForDiscord', () => {
     expect(out).toContain('<secret>');
     expect(sanitizeForDiscord('x'.repeat(5000), []).length).toBeLessThanOrEqual(2000);
   });
+  test('hides a secret in any letter case, with regex characters in it', () => {
+    expect(sanitizeForDiscord('Hero42 and HERO42 and hErO42', ['hero42'])).toBe('<secret> and <secret> and <secret>');
+    expect(sanitizeForDiscord('pw a.b$c+ end, aXb$c+ stays', ['a.b$c+'])).toBe('pw <secret> end, aXb$c+ stays');
+  });
 });
 
 describe('redactNames', () => {

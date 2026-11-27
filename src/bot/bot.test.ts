@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { loadBotConfig, parseLevels } from './config';
-import { createQueue } from './queue';
 
 const base = {
   RS_ACCOUNT: 'abc', RS_PASSWORD: 'pw', RS_SERVER_HOST: 'game.example.org',
@@ -111,29 +110,6 @@ describe('GUILDS_FILE', () => {
     expect(() => load([])).toThrow(/at least one/);
     expect(() => loadBotConfig(env, '/r', () => '{not json')).toThrow(/JSON list/);
     expect(() => loadBotConfig(env, '/r', () => { throw new Error('ENOENT'); })).toThrow(/cannot be read/);
-  });
-});
-
-describe('queue', () => {
-  test('one at a time, in order', () => {
-    const q = createQueue({ max: 5, userCooldownMs: 0 });
-    q.add('u1', 'a', 'first');
-    q.add('u2', 'b', 'second');
-    expect(q.next()?.text).toBe('first');
-    expect(q.next()).toBeNull();
-    q.done();
-    expect(q.next()?.text).toBe('second');
-  });
-  test('limits', () => {
-    let t = 0;
-    const q = createQueue({ max: 1, userCooldownMs: 10_000, now: () => t });
-    expect(q.add('u1', 'a', ' ')).toEqual({ ok: false, reason: 'empty' });
-    expect(q.add('u1', 'a', 'x'.repeat(1001))).toEqual({ ok: false, reason: 'too_long' });
-    expect(q.add('u1', 'a', 'go').ok).toBe(true);
-    expect(q.add('u1', 'a', 'again')).toEqual({ ok: false, reason: 'cooldown' });
-    expect(q.add('u2', 'b', 'go')).toEqual({ ok: false, reason: 'full' });
-    t = 20_000;
-    expect(q.clear()).toBe(1);
   });
 });
 

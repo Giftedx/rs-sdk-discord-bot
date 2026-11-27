@@ -74,6 +74,24 @@ describe('MainPosts', () => {
     expect(timers.pending()).toBe(0);
   });
 
+  test('stop() during a recap post does not arm the next recap', async () => {
+    const timers = new FakeTimers(T0);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const posts = new MainPosts({
+      channel: { send: () => gate }, secrets: [], timers, log: () => {}, recapHourUtc: 12, maxPerHour: 100,
+    });
+    posts.record({ kind: 'death' });
+    posts.start();
+    await timers.advance(2 * 3_600_000);
+    posts.stop();
+    release();
+    await timers.advance(0);
+    expect(timers.pending()).toBe(0);
+    posts.start();
+    expect(timers.pending()).toBe(0);
+  });
+
   test('msUntilUtcHour and recap hour validation', () => {
     expect(msUntilUtcHour(T0, 12)).toBe(2 * 3_600_000);
     expect(msUntilUtcHour(T0, 10)).toBe(24 * 3_600_000);

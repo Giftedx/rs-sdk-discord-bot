@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { FakeTimers } from './fake-timers';
-import { CARD_MARKER, STATUS_ID, StatusCard, currentSkill, renderCard, watchLiveUrl, type CardChannel, type CardMessage, type CardView } from './status-card';
+import { CARD_MARKER, STATUS_ID, StatusCard, currentSkill, renderCard, type CardChannel, type CardMessage, type CardView } from './status-card';
 
 class FakeChannel implements CardChannel {
   pinned: { id: string; content: string }[] = [];
@@ -138,16 +138,6 @@ describe('status card content', () => {
     expect(msg.buttons).toEqual([{ id: STATUS_ID, label: 'Status' }]);
   });
 
-  test('Watch live link only for an https link', () => {
-    const url = watchLiveUrl('https://example.org/world/?follow={account}', 'a b');
-    expect(url).toBe('https://example.org/world/?follow=a%20b');
-    expect(watchLiveUrl('', 'x')).toBeUndefined();
-    expect(watchLiveUrl('http://example.org/?f={account}', 'x')).toBeUndefined();
-    expect(watchLiveUrl('not a url', 'x')).toBeUndefined();
-    const msg = renderCard(view, [], url);
-    expect(msg.buttons.map((b) => b.label)).toEqual(['Status', 'Watch live']);
-    expect(msg.buttons[1]!.url).toBe(url);
-  });
 
   test('secrets are removed from the script name and the last event', () => {
     const msg = renderCard({ ...view, script: 'hunter22', lastEvent: 'said hunter22' }, ['hunter22']);

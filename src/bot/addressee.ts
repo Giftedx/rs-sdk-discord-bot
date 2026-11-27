@@ -6,7 +6,13 @@ export type MessageKind = 'instruction' | 'question' | 'stop' | 'none';
 export interface Addressee {
   toBot: boolean;
   kind: MessageKind;
+  // The model call failed: the answer is the fallback of parseAddressee('').
+  failed?: true;
 }
+
+// A message that starts with a plain stop word. When the model call fails, a direct message like this
+// still stops the work (guild.ts).
+export const isPlainStop = (text: string): boolean => /^\s*(stop|cancel|halt)\b/i.test(text);
 
 export interface ChannelLine {
   author: string;
@@ -63,8 +69,11 @@ export function parseAddressee(raw: string, direct: boolean): Addressee {
   return { toBot: true, kind };
 }
 
-export async function classifyMessage(input: AddresseeInput, ask: (prompt: string) => Promise<string>): Promise<Addressee> {
-  let raw = '';
-  try { raw = await ask(addresseePrompt(input)); } catch { /* a failed call falls back below */ }
-  return parseAddressee(raw, input.direct);
+export async function classifyMessage(input: AddresseeInput, ask: (prompt: string) => Promise<string>, log?: (line: string) => void): Promise<Addressee> {
+  try {
+    return parseAddressee(await ask(addresseePrompt(input)), input.direct);
+  } catch (err) {
+    log?.(`message sort failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { ...parseAddressee('', input.direct), failed: true };
+  }
 }

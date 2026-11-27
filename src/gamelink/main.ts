@@ -40,6 +40,8 @@ let shuttingDown = false;
 async function shutdown(code: number) {
   if (shuttingDown) return;
   shuttingDown = true;
+  // A stop that hangs (a browser, a logout) must not keep the process alive.
+  setTimeout(() => process.exit(code), 25_000).unref();
   log('shutting down');
   await service?.stop().catch(() => {});
   await link?.close().catch(err => log(`stop failed: ${errText(err)}`));

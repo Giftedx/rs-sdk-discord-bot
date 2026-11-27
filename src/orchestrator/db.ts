@@ -245,13 +245,17 @@ export function openDb(path: string, now: () => number = Date.now) {
       const rows = db.query('SELECT time, json FROM snapshots WHERE guild IS ? AND time >= ? ORDER BY time ASC, id ASC LIMIT ?').all(guild, since, limit) as Raw[];
       return rows.map(r => ({ time: r.time as number, state: parseJson(r.json) as T }));
     },
-    // Oldest first. For the daily recap after a restart.
+    // For the daily recap after a restart. Item gains are the most rows, so every other kind comes
+    // first, each part newest first: a limit never drops a level-up or a death for an item gain.
     eventsSince(guild: string | null, since: number, limit = 10_000): { time: number; type: string; data: unknown }[] {
-      const rows = db.query('SELECT time, type, data FROM events WHERE guild IS ? AND time >= ? ORDER BY id ASC LIMIT ?').all(guild, since, limit) as Raw[];
+      const rows = db.query('SELECT time, type, data FROM events WHERE guild IS ? AND time >= ? ORDER BY type = \'item_gain\', id DESC LIMIT ?').all(guild, since, limit) as Raw[];
       return rows.map(r => ({ time: r.time as number, type: r.type as string, data: parseJson(r.data) }));
     },
     pruneSnapshots(before: number): number {
       return db.query('DELETE FROM snapshots WHERE time < ?').run(before).changes;
+    },
+    pruneEvents(before: number): number {
+      return db.query('DELETE FROM events WHERE time < ?').run(before).changes;
     },
 
     // Timers.

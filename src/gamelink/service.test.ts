@@ -6,7 +6,7 @@ import { loadBotConfig, loadGameConfig } from '../bot/config';
 import { CardDataError } from '../cards/templates';
 import { connectGameLink } from './client';
 import { readTokenFile, reconnectAll, relogAll, type GameLink, type GuildLink, type LocalGameLink, type LocalGuildLink } from './link';
-import { LockError, acquireLock, lockPathFor, serveGameLink, type LockDeps, type ServiceHandle } from './service';
+import { LockError, SERVICE_IDLE_TIMEOUT_S, acquireLock, lockPathFor, serveGameLink, type LockDeps, type ServiceHandle } from './service';
 
 const TOKEN = 'a'.repeat(40);
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
@@ -40,6 +40,28 @@ function fakeGuild() {
   };
   return { g, calls };
 }
+
+describe('gamelink socket: long requests', () => {
+  // Bun's default idleTimeout (10 s) cut a GET whose answer took more than about 12 s (Bun 1.3.14).
+  // The service sets idleTimeout to SERVICE_IDLE_TIMEOUT_S, so a slow frame capture, card or idle
+  // wait gets its answer.
+  test('a handler that takes 14 s is not cut', async () => {
+    expect(SERVICE_IDLE_TIMEOUT_S).toBeGreaterThanOrEqual(60);
+    expect(SERVICE_IDLE_TIMEOUT_S).toBeLessThanOrEqual(255);
+    const dir = mkdtempSync(join(tmpdir(), 'gamelink-slow-'));
+    const sock = join(dir, 'gl.sock');
+    const { g } = fakeGuild();
+    const slow: GuildLink = { ...g, frame: async () => { await new Promise(r => setTimeout(r, 14_000)); return PNG; } };
+    const service = serveGameLink({ link: { guilds: new Map([['main', slow]]), close: async () => {} }, socketPath: sock, token: TOKEN });
+    try {
+      const res = await fetch('http://gamelink/guilds/main/frame', { unix: sock, headers: { authorization: `Bearer ${TOKEN}` } } as RequestInit);
+      expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([...PNG]);
+    } finally {
+      await service.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
 
 describe('gamelink socket', () => {
   let dir: string;
@@ -126,6 +148,18 @@ describe('gamelink socket', () => {
   test('the client refuses a wrong token and a wrong account', async () => {
     await expect(connectGameLink({ socketPath: sock, token: 'c'.repeat(40), guilds: [{ name: 'main', account: 'abc' }] })).rejects.toThrow(/refused the token/);
     await expect(connectGameLink({ socketPath: sock, token: TOKEN, guilds: [{ name: 'main', account: 'other' }] })).rejects.toThrow(/another account/);
+  });
+
+  test('framesActive follows the polled status, so frames that gamelink lost (a restart) show as off', async () => {
+    const c = client.guilds.get('main')!;
+    c.startFrames();
+    expect(c.framesActive()).toBe(true);
+    await new Promise(r => setTimeout(r, 300));
+    expect(c.framesActive()).toBe(true);
+    // Gamelink restarted: its frames are off, and the bot did not stop them.
+    g.stopFrames();
+    await new Promise(r => setTimeout(r, 300));
+    expect(c.framesActive()).toBe(false);
   });
 });
 

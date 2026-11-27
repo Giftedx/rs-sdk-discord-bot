@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { addresseePrompt, classifyMessage, parseAddressee } from './addressee';
+import { addresseePrompt, classifyMessage, isPlainStop, parseAddressee } from './addressee';
 
 const input = { botName: 'rs-bot', history: [{ author: 'ann', isBot: false, text: 'the bot is slow today' }], author: 'bob', text: 'go chop trees', direct: false };
 
@@ -29,7 +29,14 @@ describe('classifyMessage', () => {
     expect(r).toEqual({ toBot: true, kind: 'instruction' });
     expect(seen).toContain('{"from":"ann","text":"the bot is slow today"}');
     expect(seen).toContain('{"from":"bob","text":"go chop trees"}');
-    expect(await classifyMessage(input, async () => { throw new Error('down'); })).toEqual({ toBot: false, kind: 'none' });
+    const logged: string[] = [];
+    expect(await classifyMessage(input, async () => { throw new Error('down'); }, l => logged.push(l))).toEqual({ toBot: false, kind: 'none', failed: true });
+    expect(logged).toEqual(['message sort failed: down']);
+    expect(await classifyMessage({ ...input, direct: true }, async () => { throw new Error('down'); })).toEqual({ toBot: true, kind: 'instruction', failed: true });
+  });
+  test('a plain stop word', () => {
+    expect(['stop', '  Stop please', 'CANCEL that', 'halt!'].map(isPlainStop)).toEqual([true, true, true, true]);
+    expect(['stopwatch', 'please stop', 'go chop trees'].map(isPlainStop)).toEqual([false, false, false]);
   });
   test('the prompt marks bot lines and says the text is data', () => {
     const p = addresseePrompt({ ...input, history: [{ author: 'rs-bot', isBot: true, text: 'Done.' }] });

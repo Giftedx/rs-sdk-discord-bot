@@ -2,7 +2,7 @@
 
 This guide prepares your Ubuntu server with `scripts/server-bootstrap.sh`.
 
-**After these steps, no bot runs.** The Discord bot is not built yet (see [roadmap.md](roadmap.md)). Your server can then run the tests, the proxy proof and the measurement tool as the service user `rsbot`.
+**After these steps, no bot runs yet.** [running-the-bot.md](running-the-bot.md) installs it. Your server can then run the tests, the proxy proof and the measurement tool as the service user `rsbot`.
 
 Read [security.md](security.md) before you start. It says which machine to use.
 
@@ -80,7 +80,7 @@ The profile does not confine Chrome. It only lets this one binary create user na
 - User namespaces do not give root. They increase the part of the kernel that an unprivileged program can reach.
 - An old version directory under `/opt/rs-chrome` keeps this permission until you remove it.
 
-If you gave nobody else a login on your server, the local users that matter are your admin user and `rsbot`. The planned box for AI-written code must not be able to create user namespaces or to see `/opt/rs-chrome`. That is not built yet.
+If you gave nobody else a login on your server, four local users matter. They are your admin user, `rsbot` (the bot), `rsgame` (gamelink) and `rsbox` (the jobs). [running-the-bot.md](running-the-bot.md) makes `rsgame` and `rsbox`. The box user must not be able to create user namespaces or to see `/opt/rs-chrome`. That limit is not built yet.
 
 A confined profile (with `userns` and a clean environment) is a possible later hardening.
 

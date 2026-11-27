@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  cardFor, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
+  buildReceipt, cardFor, retryBackoff, cardLastEvent, cardView, retryUntil, createAdmission, createDeathEnricher, createKeyedLock, createRateLimit, jobSignal, mentionsBot, receiptChanges, receiptEvent,
   scriptFromProgress, stripMentions, tabLine, takeRevisionFlag, wakeContextText,
 } from './helpers';
+import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
 
 const state = { hp: 5, maxHp: 10, x: 3222, z: 3218, plane: 0, skills: { Woodcutting: { level: 10, xp: 1200 } }, inventory: {}, inCombat: false };
 
@@ -160,6 +161,39 @@ describe('takeRevisionFlag', () => {
   });
 });
 
+describe('retryBackoff', () => {
+  test('tries delaysMs.length + 1 times with the given waits, then throws', async () => {
+    const waits: number[] = [];
+    let calls = 0;
+    const p = retryBackoff(async () => { calls++; throw new Error(`no ${calls}`); }, { delaysMs: [1, 2, 4], sleep: async ms => { waits.push(ms); } });
+    await expect(p).rejects.toThrow('no 4');
+    expect([calls, waits]).toEqual([4, [1, 2, 4]]);
+  });
+  test('returns the first success', async () => {
+    let calls = 0;
+    const tries: number[] = [];
+    const v = await retryBackoff(async () => { if (++calls < 3) throw new Error('x'); return 'ok'; }, { delaysMs: [5, 5, 5, 5], sleep: async () => {}, onRetry: (_e, n) => tries.push(n) });
+    expect([v, calls, tries]).toEqual(['ok', 3, [1, 2]]);
+  });
+});
+
+describe('buildReceipt', () => {
+  test('cleans the instruction and the summary before they go into the card, then cuts them', () => {
+    const clean = (t: string) => sanitizeForDiscord(redactNames(t, ['hero42'], 'my character'), ['tok-secret-1']);
+    const r = buildReceipt({
+      instruction: 'make Hero42 chop @everyone', summary: `HERO42 used tok-secret-1 <@123> ${'x'.repeat(700)}`, turns: 3, costUsd: 0.1, durationMs: 5,
+      changes: { skills: [], inventory: [{ name: 'Logs', before: 0, after: 2 }] },
+    }, clean);
+    expect(r.instruction).toBe('make my character chop @​everyone');
+    expect(r.summary).not.toContain('HERO42');
+    expect(r.summary).not.toContain('tok-secret-1');
+    expect(r.summary).not.toContain('<@123>');
+    expect(r.summary.length).toBe(600);
+    expect(r.skills).toBeUndefined();
+    expect(r.inventory).toEqual([{ name: 'Logs', before: 0, after: 2 }]);
+  });
+});
+
 describe('cardFor', () => {
   const at = new Date('2026-11-27T10:15:00Z');
   test('level up takes the xp from the state', () => {
@@ -206,6 +240,15 @@ describe('jobSignal', () => {
     instr.abort();
     expect(js.signal.aborted).toBe(true);
     expect(js.reason()).toBeNull();
+  });
+  test('the job signal carries the abort reason of the instruction, also when it was aborted before', () => {
+    const instr = new AbortController();
+    const js = jobSignal(instr.signal);
+    instr.abort('shutdown');
+    expect(js.signal.reason).toBe('shutdown');
+    const done = new AbortController();
+    done.abort('shutdown');
+    expect(jobSignal(done.signal).signal.reason).toBe('shutdown');
   });
 });
 

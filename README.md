@@ -64,7 +64,7 @@ bunx tsc --noEmit
 bun test
 ```
 
-`bunx tsc --noEmit` prints nothing. `bun test` ends with `0 fail`. 13 of the tests launch headless Chromium with its sandbox on.
+`bunx tsc --noEmit` prints nothing. `bun test` ends with `0 fail`. The tests that launch Chromium run it headless, with its sandbox on.
 
 The clone includes the whole rs-sdk game server, with a 27.5 MB collision file.
 
@@ -100,9 +100,9 @@ Success is one JSON line with `"childExitCode":0` and `"passwordInChildEnv":fals
 
 ## Deploy to your own server
 
-`scripts/server-bootstrap.sh` prepares an Ubuntu 26.04 server: a service user, Bun, the code, a root-owned Chrome and one AppArmor profile. After the bootstrap, your server can run the tests, the proxy proof and the measurement tool. No service runs, because the bot does not exist yet.
+`scripts/server-bootstrap.sh` prepares an Ubuntu 26.04 server: a service user, Bun, the code, a root-owned Chrome and one AppArmor profile. After the bootstrap, your server can run the tests, the proxy proof and the measurement tool. No bot runs yet.
 
-[docs/deploy-server.md](docs/deploy-server.md) is the guide. It lists each change that the script makes and how to undo it.
+[docs/deploy-server.md](docs/deploy-server.md) is the guide for the bootstrap. It lists each change that the script makes and how to undo it. Then [docs/running-the-bot.md](docs/running-the-bot.md) installs the bot, gamelink and the other units.
 
 In the reference run, one account used about 1.1 GB of RAM and 67% of one CPU core. [docs/measurements.md](docs/measurements.md) has the numbers.
 
@@ -126,7 +126,7 @@ The scripts refuse mode `demo` unless `RS_ALLOW_DEMO=1` is set, the account name
 
 | Term | Meaning |
 |---|---|
-| the bot | The planned Discord bot. It does not exist yet. |
+| the bot | The Discord bot (`src/bot/main.ts`). It runs as the Unix user `rsbot`. |
 | account | The one game account that a Discord server shares. |
 | bot page | The page `/bot` of an rs-sdk game server. It holds the rs-sdk browser client. |
 | game tab | The bot page in headless Chromium. It stays logged in. |
@@ -135,13 +135,13 @@ The scripts refuse mode `demo` unless `RS_ALLOW_DEMO=1` is set, the account name
 | gamelink | The process that holds the game password. It runs the game tab and the proxy. |
 | proxy | The part between AI-written code and the gateway. It holds the game password. |
 | action policy | The allow list of game actions that the proxy passes. |
-| box | The process that runs AI-written code. It holds no secret. It is planned. |
-| box stand-in | The child process that the scripts start in place of the box. |
+| box | Where AI-written code runs: one job at a time, as the Unix user `BOX_USER`, through `sudo`. It holds no secret. |
+| box stand-in | `scripts/box-standin.ts`, the child process that the measurement scripts start in place of a job. |
 | boot token | A random value that the proxy accepts from the box in place of the game password. It changes at each start. |
 | job | One run of AI-written code in the box. |
-| orchestrator | Planned. The process that talks to Discord and to the AI API. |
+| orchestrator | The part of the bot that talks to Discord and to the AI API, keeps the queue and starts the jobs. |
 | state message | One `sdk_state` message: the game state that the game tab sends through the gateway. |
-| state tap | The copy of each state message that the proxy gives to a callback of its host process. In the design, the orchestrator reads it. |
+| state tap | The copy of each state message that the proxy gives to a callback of its host process. The orchestrator reads it. |
 | frame | One picture of the game from the game tab. |
 | local stack | An rs-sdk game server on your own machine. `scripts/dev-stack.sh` starts and stops it. |
 | demo world | The public rs-sdk game server `rs-sdk.maxbittker.com`. |
@@ -155,7 +155,7 @@ The scripts refuse mode `demo` unless `RS_ALLOW_DEMO=1` is set, the account name
 - The game password stays in the proxy and the game tab. AI-written code gets a boot token.
 - The proxy passes only the action types on an allow list. It blocks direct actions on other players, client commands in chat, and every action that arrives while no run of AI-written code is active. It does not inspect the arguments of an action or the content of chat.
 - Chromium always runs with its own sandbox. On Ubuntu that needs an AppArmor profile, and this profile does not confine Chrome.
-- The box and the proxy are not separated yet: in the current scripts both run as one Unix user, so the box stand-in could read the password from the proxy process.
+- With `BOX_USER`, jobs run as a separate Unix user and cannot read the secrets of the bot or of gamelink. Without it (`BOT_ALLOW_UNSANDBOXED=1`, for local development only), they can.
 - This project does not claim to be secure. Do not run it on a machine that holds anything that you care about.
 
 [docs/security.md](docs/security.md) has the trust boundaries, the residual risks and the known gaps. [SECURITY.md](SECURITY.md) tells you how to report a vulnerability.

@@ -57,21 +57,6 @@ export interface StatusCardOptions {
   timers: Timers;
   log: Logger;
   intervalMs?: number;
-  /** The "Watch live" link. Empty or not https hides the button. */
-  watchUrl?: string;
-}
-
-export const WATCH_ID = 'watch';
-
-/** Fills {account} in a link template. Returns undefined for an empty or non-https template. */
-export function watchLiveUrl(template: string | undefined, account: string): string | undefined {
-  if (!template) return undefined;
-  const url = template.replaceAll('{account}', encodeURIComponent(account));
-  try {
-    return new URL(url).protocol === 'https:' ? url : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** The skill with the most XP gained in the last 15 minutes of samples, and its XP per hour. */
@@ -90,7 +75,7 @@ export function currentSkill(samples: SkillSample[], windowMs = XP_RATE_WINDOW_M
   return best ? { name: best.name, level: best.level, xpPerHour: Math.round((best.gain * 3_600_000) / span) } : null;
 }
 
-export function renderCard(v: CardView, secrets: string[], watchUrl?: string): CardMessage {
+export function renderCard(v: CardView, secrets: string[]): CardMessage {
   const hp = v.hp ? `${v.hp.hp}/${v.hp.maxHp}` : '?';
   // A long goal or step must not push the queue, spend and warning lines off the card.
   // Hide the secrets first, then cut: a cut through a secret would leave a part that no longer matches.
@@ -118,7 +103,6 @@ export function renderCard(v: CardView, secrets: string[], watchUrl?: string): C
   lines.push(`📋 Queue: ${v.queueLength === 0 ? 'empty' : `${v.queueLength} waiting`} · 💰 $${v.spend.usedUsd.toFixed(2)} of $${v.spend.capUsd.toFixed(2)} this month`);
   if (v.note) lines.push(`⚠️ ${cap(v.note, 300)}`);
   const buttons: CardMessage['buttons'] = [{ id: STATUS_ID, label: 'Status' }];
-  if (watchUrl) buttons.push({ id: WATCH_ID, label: 'Watch live', url: watchUrl });
   return {
     content: sanitizeForDiscord(lines.join('\n'), secrets),
     frame: v.frame,
@@ -193,7 +177,7 @@ export class StatusCard {
   private async write(): Promise<void> {
     let msg: CardMessage;
     try {
-      msg = renderCard(await this.o.view(), this.o.secrets, this.o.watchUrl);
+      msg = renderCard(await this.o.view(), this.o.secrets);
     } catch (err) {
       this.warnOnce('view', `status card: cannot build the view: ${errText(err)}`);
       return;

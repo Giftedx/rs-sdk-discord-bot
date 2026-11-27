@@ -27,13 +27,16 @@ People talk to the bot in plain words in its channel, with or without an @mentio
 | `RS_ACCOUNT`, `RS_PASSWORD` | yes, without `GUILDS_FILE` | | The game account. See [.env.example](../.env.example). |
 | `RS_SERVER_HOST`, `RS_GATEWAY_URL`, `RS_BOT_PAGE_URL` | | demo world | The game server. |
 | `RS_ALLOW_DEMO` | for the demo world | | Must be `1` when the game server is the demo world. |
+| `RS_FPS` | | `15` | Client frame rate of the game tab, from 10 to 50 frames per second. |
+| `RS_CHROME_PATH` | | the Chrome of puppeteer | An absolute path to the Chrome binary. On a server, `scripts/server-bootstrap.sh` writes it to `server.env`. |
 | `DISCORD_TOKEN` | yes | | The bot token. |
 | `DISCORD_CHANNEL_ID` | yes, without `GUILDS_FILE` | | The one channel where the bot listens and posts. |
 | `GUILDS_FILE` | | | A JSON file with one entry per channel. With it, the bot ignores `RS_ACCOUNT`, `RS_PASSWORD`, `DISCORD_CHANNEL_ID`, `DISCORD_ALLOWED_ROLE_ID` and `DISCORD_ALLOW_EVERYONE`. See "Several channels". |
 | `DISCORD_ALLOWED_ROLE_ID` | yes, or the next row | | Only members with this role can give and stop instructions. |
 | `DISCORD_ALLOW_EVERYONE` | | | `1` lets every member of the channel give and stop instructions. |
 | `ALERT_CHANNEL_ID` | | unset | A private channel for the operator. When a unit fails, `rs-alert@.service` posts one warning there, at most once per unit per hour. Never the player channel: the script refuses `DISCORD_CHANNEL_ID`. Unset: no Discord warning, only the journal. |
-| `ANTHROPIC_API_KEY` | yes | | The API key. |
+| `ANTHROPIC_API_KEY` | yes, or the next row | | The API key. |
+| `ANTHROPIC_AUTH_TOKEN` | | | A bearer token in place of the API key. `@anthropic-ai/sdk` reads it. The bot removes it from its logs and its Discord text. |
 | `AI_MODEL` | | `claude-sonnet-5-5` | The model ID of the main loop. |
 | `AI_EFFORT` | | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher effort costs more. |
 | `AI_MAX_TURNS` | | `25` | Model calls per instruction. |
@@ -103,7 +106,7 @@ People talk to the bot in plain words. There are no commands.
 
 - The bot reads every message of its channel. A small model decides for each message if it talks to the bot, with or without an @mention. People who talk to each other about the bot, or leave notes for each other, get no answer.
 - A request to do something in the game goes to the queue. The bot adds a reaction: a check mark when nothing runs, an hourglass when the request waits.
-- A thumbs-up reaction on the message of a waiting request moves that request up one place in the queue. Each member counts once per request, and only members who may talk to the bot count. The vote record is in memory; the new order is in the database.
+- A thumbs-up reaction on the message of a waiting request moves that request up one place in the queue. Each member counts once per request, and only members who may talk to the bot count. The vote record is in memory. The new order is in the database.
 - A question, such as "what are you doing?", gets a short answer at once.
 - Telling the bot to stop, such as "stop that", ends the current request and kills its job.
 - The **Status** button of the status card shows what runs, the goal, the queue, the timers, the spend and the game state.
@@ -312,7 +315,7 @@ How the two units work together:
 
 - `rs-discord-bot.service` has `Wants=rs-gamelink.service`. A stop of gamelink does not stop the bot: the bot waits and reconnects when gamelink is back. Gamelink logs every account out of the game on SIGTERM.
 - A restart of the bot does not log the account out. Gamelink keeps the game session.
-- After each job, the bot turns the job flag of the proxy off through the socket. It tries three times. If all three fail, the log shows `job flag not turned off`. The proxy also turns the flag off when the box socket closes.
+- The job runner turns the job flag of the proxy on at the start of each job and off at its end, through the socket. It tries three times. If all three fail, the log shows `job flag not turned off`. The proxy does not turn the flag off when the box socket closes: the SDK in the box connects again during a job.
 - Gamelink takes a lock file (`gamelink.lock`, next to the socket) at start. If another gamelink runs, it logs `start refused: ...` and exits with code 2. A lock with a dead pid is taken over.
 - `systemctl kill -s HUP rs-gamelink` logs every tab out and logs in again after the normal delay. This also clears `login_refused` after you fixed the account. `systemctl kill -s USR1 rs-gamelink` drops the gateway connection of each proxy and connects again at once.
 - The proxy first tries the direct gateway port (7443 on the demo world), and uses the relay URL when the direct socket does not connect. The status text shows the route: `Gateway connection: up (direct)` or `up (relay)`.
@@ -350,6 +353,6 @@ The last line of stdout is JSON. Each value under `checks` must be `true`.
 ## Limits of this version
 
 - Without `BOX_USER`, AI-written code can read the secrets of the bot. With `BOX_USER`, the job limits need `Delegate=yes`, and the network limit needs the firewall script. [security.md](security.md) lists the gaps.
-- The status card, adventure log, posts and the Discord adapters have unit tests only. They have not run against a real Discord server yet.
+- The pinned status card, the posts with cards, the adventure log, questions and tasks ran live on a real Discord server. The daily recap, the gallery, the queue votes and the paths for a refused login and a game update have unit tests only.
 - The wake rate limit, the trigger state, the queue votes and the hourly post and gallery counts are in memory. A restart resets them. The daily recap reads the events table, so it survives a restart.
 - All guilds use one game server.

@@ -1,6 +1,6 @@
 # Contributing
 
-This project is work in progress. [docs/roadmap.md](docs/roadmap.md) lists the milestones, and [docs/security.md](docs/security.md) lists the known gaps. Open an issue before you write a larger change, so that we can agree on the approach first.
+This project runs live but makes no claim that it is secure. [docs/roadmap.md](docs/roadmap.md) lists the milestones, and [docs/security.md](docs/security.md) lists the known gaps. Open an issue before you write a larger change, so that we can agree on the approach first.
 
 ## Set up
 
@@ -15,7 +15,7 @@ bunx tsc --noEmit
 bun test
 ```
 
-- The CI workflow has two jobs. Job `check` runs the same two commands and skips the 13 tests that launch Chromium. Job `browser-tests` runs all tests with the Chromium sandbox on. If you change `src/gamelink/game-tab.ts`, also run the full `bun test` on your own machine and say so in the pull request.
+- The CI workflow has two jobs. Job `check` runs the same two commands and skips the tests that launch Chromium. Job `browser-tests` runs all tests with the Chromium sandbox on. If you change `src/gamelink/game-tab.ts`, also run the full `bun test` on your own machine and say so in the pull request.
 - A change in behaviour needs a test.
 - Use the local stack for development. Do not test against the demo world or a different remote game server that someone else runs.
 

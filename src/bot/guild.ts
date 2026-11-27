@@ -21,7 +21,7 @@ import { Gallery } from '../discord/gallery';
 import { MainPosts, xpGains, type CardSubject } from '../discord/posts';
 import { QueueVotes, type ReactionInput } from '../discord/queue-votes';
 import { StatusCard, STATUS_ID, XP_RATE_WINDOW_MS, type SkillSample } from '../discord/status-card';
-import { classifyMessage, type ChannelLine } from './addressee';
+import { classifyMessage, isPlainStop, type ChannelLine } from './addressee';
 import { realTimers } from '../discord/types';
 import { compactState as eventState, diffStates, eventText, guessKiller, type CompactState as EventState, type GameEvent } from '../events/diff';
 import type { GameLink } from '../gamelink/link';
@@ -33,8 +33,8 @@ import { formatWorldState } from '../../vendor/rs-sdk/sdk/formatter';
 import type { BotWorldState } from '../../vendor/rs-sdk/sdk/types';
 import type { BotConfig, GuildConfig } from './config';
 import {
-  ADMIT_TEXT, cardFor, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
-  scriptFromProgress, tabLine, wakeContextText, type Receipt, type createKeyedLock,
+  ADMIT_TEXT, buildReceipt, cardFor, cardLastEvent, cardView, createAdmission, createDeathEnricher, createRateLimit, jobSignal, receiptChanges, receiptEvent,
+  retryBackoff, scriptFromProgress, tabLine, wakeContextText, type Receipt, type createKeyedLock,
 } from './helpers';
 
 export interface Shared {
@@ -44,7 +44,6 @@ export interface Shared {
   anthropic: Anthropic;
   db: OrchestratorDb;
   cgroup: JobCgroup | null;
-  discord: Client;
   knowledge: KnowledgeChunk[] | KnowledgePack;
   apiReference: string;
   secrets: string[];
@@ -59,16 +58,19 @@ const SNAPSHOT_MS = 30_000;
 // The loop checks its time limit before each turn. This backstop stops a model call that hangs.
 const TIME_CAP_GRACE_MS = 5 * 60_000;
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+// stop() waits this long for the running instruction and its job.
+const STOP_WAIT_MS = 8_000;
+// The waits between the tries to fetch the channel at start: 5 tries in about 1 min.
+const ATTACH_RETRY_MS = [4_000, 8_000, 16_000, 32_000];
 
 export type Guild = Awaited<ReturnType<typeof startGuild>>;
 
 export async function startGuild(sh: Shared, g: GuildConfig) {
   const { cfg, db } = sh;
   const log = (line: string) => sh.log(`[${g.name}] ${line}`);
-  // Discord text also hides the account name (half of the game login), as the game writes it:
-  // lower case and with a capital first letter.
-  const acct = g.game.account.name;
-  const discordSecrets = [...sh.secrets, acct, acct.charAt(0).toUpperCase() + acct.slice(1)];
+  // Discord text also hides the account name (half of the game login). sanitizeForDiscord matches
+  // it in any letter case.
+  const discordSecrets = [...sh.secrets, g.game.account.name];
   const clean = sh.clean;
   mkdirSync(g.dataDir, { recursive: true });
   const found = sh.link.guilds.get(g.name);
@@ -109,7 +111,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
   const added = seedStore(store, join(sh.root, 'seed'), fileSeedRecord(join(g.dataDir, 'seed-hashes.json')));
   log(added.length > 0 ? `seed scripts added: ${added.join(', ')}` : 'seed scripts: none new');
 
-  let current: { row: InstructionRow; abort: AbortController; job: ReturnType<typeof jobSignal> | null } | null = null;
+  let current: { row: InstructionRow; abort: AbortController; job: ReturnType<typeof jobSignal> | null; agent: boolean } | null = null;
   const budget = createBudget(db, cfg.monthlyCapUsd, {
     resetDay: cfg.spendResetDay,
     guild: g.name,
@@ -256,74 +258,101 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     return member?.roles.cache.has(g.allowedRoleId) ?? false;
   }
 
-  async function runNext(): Promise<void> {
+  // The promise of the instruction that runs now, so stop() can wait for it.
+  let inFlight: Promise<void> | null = null;
+
+  function runNext(): void {
     if (stopping || current || !channel || budget.overCap()) return;
     const row = db.nextWaiting(g.name);
     if (!row || !db.startInstruction(row.id)) return;
+    const p: Promise<void> = runOne(row, channel)
+      .catch(err => {
+        log(`instruction ${row.id} failed: ${errText(err)}`);
+        // Do not leave the row 'running' with nothing running. In a shutdown, recovery requeues it.
+        if (!stopping) { try { db.finishInstruction(row.id, 'stopped', `Error: ${errText(err)}`.slice(0, 2_000), 0); } catch { /* the db is gone */ } }
+      })
+      .finally(() => { if (inFlight === p) inFlight = null; });
+    inFlight = p;
+  }
+
+  async function runOne(row: InstructionRow, ch: TextChannel): Promise<void> {
     const abort = new AbortController();
-    current = { row, abort, job: null };
-    const wake = (WAKE_KINDS as readonly string[]).includes(row.wake) ? row.wake as WakeKind : 'instruction';
-    step = null;
-    const ch = channel;
-
-    const lines: string[] = [];
-    const from = wake === 'instruction' ? `from ${row.user}` : `${wake} wake`;
-    const header = `**Working on** (${from}): ${row.text}`;
-    const body = () => clean(`${header}\n${lines.slice(-8).map(l => `- ${l}`).join('\n')}`);
-    const msg = await ch.send({ content: body(), allowedMentions: { parse: [] } }).catch(err => { log(`send failed: ${errText(err)}`); return null; });
+    // agent: true while runInstruction runs. The wrap-up after it (receipt, frame, Done edit) does
+    // not count as a running instruction for the wakes, so a trigger in that time is not lost.
+    const cur: NonNullable<typeof current> = { row, abort, job: null, agent: true };
+    current = cur;
+    let backstop: ReturnType<typeof setTimeout> | null = null;
     let editTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleEdit = () => {
-      if (editTimer || !msg) return;
-      editTimer = setTimeout(() => { editTimer = null; void msg.edit({ content: body(), allowedMentions: { parse: [] } }).catch(() => {}); }, 3_000);
-    };
+    try {
+      const wake = (WAKE_KINDS as readonly string[]).includes(row.wake) ? row.wake as WakeKind : 'instruction';
+      step = null;
 
-    // At 80% of the cap the main loop runs on the small model, with no escalation.
-    const models = modelsFor(budget.status(), cfg);
-    const startedAt = Date.now();
-    const startState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
-    log(`instruction ${row.id} started (${wake}, ${models.model})`);
-    if (sup.status() === 'in_game') frames.start();
-    void card?.instructionStarted();
-    const onProgress = (line: string) => {
-      lines.push(line); step = line; scheduleEdit();
-      const sc = scriptFromProgress(line);
-      if (sc !== undefined) script = sc;
-    };
-    const backstop = setTimeout(() => { log(`instruction ${row.id} passed its time limit: stopped`); abort.abort('time_cap'); }, cfg.maxInstructionMs + TIME_CAP_GRACE_MS);
-    // A trigger wake (low HP, death) starts on the stronger model when there is one.
-    const result: InstructionResult = await runInstruction(deps(onProgress, models), row.text, row.user, abort.signal, wake, { escalateFromStart: wake === 'trigger' })
-      .catch(err => ({ summary: `Error: ${errText(err)}`, turns: 0, usd: 0, model: models.model, escalated: false, stopReason: 'error' as const, lastFrame: null }));
-    clearTimeout(backstop);
-    script = null;
-    if (editTimer) clearTimeout(editTimer);
-    log(`instruction ${row.id} ended: ${result.stopReason}, ${result.turns} turns, $${result.usd.toFixed(3)}${result.escalated ? `, escalated to ${result.model}` : ''}`);
-    db.finishInstruction(row.id, result.stopReason === 'aborted' ? 'stopped' : 'done', result.summary.slice(0, 2_000), result.usd);
+      const lines: string[] = [];
+      const from = wake === 'instruction' ? `from ${row.user}` : `${wake} wake`;
+      const header = `**Working on** (${from}): ${row.text}`;
+      const body = () => clean(`${header}\n${lines.slice(-8).map(l => `- ${l}`).join('\n')}`);
+      const msg = await ch.send({ content: body(), allowedMentions: { parse: [] } }).catch(err => { log(`send failed: ${errText(err)}`); return null; });
+      const scheduleEdit = () => {
+        if (editTimer || !msg) return;
+        editTimer = setTimeout(() => { editTimer = null; void msg.edit({ content: body(), allowedMentions: { parse: [] } }).catch(() => {}); }, 3_000);
+      };
 
-    const endState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
-    const changes = receiptChanges(startState, endState);
-    lastReceipt = {
-      instruction: row.text.slice(0, 300), summary: result.summary.slice(0, 600), turns: result.turns, costUsd: result.usd,
-      durationMs: Date.now() - startedAt,
-      ...(changes.skills.length > 0 ? { skills: changes.skills } : {}),
-      ...(changes.inventory.length > 0 ? { inventory: changes.inventory } : {}),
-    };
-    const files: AttachmentBuilder[] = [];
-    const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
-    if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
-    const png = (await frame()) ?? result.lastFrame;
-    if (png) files.push(new AttachmentBuilder(Buffer.from(png), { name: 'frame.png' }));
-    frames.stop();
-    const b = budget.status();
-    const footer = `${result.turns} turns, $${result.usd.toFixed(2)} (period: $${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)})`;
-    const done = { content: clean(`**Done** (${from}): ${row.text}\n${result.summary}\n-# ${footer}`), components: [], files, allowedMentions: { parse: [] as [] } };
-    if (msg) await msg.edit(done).catch(err => log(`edit failed: ${errText(err)}`));
-    else await ch.send(done).catch(() => {});
-    emit(receiptEvent(row.text, `${result.stopReason}: ${result.summary}`), true, wake === 'instruction' ? row.user : undefined);
+      // At 80% of the cap the main loop runs on the small model, with no escalation.
+      const models = modelsFor(budget.status(), cfg);
+      const startedAt = Date.now();
+      const startState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
+      log(`instruction ${row.id} started (${wake}, ${models.model})`);
+      if (sup.status() === 'in_game') frames.start();
+      void card?.instructionStarted();
+      const onProgress = (line: string) => {
+        lines.push(line); step = line; scheduleEdit();
+        const sc = scriptFromProgress(line);
+        if (sc !== undefined) script = sc;
+      };
+      backstop = setTimeout(() => { log(`instruction ${row.id} passed its time limit: stopped`); abort.abort('time_cap'); }, cfg.maxInstructionMs + TIME_CAP_GRACE_MS);
+      // A trigger wake (low HP, death) starts on the stronger model when there is one.
+      const result: InstructionResult = await runInstruction(deps(onProgress, models), row.text, row.user, abort.signal, wake, { escalateFromStart: wake === 'trigger' })
+        .catch(err => ({ summary: `Error: ${errText(err)}`, turns: 0, usd: 0, model: models.model, escalated: false, stopReason: 'error' as const, lastFrame: null }));
+      cur.agent = false;
+      clearTimeout(backstop);
+      script = null;
+      if (editTimer) clearTimeout(editTimer);
+      log(`instruction ${row.id} ended: ${result.stopReason}, ${result.turns} turns, $${result.usd.toFixed(3)}${result.escalated ? `, escalated to ${result.model}` : ''}`);
+      // The bot stops: the row stays 'running', so recoverAfterRestart() queues it again at the next
+      // start. No Done edit and no receipt event.
+      // Only when the shutdown really cut the loop: a request that ended by itself must not run twice.
+      if (abort.signal.reason === 'shutdown' && result.stopReason === 'aborted') { log(`instruction ${row.id} runs again after the restart`); return; }
+      db.finishInstruction(row.id, result.stopReason === 'aborted' ? 'stopped' : 'done', result.summary.slice(0, 2_000), result.usd);
 
-    current = null;
-    step = null;
-    void card?.instructionEnded();
-    void runNext();
+      const endState = (() => { const s = freshState(); return s ? eventState(s) : null; })();
+      lastReceipt = buildReceipt({
+        instruction: row.text, summary: result.summary, turns: result.turns, costUsd: result.usd,
+        durationMs: Date.now() - startedAt, changes: receiptChanges(startState, endState),
+      }, clean);
+      const files: AttachmentBuilder[] = [];
+      const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
+      if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
+      const png = (await frame()) ?? result.lastFrame;
+      if (png) files.push(new AttachmentBuilder(Buffer.from(png), { name: 'frame.png' }));
+      frames.stop();
+      const b = budget.status();
+      const footer = `${result.turns} turns, $${result.usd.toFixed(2)} (period: $${b.periodSpentUsd.toFixed(2)} of $${b.monthlyCapUsd.toFixed(2)})`;
+      const done = { content: clean(`**Done** (${from}): ${row.text}\n${result.summary}\n-# ${footer}`), components: [], files, allowedMentions: { parse: [] as [] } };
+      if (msg) await msg.edit(done).catch(err => log(`edit failed: ${errText(err)}`));
+      else await ch.send(done).catch(() => {});
+      emit(receiptEvent(row.text, `${result.stopReason}: ${result.summary}`), true, wake === 'instruction' ? row.user : undefined);
+    } finally {
+      // Also when a database or Discord call above throws: the queue must go on.
+      if (backstop) clearTimeout(backstop);
+      if (editTimer) clearTimeout(editTimer);
+      script = null;
+      current = null;
+      step = null;
+      if (!stopping) {
+        void card?.instructionEnded();
+        runNext();
+      }
+    }
   }
 
   // One call to the small model. It counts in the spend like every other call.
@@ -396,10 +425,20 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
     channelId: g.channelId,
     account: g.game.account.name,
 
-    async attach(discord: Client): Promise<void> {
-      const ch = await discord.channels.fetch(g.channelId).catch(() => null);
+    // onFatal: the channel cannot be read after all tries. main.ts exits, so systemd restarts the bot.
+    async attach(discord: Client, onFatal: (why: string) => void): Promise<void> {
+      let ch: Awaited<ReturnType<Client['channels']['fetch']>>;
+      try {
+        ch = await retryBackoff(() => discord.channels.fetch(g.channelId), {
+          delaysMs: ATTACH_RETRY_MS,
+          onRetry: (err, n) => log(`channel fetch failed (try ${n} of ${ATTACH_RETRY_MS.length + 1}): ${errText(err)}`),
+        });
+      } catch (err) {
+        log(`ALERT the channel cannot be fetched: ${errText(err)}`);
+        onFatal('channel fetch failed');
+        return;
+      }
       if (!ch || ch.type !== ChannelType.GuildText) { log('the channel is not a reachable text channel'); return; }
-      channel = ch;
       card = new StatusCard({ channel: cardChannel(ch), view, secrets: discordSecrets, timers: realTimers, log });
       await card.init().catch(err => log(`status card failed: ${errText(err)}`));
       const silent = cfg.suppressNotifications;
@@ -422,7 +461,9 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
         silent: silent ?? false,
       });
       posts.start();
-      void runNext();
+      // Last: runNext() and the other users of `channel` need the card, the log and the posts.
+      channel = ch;
+      runNext();
     },
 
     // Called every few seconds by main.ts.
@@ -447,7 +488,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       }
       const actions = sh.wakes.tick({
         guild: g.name, now, state: ws,
-        instructionRunning: current !== null,
+        instructionRunning: current?.agent === true,
         jobRunning: runner.isRunning(),
         hasWaiting: db.countWaiting(g.name) > 0,
         dueTimers: db.dueTimers(g.name, now).map(t => ({ id: t.id, note: t.note })),
@@ -483,10 +524,17 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       }
       if (!classifyLimit(message.author.id)) return;
       const author = message.member?.displayName ?? message.author.username;
-      const addr = await classifyMessage({ botName, history, author, text, direct }, small);
+      const addr = await classifyMessage({ botName, history, author, text, direct }, small, log);
       if (!addr.toBot) return;
+      // The model call failed: a direct plain stop word still stops; any other direct message is not
+      // queued on a guess.
+      if (addr.failed) {
+        if (!isPlainStop(text)) { await reply('Sorry, I cannot understand messages right now. Try again in a minute.'); return; }
+        addr.kind = 'stop';
+      }
       if (addr.kind === 'stop') {
-        if (!current) { await reply('I am not doing anything right now.'); return; }
+        // In the wrap-up (receipt, frame) the work is already over: nothing to stop.
+        if (!current?.agent) { await reply('I am not doing anything right now.'); return; }
         current.abort.abort('user');
         await reply('Okay, I am stopping what I was doing.');
         return;
@@ -528,6 +576,14 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       if (stopping) return;
       stopping = true;
       current?.abort.abort('shutdown');
+      // Wait for the instruction (and its job child) to end, at most STOP_WAIT_MS.
+      const running = inFlight;
+      if (running) {
+        let t: ReturnType<typeof setTimeout> | undefined;
+        const ended = await Promise.race([running.then(() => true), new Promise<false>(r => { t = setTimeout(() => r(false), STOP_WAIT_MS); })]);
+        clearTimeout(t);
+        if (!ended) log('the instruction did not end in time; it runs again after the restart');
+      }
       frames.stop();
       card?.stopTimer();
       await posts?.flushLevels().catch(() => false);

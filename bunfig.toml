@@ -1,2 +1,4 @@
 [test]
 root = "src"
+# A temporary directory for each test run, removed at the end (src/testing/tmp-preload.ts).
+preload = ["./src/testing/tmp-preload.ts"]

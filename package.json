@@ -1,6 +1,6 @@
 {
   "name": "rs-sdk-discord-bot",
-  "description": "Work in progress: a Discord bot that lets a channel direct an AI that plays one shared game account through rs-sdk.",
+  "description": "A Discord bot that lets a channel play one shared rs-sdk game account together, in plain words, through an AI agent.",
   "license": "MIT",
   "private": true,
   "type": "module",

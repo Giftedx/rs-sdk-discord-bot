@@ -2,24 +2,26 @@
 
 This page describes what the code does today, what it does not do, and what the design plans. It makes no claim that the project is secure.
 
-**Do not run this project on a machine that holds anything that you care about.** The finished bot will run AI-written TypeScript on your server. Untrusted text from Discord and from game chat will steer that AI.
+**Do not run this project on a machine that holds anything that you care about.** The bot runs AI-written TypeScript on your server. Untrusted text from Discord and from game chat steers that AI.
 
 To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
 ## Trust boundary
 
-The design has three kinds of process. [design.md](design.md) describes them.
+The bot has three kinds of process. [design.md](design.md) describes them.
 
 | Secret | Holder | Never visible to | State |
 |---|---|---|---|
-| Discord token | orchestrator | gamelink, box | planned: the orchestrator does not exist |
-| API key for the AI | orchestrator | gamelink, box | planned: the orchestrator does not exist |
-| Game password | gamelink (proxy and game tab) | box | partly built, see below |
+| Discord token | orchestrator (`rsbot`) | gamelink, box | built |
+| API key for the AI | orchestrator (`rsbot`) | gamelink, box | built |
+| Game password | gamelink (`rsgame`: proxy and game tab) | orchestrator, box | built, in split mode |
 
-What "partly built" means:
+What this means:
 
-- Built: the proxy holds the game password and accepts a boot token from the box. The scripts give the box stand-in an environment from an allow list. The allow list holds the boot token and never the game password. The scripts start the box stand-in with `--no-env-file`, so that Bun does not add the variables of a `.env` file to it. A test checks both.
-- Not built: separate Unix users. In the current scripts, the box stand-in runs as the same Unix user as the proxy and the browser. It can read `/proc/<pid>/environ` of the parent and the Chrome profile. The separation is a design until the sandbox units exist.
+- In split mode, each kind of process runs as its own Unix user: `rsbot` for the bot, `rsgame` for gamelink and `rsbox` (`BOX_USER`) for the jobs. [running-the-bot.md](running-the-bot.md) has the file modes and the checks.
+- Without split mode, the bot and gamelink share the `rsbot` process, and that process holds all three secrets. Jobs still run as `BOX_USER`.
+- The proxy holds the game password and accepts a boot token from the box. A job gets an environment from an allow list. The allow list holds the boot token and never the game password.
+- The measurement scripts start the box stand-in with `--no-env-file`, so that Bun does not add the variables of a `.env` file to it. A test checks both. The box stand-in runs as the same Unix user as the script, so it can read `/proc/<pid>/environ` of the parent and the Chrome profile.
 
 ## Untrusted input
 
@@ -84,9 +86,9 @@ The proxy also protects nothing on the local stack. The gateway of the local sta
 - **The game password is in the tab URL.** `buildBotUrl` puts it in the query of the bot page URL. It reaches the game host in the request line. The page stores it in `localStorage` (`vendor/rs-sdk/server/engine/view/bot.ejs`), and the URL is in the history of the Chrome profile.
 - **A killed run can leave the password on disk.** The scripts set no profile directory, so puppeteer makes one in `/tmp`. A normal exit removes it. A killed run can leave `/tmp/puppeteer_dev_chrome_profile-*`.
 - **The debug port of Chromium gives full control.** puppeteer uses a loopback debug port. Any local process that reaches it can read the tab URL with the password and control the tab.
-- **An escape from the planned box** through a kernel fault.
+- **An escape from the box** through a kernel fault.
 - **A ban** of the account or of the server IP after behaviour that the proxy allows.
-- **Prompt injection** that wastes API credit up to the spend cap, or that makes the AI write a bad saved script or a bad note. This applies to the planned agent loop.
+- **Prompt injection** that wastes API credit up to the spend cap, or that makes the AI write a bad saved script or a bad note.
 
 ## Known gaps in the current code
 
@@ -100,7 +102,7 @@ Proxy (`src/gamelink/proxy.ts`), milestone 2:
 - The proxy has a `log` option, with one line for each gateway event. The log line holds the error text of the gateway, with the password removed, and never the raw message. Gamelink passes its log to the proxy (`src/gamelink/link.ts`).
 - Closed: when more than 4 MB waits to go to the box, the proxy drops state messages for the box, and still sends other messages. At 8 MB, Bun closes the box socket. A test checks the drop with a socket that stops reading.
 - Closed: the proxy forwards a rebuilt action message with only `type`, `action`, `actionId` and `actionTimeoutMs`, the fields that the `sdk_action` handler of the gateway reads.
-- Closed: the proxy sets the job flag to off when the box socket closes. The job runner of the bot also sets it to off after each job.
+- The proxy does not set the job flag to off when the box socket closes, because the SDK in the box connects again during a job. The job runner of the bot turns the flag on at the start of each job and off at its end. If that last call fails three times, the flag stays on until the next job, and the log shows `job flag not turned off`.
 - Closed: an upstream "another controller connected" error reaches the box as a different text (`PREEMPT_RELAY_TEXT`), so the SDK does not get the text on which it stops its reconnects.
 - Closed: the default reconnect delay of 11 to 16 s has a test.
 - The proxy tries the direct gateway port first (`directGatewayUrl`, a copy of `DIRECT_GATEWAYS` in the SDK) and falls back to the relay URL. Tested only with a local fake gateway: not checked on the demo world that Bun negotiates permessage-deflate on the direct port, or how much bandwidth this saves against the measured 82 kB/s of the relay.
@@ -158,24 +160,24 @@ Bootstrap (`scripts/server-bootstrap.sh`), milestone 7:
 - Phase `install` clones from a bare repository on your server only. It cannot clone from a URL.
 - The script has no phase that removes its changes. [deploy-server.md](deploy-server.md) lists the commands. `scripts/server-chrome-prune.sh` removes old Chrome versions; it has run only against stand-ins in tests.
 - Bun and the code belong to `rsbot`, so a process of `rsbot` can change the code that runs next.
-- The bootstrap installs no firewall. `scripts/server-firewall.sh` and `deploy/systemd/rsbox-egress.service` add the box egress rules, but they have not run on a server yet.
+- The bootstrap installs no firewall. `scripts/server-firewall.sh` and `deploy/systemd/rsbox-egress.service` add the box egress rules. They run live on the server.
 - `scripts/server-backup.sh` with its timer backs up the SQLite files. `scripts/server-restore-test.sh` checks a backup in a temporary directory. It has run only in a test on Windows, not as root on the server against a real backup.
-- `scripts/server-firewall.sh game-egress` limits `rsgame` to loopback, DNS and the game host on 443 and 7443, with an hourly refresh (`rsgame-egress.timer`). It has run only against stand-ins of `iptables-restore` and `getent`. Not checked: whether Chromium needs another host (fonts, a CDN, its own update traffic), and the behaviour when the DNS answer of the game host rotates between refreshes.
+- `scripts/server-firewall.sh game-egress` limits `rsgame` to loopback, DNS and the game host on 443 and 7443, with an hourly refresh (`rsgame-egress.timer`). `rsgame-egress.service` and the timer run live on the server. Not checked: whether Chromium needs another host (fonts, a CDN, its own update traffic), and the behaviour when the DNS answer of the game host rotates between refreshes.
 - The Chromium sandbox ran from a login shell only, not under a systemd unit with hardening options.
 - The split-mode bot unit `rs-discord-bot.service` has `ProtectSystem=strict`, `ProtectProc=invisible`, `ProcSubset=pid`, and `InaccessiblePaths=` for `/opt/rs-chrome` and the account file. It cannot set `RestrictNamespaces=`, `PrivateDevices=`, `LockPersonality=`, `SystemCallFilter=` or `RestrictSUIDSGID=`: for a unit with `User=`, each of them sets `NoNewPrivileges=yes`, and then `sudo` cannot start the jobs as the box user. So the box user can still make user namespaces. One-process mode uses `rs-discord-bot-single.service` with the older limits.
 - The revision check (`rs-revision-check.service`) restarts `rs-gamelink` through a root `ExecStartPost=+` when the script wrote `data/revision-restart`. The script itself runs as `rsbot`. Not tested on a host.
 
 Continuous integration:
 
-- Job `check` of the CI workflow skips the 13 tests that launch Chromium. Job `browser-tests` runs them, after it turns off the AppArmor restriction of the runner. So CI tests the game tab under a kernel setting that a server does not have. The tests on your server (step 5 of [deploy-server.md](deploy-server.md)) cover the server setting.
-- The workflow names its two actions by tag, not by commit.
+- Job `check` of the CI workflow skips the tests that launch Chromium. Job `browser-tests` runs them, after it turns off the AppArmor restriction of the runner. So CI tests the game tab under a kernel setting that a server does not have. The tests on your server (step 5 of [deploy-server.md](deploy-server.md)) cover the server setting.
+- The workflow pins its two actions by commit SHA, with the tag in a comment. A new release of an action needs a manual update of the SHA.
 
 ## Design goals that are not built
 
 - Built, in split mode (docs/running-the-bot.md): three Unix users under systemd. `rsbot` runs the bot, `rsgame` runs gamelink (`rs-gamelink.service`) and `rsbox` runs the jobs. Without split mode, the bot and gamelink share the `rsbot` process.
 - systemd hardening for the box: limits for memory, CPU and tasks, a read-only root file system, no view of the processes of other users. The memory limit must allow for the start-up peak (about 491 MB in the local run of the box stand-in).
 - No user namespaces for the box (`RestrictNamespaces=yes`) and no access to `/opt/rs-chrome` (`InaccessiblePaths=`), each with a test.
-- Built, not yet run on the server: network limits. The box reaches only the loopback port of the proxy (`rsbox-egress.service`), and gamelink reaches only the game host (`rsgame-egress.service`).
+- Built, and live on the server: network limits. The box reaches only the loopback port of the proxy (`rsbox-egress.service`). Gamelink reaches only loopback, DNS and the game host (`rsgame-egress.service`, with the hourly refresh of `rsgame-egress.timer`).
 - The Chromium profile on a memory file system that is removed when the browser stops.
 - Built: the local interface of gamelink is a Unix socket (`rsgame:rsgate` 660) with one bearer token (`/etc/rs-gamelink/token`, readable by `rsgame` and `rsbot` only). It is one token for the interface, not one for each guild.
 

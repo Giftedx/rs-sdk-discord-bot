@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { copyFileSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { boxKillCommand, createJobRunner, DEFAULT_MAX_JOB_MS, jobChildEnv, jobCommand, jobLimitMs, MAX_JOB_MS, redactAll, tail, wrapJobCode } from './job-runner';
+import { boxKillCommand, createJobRunner, DEFAULT_MAX_JOB_MS, jobChildEnv, jobCommand, jobLimitMs, MAX_JOB_MS, redactAll, SHUTDOWN_GRACE_MS, tail, wrapJobCode } from './job-runner';
 
 describe('job runner helpers', () => {
   test('the job limit is 15 min by default and at most 60 min', () => {
@@ -106,5 +106,21 @@ describe('job runner', () => {
     const r = await runner.run('await new Promise(r => setTimeout(r, 30_000));', 60_000, ac.signal);
     expect(r.aborted).toBe(true);
     expect(r.durationMs).toBeLessThan(10_000);
+  });
+
+  test('a shutdown abort kills a job that ignores SIGTERM after the short grace', async () => {
+    const root = fakeRoot();
+    const runner = createJobRunner({
+      rootDir: root, scratchDir: join(root, 'scratch'), account: 'abc', bootToken: 'boot-token-1234',
+      secrets: [], proxy: { port: 1, setJobActive: () => {} },
+    });
+    const ac = new AbortController();
+    setTimeout(() => ac.abort('shutdown'), 300);
+    const r = await runner.run('process.on("SIGTERM", () => {}); await new Promise(r => setTimeout(r, 30_000));', 60_000, ac.signal);
+    expect(r.aborted).toBe(true);
+    // The normal grace is 3 s; a shutdown kills after SHUTDOWN_GRACE_MS.
+    expect(SHUTDOWN_GRACE_MS).toBeLessThan(1_000);
+    expect(r.durationMs).toBeLessThan(2_800);
+    expect(runner.isRunning()).toBe(false);
   });
 });

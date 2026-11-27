@@ -113,6 +113,20 @@ export interface Receipt {
 
 const RECEIPT_ROWS = 12;
 
+/** The receipt card data of a finished instruction. The texts come from people and the AI, so
+ *  clean() (secrets, the account name, mentions) runs on them before they are cut. */
+export function buildReceipt(v: {
+  instruction: string; summary: string; turns: number; costUsd: number; durationMs: number;
+  changes: { skills: ReceiptSkill[]; inventory: ReceiptItem[] };
+}, clean: (text: string) => string): Receipt {
+  return {
+    instruction: clean(v.instruction).slice(0, 300), summary: clean(v.summary).slice(0, 600), turns: v.turns, costUsd: v.costUsd,
+    durationMs: v.durationMs,
+    ...(v.changes.skills.length > 0 ? { skills: v.changes.skills } : {}),
+    ...(v.changes.inventory.length > 0 ? { inventory: v.changes.inventory } : {}),
+  };
+}
+
 /** The skills and items that changed between the start and the end of an instruction. */
 export function receiptChanges(before: EventState | null, after: EventState | null): { skills: ReceiptSkill[]; inventory: ReceiptItem[] } {
   if (!before || !after) return { skills: [], inventory: [] };
@@ -258,8 +272,9 @@ export function receiptEvent(instruction: string, outcome: string): GameEvent {
 export function jobSignal(instruction: AbortSignal): { signal: AbortSignal; abort(reason: string): void; reason(): string | null } {
   const ctl = new AbortController();
   let why: string | null = null;
-  const onAbort = () => ctl.abort();
-  if (instruction.aborted) ctl.abort(); else instruction.addEventListener('abort', onAbort, { once: true });
+  // The job signal carries the reason of the instruction abort, so the runner sees a 'shutdown'.
+  const onAbort = () => ctl.abort(instruction.reason);
+  if (instruction.aborted) onAbort(); else instruction.addEventListener('abort', onAbort, { once: true });
   return {
     signal: ctl.signal,
     abort(reason: string) { if (!ctl.signal.aborted) { why = reason; ctl.abort(); } },
@@ -310,6 +325,25 @@ export function cardLastEvent(rows: { type: string; text: string; data?: unknown
   if (t.length <= max) return t;
   const cut = t.slice(0, max - 1);
   return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), max - 20))}…`;
+}
+
+// Runs fn; after a failure waits delaysMs[i] and tries again. After the last delay the error goes
+// to the caller, so the count of tries is delaysMs.length + 1.
+export async function retryBackoff<T>(
+  fn: () => Promise<T>,
+  opts: { delaysMs: readonly number[]; onRetry?: (err: unknown, n: number) => void; sleep?: (ms: number) => Promise<void> },
+): Promise<T> {
+  const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)));
+  for (let n = 1; ; n++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const delay = opts.delaysMs[n - 1];
+      if (delay === undefined) throw err;
+      opts.onRetry?.(err, n);
+      await sleep(delay);
+    }
+  }
 }
 
 // Retries fn until it works or the deadline passes. shouldRetry(err) false stops at once.

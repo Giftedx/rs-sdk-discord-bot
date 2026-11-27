@@ -122,8 +122,6 @@ export function baseTools(maxS = maxJobS(undefined)): Anthropic.Beta.BetaTool[] 
   { name: 'finish', description: 'End the instruction. Give a short summary for the Discord channel: what you did and the result.', input_schema: obj({ summary: { type: 'string' } }, ['summary']) },
 ]; }
 
-export const TOOLS: Anthropic.Beta.BetaTool[] = baseTools();
-
 const MAX_TEXT = 2000;
 
 export const OPTIONAL_TOOLS: Record<'set_timer' | 'post' | 'set_goal' | 'escalate', Anthropic.Beta.BetaTool> = {

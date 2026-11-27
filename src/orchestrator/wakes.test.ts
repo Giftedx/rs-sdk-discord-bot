@@ -30,9 +30,9 @@ describe('compactState', () => {
 });
 
 describe('wake scheduler', () => {
-  test('a waiting instruction starts only when none runs and the budget allows', () => {
+  test('a waiting instruction gives no wake action (guild.ts starts it)', () => {
     const w = createWakeScheduler();
-    expect(types(w.tick(input({ hasWaiting: true })))).toEqual(['start_instruction']);
+    expect(w.tick(input({ hasWaiting: true }))).toEqual([]);
     expect(w.tick(input({ hasWaiting: true, instructionRunning: true }))).toEqual([]);
     expect(w.tick(input({ hasWaiting: true, budgetOk: false }))).toEqual([]);
   });
@@ -41,7 +41,7 @@ describe('wake scheduler', () => {
     const w = createWakeScheduler();
     const due = [{ id: 4, note: 'check the job' }];
     expect(w.tick(input({ dueTimers: due, instructionRunning: true }))).toEqual([]);
-    expect(types(w.tick(input({ dueTimers: due, hasWaiting: true })))).toEqual(['start_instruction']);
+    expect(w.tick(input({ dueTimers: due, hasWaiting: true }))).toEqual([]);
     expect(w.tick(input({ dueTimers: due }))).toEqual([{ type: 'wake', kind: 'timer', user: 'timer', text: 'check the job', timerId: 4 }]);
   });
 
@@ -174,7 +174,7 @@ describe('full inventory wake', () => {
     expect(w.tick(input({ state: full(27) }))).toEqual([]);
     expect(w.tick(input({ state: full(), jobRunning: true })).filter(x => x.type === 'wake')).toEqual([]);
     expect(w.tick(input({ state: full(), instructionRunning: true }))).toEqual([]);
-    expect(w.tick(input({ state: full(), hasWaiting: true }))).toEqual([{ type: 'start_instruction' }]);
+    expect(w.tick(input({ state: full(), hasWaiting: true }))).toEqual([]);
     expect(w.tick(input({ state: full(), budgetOk: false }))).toEqual([]);
     expect(types(w.tick(input({ state: full() })))).toEqual(['wake']);
   });
@@ -227,7 +227,7 @@ describe('daily notes review wake', () => {
     expect(w.tick(input({ now, state: null, jobRunning: true }))).toEqual([]);
     expect(w.tick(input({ now, state: null, instructionRunning: true }))).toEqual([]);
     expect(w.tick(input({ now, state: null, budgetOk: false }))).toEqual([]);
-    expect(w.tick(input({ now, state: null, hasWaiting: true }))).toEqual([{ type: 'start_instruction' }]);
+    expect(w.tick(input({ now, state: null, hasWaiting: true }))).toEqual([]);
     expect(w.tick(input({ now, state: null }))).toEqual([review]);
   });
 });

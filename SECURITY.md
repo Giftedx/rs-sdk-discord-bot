@@ -1,6 +1,6 @@
 # Security policy
 
-This project is work in progress and makes no claim that it is secure. [docs/security.md](docs/security.md) describes the security model, the residual risks and the known gaps. Read it before you deploy.
+This project runs live but makes no claim that it is secure. [docs/security.md](docs/security.md) describes the security model, the residual risks and the known gaps. Read it before you deploy.
 
 ## Report a vulnerability
 

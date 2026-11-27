@@ -118,7 +118,6 @@ export type TriggerKind = 'low_hp' | 'death' | 'inventory_full';
 export const FULL_INVENTORY_TEXT = 'The inventory is full (28 of 28 slots) and no job runs. Bank, drop or use items, then go on with the current goal.';
 
 export type WakeAction =
-  | { type: 'start_instruction' }
   | { type: 'wake'; kind: Extract<WakeKind, 'timer' | 'trigger' | 'review'>; user: string; text: string; timerId?: number; trigger?: TriggerKind }
   | { type: 'abort_job'; reason: string }
   | { type: 'event'; event: string; text: string };
@@ -236,10 +235,8 @@ export function createWakeScheduler(options: WakeOptions = {}) {
 
       if (started || input.instructionRunning || !input.budgetOk) return actions;
 
-      if (input.hasWaiting) {
-        actions.push({ type: 'start_instruction' });
-        return actions;
-      }
+      // A waiting request runs first: guild.ts starts it on each tick. No wake jumps ahead of it.
+      if (input.hasWaiting) return actions;
 
       // A full inventory with no job: one trigger wake when it gets full (and at most one per
       // cooldown); it arms again only after the inventory has room.
@@ -276,8 +273,6 @@ export function createWakeScheduler(options: WakeOptions = {}) {
       }
       return actions;
     },
-    /** Forget the state of one guild, for example after the account logs in again. */
-    reset(guild: string): void { guilds.delete(guild); },
   };
 }
 

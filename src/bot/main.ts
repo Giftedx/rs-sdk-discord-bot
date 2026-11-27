@@ -22,6 +22,8 @@ import { createKeyedLock, mentionsBot, retryUntil, stripMentions, takeRevisionFl
 const ROOT = resolve(dirname(import.meta.path), '..', '..');
 const TICK_MS = 5_000;
 const SNAPSHOT_KEEP_MS = 7 * 24 * 3_600_000;
+const EVENT_KEEP_MS = 14 * 24 * 3_600_000;
+const SHUTDOWN_CAP_MS = 25_000;
 
 const cfg = (() => {
   try {
@@ -95,9 +97,14 @@ let discord = makeClient(cfg.readAll);
 async function shutdown(code: number) {
   if (shuttingDown) return;
   shuttingDown = true;
+  // A stop that hangs (Discord, gamelink, a job) must not keep the process alive.
+  // The cap still kills the job processes first, so no job acts while the request runs again.
+  setTimeout(() => { try { cgroup?.killAll(); } catch { /* no cgroup */ } process.exit(code); }, SHUTDOWN_CAP_MS).unref();
   log('shutting down');
   if (ticker) clearInterval(ticker);
   await Promise.all(guilds.map(g => g.stop().catch(err => log(`[${g.name}] stop failed: ${errText(err)}`))));
+  // A backstop for job processes that outlived the stop of their guild.
+  if (cgroup) { const k = cgroup.killAll(); if (!k.ok) log(`job cgroup not emptied: ${k.reason}`); }
   await discord.destroy().catch(() => {});
   await link?.close().catch(() => {});
   try { db.close(); } catch { /* already closed */ }
@@ -132,7 +139,7 @@ try {
   // Until the page bodies are read, the wiki search uses the titles only.
   void knowledge.bodyReady?.then(n => log(`wiki body index ready: ${n} pages`));
   const shared = {
-    cfg, root: ROOT, link, anthropic: new Anthropic(), db, cgroup, discord,
+    cfg, root: ROOT, link, anthropic: new Anthropic(), db, cgroup,
     knowledge,
     apiReference: readFileSync(join(ROOT, 'vendor', 'rs-sdk', 'sdk', 'API.md'), 'utf8'),
     secrets, clean, log,
@@ -167,6 +174,8 @@ ticker = setInterval(() => {
     lastPrune = Date.now();
     const n = db.pruneSnapshots(Date.now() - SNAPSHOT_KEEP_MS);
     if (n > 0) log(`pruned ${n} old snapshot(s)`);
+    const e = db.pruneEvents(Date.now() - EVENT_KEEP_MS);
+    if (e > 0) log(`pruned ${e} old event(s)`);
   }
 }, TICK_MS);
 
@@ -212,12 +221,15 @@ function attachHandlers(client: Client) {
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (!interaction.isButton()) return;
     const g = interaction.channelId ? byChannel.get(interaction.channelId) : undefined;
-    if (g) await g.onButton(interaction);
+    if (g) await g.onButton(interaction).catch(err => log(`[${g.name}] button failed: ${errText(err)}`));
   });
 
   client.once(Events.ClientReady, c => {
     log(`Discord ready as ${c.user.tag}${readAll ? ', reading every message of the channel' : ', answering mentions only'}`);
-    for (const g of guilds) void g.attach(client).catch(err => log(`[${g.name}] attach failed: ${errText(err)}`));
+    for (const g of guilds) {
+      void g.attach(client, why => { log(`[${g.name}] ${why}: exit so that systemd restarts the bot`); void shutdown(1); })
+        .catch(err => log(`[${g.name}] attach failed: ${errText(err)}`));
+    }
   });
   client.on(Events.Error, err => log(`Discord error: ${errText(err)}`));
 }

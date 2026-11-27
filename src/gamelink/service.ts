@@ -26,6 +26,11 @@ export interface ServiceOptions {
   socketMode?: number;
 }
 
+// Bun closes a request that sends no byte for idleTimeout seconds (default 10). POST idle waits up
+// to 30 s, and a card or a frame capture can take more than 10 s. The client has its own time
+// limits. Bun allows at most 255.
+export const SERVICE_IDLE_TIMEOUT_S = 120;
+
 export interface ServiceHandle {
   stop(): Promise<void>;
 }
@@ -197,6 +202,9 @@ export function serveGameLink(opts: ServiceOptions): ServiceHandle {
   const server = Bun.serve({
     unix: opts.socketPath,
     maxRequestBodySize: MAX_BODY_BYTES,
+    // The types of Bun.serve() have no idleTimeout for a Unix socket, but Bun applies it
+    // (service.test.ts). server.timeout() per request did not stop the cut there.
+    ...({ idleTimeout: SERVICE_IDLE_TIMEOUT_S } as object),
     async fetch(req) {
       if (!checkAuth(req.headers.get('authorization'), tokenDigest)) return json({ error: 'unauthorized' }, 401);
       try {

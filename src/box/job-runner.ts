@@ -67,6 +67,8 @@ export function jobLimitMs(timeoutMs: number, maxJobMs = DEFAULT_MAX_JOB_MS): nu
 }
 export const OUTPUT_TAIL_CHARS = 6_000;
 const KILL_GRACE_MS = 3_000;
+/** An abort with the reason 'shutdown' (the bot stops) kills the job after this short grace. */
+export const SHUTDOWN_GRACE_MS = 500;
 
 // With protectionsPath, the job imports startProtections() and runs it during the body.
 // The body sees `protections` and can call protections.off().
@@ -165,13 +167,14 @@ export function createJobRunner(opts: JobRunnerOptions) {
         });
         try { opts.onSpawn?.(child.pid); } catch { /* a failed move only loses the limits */ }
         let killTimer: ReturnType<typeof setTimeout> | undefined;
-        const stopChild = () => {
+        const stopChild = (graceMs = KILL_GRACE_MS) => {
           child.kill('SIGTERM');
-          killTimer = setTimeout(() => { child.kill('SIGKILL'); void killBox(); }, KILL_GRACE_MS);
+          clearTimeout(killTimer);
+          killTimer = setTimeout(() => { child.kill('SIGKILL'); void killBox(); }, graceMs);
         };
         // runScript has its own timeout; this one is the backstop, with room to print the state.
         const deadline = setTimeout(() => { timedOut = true; stopChild(); }, limit + 15_000);
-        const onAbort = () => { aborted = true; stopChild(); };
+        const onAbort = () => { aborted = true; stopChild(signal?.reason === 'shutdown' ? SHUTDOWN_GRACE_MS : KILL_GRACE_MS); };
         if (signal?.aborted) onAbort(); else signal?.addEventListener('abort', onAbort, { once: true });
         const outText = new Response(child.stdout as ReadableStream).text();
         const errText = new Response(child.stderr as ReadableStream).text();

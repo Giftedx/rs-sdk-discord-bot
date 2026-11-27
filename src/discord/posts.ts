@@ -152,6 +152,8 @@ export class MainPosts {
   private recapTimer: Handle | null = null;
   private mergeTimer: Handle | null = null;
   private pendingLevels: LevelUp[] = [];
+  // After stop(), a recap that was posting does not arm the next one.
+  private stopped = false;
   private readonly maxPerHour: number;
   private readonly mergeMs: number;
   private readonly levels: readonly number[];
@@ -166,7 +168,7 @@ export class MainPosts {
   }
 
   start(): void {
-    if (this.o.recapHourUtc === undefined || this.recapTimer !== null) return;
+    if (this.stopped || this.o.recapHourUtc === undefined || this.recapTimer !== null) return;
     const hour = this.o.recapHourUtc;
     this.recapTimer = this.o.timers.setTimeout(() => {
       this.recapTimer = null;
@@ -176,6 +178,7 @@ export class MainPosts {
 
   /** Stops the timers. Level-ups that wait for the merge window are dropped; call flushLevels() first to post them. */
   stop(): void {
+    this.stopped = true;
     if (this.recapTimer !== null) this.o.timers.clearTimeout(this.recapTimer);
     this.recapTimer = null;
     if (this.mergeTimer !== null) this.o.timers.clearTimeout(this.mergeTimer);

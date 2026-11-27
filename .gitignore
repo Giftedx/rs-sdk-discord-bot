@@ -25,3 +25,6 @@ Thumbs.db
 
 # Data of the bot: saved scripts, notes, spend record, job files
 data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
