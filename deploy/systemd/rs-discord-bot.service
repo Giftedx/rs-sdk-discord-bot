@@ -1,0 +1,30 @@
+# systemd unit of the Discord bot. docs/running-the-bot.md says how to install it.
+# It loads three files of /opt/rs-discord-bot the same way the documented commands do:
+#   secrets/account.env  RS_ACCOUNT, RS_PASSWORD (from scripts/server-bootstrap.sh)
+#   secrets/bot.env      DISCORD_TOKEN, DISCORD_CHANNEL_ID, ANTHROPIC_API_KEY and the bot settings
+#   server.env           RS_CHROME_PATH (from scripts/server-bootstrap.sh)
+[Unit]
+Description=rs-sdk Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rsbot
+WorkingDirectory=/opt/rs-discord-bot
+ExecStart=/bin/bash -c 'set -a; . secrets/account.env; . secrets/bot.env; . server.env; set +a; exec /home/rsbot/.bun/bin/bun --no-env-file src/bot/main.ts'
+Restart=on-failure
+# More than 10 s, so that a new login does not follow the old session at once.
+RestartSec=30
+# The bot logs out of the game on SIGTERM; give it time.
+TimeoutStopSec=40
+KillMode=mixed
+# No NoNewPrivileges=yes: the job runner uses sudo to run each job as the box user.
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/rs-discord-bot/data /home/rsbot/.cache
+MemoryMax=3G
+
+[Install]
+WantedBy=multi-user.target

@@ -8,6 +8,7 @@ test('no Chrome path: puppeteer picks its default', () => {
   const o = browserLaunchOptions({}, { env: { HOME: '/h' }, fileExists: exists([]) });
   expect(o.executablePath).toBeUndefined();
   expect(o.headless).toBe(true);
+  expect(o.pipe).toBe(true);
   expect(o.args).toEqual([...CHROMIUM_ARGS]);
   expect(o.env).toEqual({ HOME: '/h', NO_AT_BRIDGE: '1', DBUS_SESSION_BUS_ADDRESS: 'disabled:' });
 });

@@ -98,7 +98,7 @@ Proxy (`src/gamelink/proxy.ts`), milestone 2:
 - The proxy writes no log.
 - The box listener has no backpressure limit. A box that stops reading its socket can make the proxy host use more memory.
 - The proxy forwards the whole action message of the box, not only the fields that the gateway reads.
-- The job flag stays on after the box disconnects. No built code sets it to off after a job.
+- The proxy itself does not set the job flag to off when the box disconnects. The job runner of the bot (`src/box/job-runner.ts`) sets it to off after each job.
 - The proxy relays the gateway text "another controller connected" to the box, and the SDK then stops its reconnects.
 - The default reconnect delay of 11 to 16 s has no test.
 - The proxy uses the relay URL of the gateway. The SDK prefers a direct gateway port with compression. One account relays about 82 kB/s of state at the measured message size.
@@ -110,8 +110,8 @@ Configuration (`src/shared/config.ts`), milestone 2:
 Game tab (`src/gamelink/game-tab.ts`), milestone 2:
 
 - `inGame()` is not a readiness signal. It is true while the client still loads the map. See [measurements.md](measurements.md).
-- The browser environment is a deny list of one name (`RS_PASSWORD`). When more secrets exist, it must be an allow list.
-- `close()` does not log the account out first.
+- The browser environment is a deny list of four names (`RS_PASSWORD`, `DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`). It must become an allow list.
+- `close()` does not log the account out. The bot calls `logout()` before `close()` when it stops.
 - A crash dump of Chromium can hold the password. The crash reporter is not turned off.
 - The request interception turns the browser cache off, so each reload downloads the client again.
 
@@ -123,9 +123,17 @@ Scripts (`scripts/`), milestone 2:
 - `scripts/measure.ts` calls `keepAlive()` every 60 s in every mode, mode `demo` included.
 - The scripts set no profile directory for Chromium, and they do not write the commit and the Chrome path into their result files.
 
+Bot (`src/bot/`, `src/agent/`, `src/box/`):
+
+- **Without `BOX_USER`, a job runs as the same Unix user as the bot.** It can then read the secret files of the bot and `/proc/<pid>/environ` of the bot process, which hold the Discord token, the API key and the game password. The bot logs a warning at start. Set `BOX_USER` on every server ([running-the-bot.md](running-the-bot.md)).
+- With `BOX_USER`, a job runs as a second Unix user through `sudo`. It has no systemd limits for memory, CPU or tasks. It can reach any network host, and it can read every file that is readable by all users.
+- The bot gives the AI the text of a Discord instruction and the output of each job. Game chat is in that output. A hostile instruction or chat text can make the AI act badly inside the action policy, or spend API credit up to the limits.
+- The spend record is an estimate from token counts and the list prices in `src/agent/spend.ts`. Set a spend limit in the Anthropic console too.
+- Bun on Windows has no box user. Run the bot on Linux.
+
 Box, milestone 3:
 
-- The box does not exist. The box stand-in runs as the same Unix user as the proxy, with no sandbox.
+- The real box does not exist: no systemd unit, no limits, no network rules. The job runner with `BOX_USER` is the current stand-in. The box stand-in of the scripts runs as the same Unix user as the proxy, with no sandbox.
 - If the box stand-in connects before the proxy has its gateway connection, the proxy refuses it, and the SDK does not try again.
 - The boot token changes at each start of the proxy. A box must start again to get it.
 
@@ -150,6 +158,6 @@ Continuous integration:
 - No user namespaces for the box (`RestrictNamespaces=yes`) and no access to `/opt/rs-chrome` (`InaccessiblePaths=`), each with a test.
 - Network limits: the box reaches only the loopback port of the proxy, and gamelink reaches only the game host.
 - The Chromium profile on a memory file system that is removed when the browser stops.
-- The debug port of Chromium unreachable for the box user.
 - A token for each local interface of gamelink.
-- A monthly spend cap that you set, enforced by the orchestrator.
+
+Built since milestone 1: the bot launches Chromium with DevTools on a pipe, so no debug port exists, and it enforces a monthly spend cap that you set (`AI_MONTHLY_CAP_USD`).

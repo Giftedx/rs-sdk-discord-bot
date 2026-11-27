@@ -1,6 +1,6 @@
 # rs-sdk Discord bot
 
-**Work in progress. There is no Discord bot in this repository yet.**
+**Work in progress. A first version of the Discord bot works. [docs/running-the-bot.md](docs/running-the-bot.md) says how to run it.**
 
 The goal: the people in one Discord channel direct an AI, and the AI plays one shared game account. The game is the RuneScape-style server emulator of [rs-sdk](https://github.com/MaxBittker/rs-sdk), a research kit for game bots. The bot will show in Discord what the AI does. The code runs on Bun and TypeScript.
 
@@ -8,17 +8,22 @@ This is an independent project. It has no affiliation with rs-sdk, with its main
 
 ## Status
 
-> **You cannot run a Discord bot from this repository yet.** This repository holds the base that the bot needs, with tests.
-
 What you can do today:
 
+- Run the Discord bot (`bun run bot`, Linux). People mention the bot with an instruction. The AI writes and runs rs-sdk code, and the bot replies with a summary and a frame of the game. See [docs/running-the-bot.md](docs/running-the-bot.md).
 - Run the tests and the type check (Windows or Linux).
 - Start an rs-sdk game server on your own Linux machine and run an unchanged rs-sdk script against it through the proxy, which keeps the game password away from that script.
 - Prepare an Ubuntu 26.04 server on which the same checks run with the Chromium sandbox on.
 
-What you cannot do yet: talk to anything in Discord, or have an AI play.
+The bot, built and tested:
 
-Built and tested:
+- The agent loop on the Anthropic API, with tools for jobs, saved scripts, notes, the knowledge pack, the game state and a frame, and with turn and spend limits (`src/agent/`).
+- The job runner: AI-written code runs in a child process with only the boot token of the proxy, optionally as a second Unix user (`src/box/job-runner.ts`).
+- The supervisor, which keeps the game tab in the game (`src/gamelink/supervisor.ts`).
+- The Discord front end: mentions, a queue, a **Stop** button, `status` (`src/bot/`).
+- A smoke test on the local stack (`scripts/bot-smoke.ts`), and a systemd unit (`deploy/systemd/`).
+
+The base, built and tested:
 
 - The configuration loader (`src/shared/config.ts`).
 - The action policy (`src/gamelink/policy.ts`).
@@ -32,12 +37,11 @@ Built and tested:
 
 Not built yet:
 
-- The Discord bot.
-- The agent loop that calls the AI. It will need an API key and a monthly spend cap that you set. The design in this repository names no AI provider.
-- The sandbox for AI-written code.
-- The status card and the other Discord output.
+- A full sandbox for AI-written code: systemd limits and network rules.
+- The pinned status card, the adventure log and the drawn cards.
+- More than one account or guild per process.
 
-[docs/roadmap.md](docs/roadmap.md) lists the seven milestones. The first is done. None of the others is started, and none has a date.
+[docs/roadmap.md](docs/roadmap.md) lists the milestones and their state.
 
 ## Architecture
 

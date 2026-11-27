@@ -33,15 +33,22 @@ export interface GameTab {
   frame(mode: FrameMode): Promise<Uint8Array>;
   keepAlive(): Promise<void>;
   reload(): Promise<void>;
+  // Clicks the logout button of the client until the page is out of the game. True when it left.
+  logout(deadlineMs?: number): Promise<boolean>;
   close(): Promise<void>;
 }
+
+// The logout button of the client. The click sets logoutTimer first: 250 is the value that the
+// client itself sets before its idle logout.
+const LOGOUT_COMPONENT = 2458;
+const LOGOUT_TIMER = 250;
 
 const CANVAS_WIDTH = 765;
 const CANVAS_HEIGHT = 503;
 const CANVAS_WAIT_MS = 4_500;
 
 // Environment variables that hold secrets. The browser does not need them.
-const SECRET_ENV_NAMES: readonly string[] = ['RS_PASSWORD'];
+export const SECRET_ENV_NAMES: readonly string[] = ['RS_PASSWORD', 'DISCORD_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
 
 // The browser environment: the current environment without secrets, and with the
 // accessibility bridge and the D-Bus session bus off. Without the last two, Chromium
@@ -87,6 +94,8 @@ export function browserLaunchOptions(
   }
   return {
     headless: true,
+    // DevTools over a pipe, not a loopback port: code of a job cannot connect to the browser.
+    pipe: true,
     args: [...CHROMIUM_ARGS],
     env: browserLaunchEnv(deps.env),
     ...(opts.userDataDir ? { userDataDir: opts.userDataDir } : {}),
@@ -201,6 +210,26 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
 
     async reload() {
       await gotoRedacted(page, opts.botPageUrl, url);
+    },
+
+    async logout(deadlineMs = 15_000) {
+      const click = () => page.evaluate((timer: number, component: number) => {
+        const gc = (window as unknown as { gameClient?: { logoutTimer?: unknown; clickComponent?: unknown } }).gameClient;
+        if (!gc || typeof gc.clickComponent !== 'function') return false;
+        gc.logoutTimer = timer;
+        (gc.clickComponent as (id: number) => unknown).call(gc, component);
+        return true;
+      }, LOGOUT_TIMER, LOGOUT_COMPONENT).catch(() => false);
+      const inGame = () => page.evaluate(() =>
+        (window as unknown as { gameClient?: { ingame?: unknown } }).gameClient?.ingame === true).catch(() => false);
+      const start = Date.now();
+      let lastClick = 0;
+      while (Date.now() - start < deadlineMs) {
+        if (!(await inGame())) return true;
+        if (Date.now() - lastClick >= 2_500) { await click(); lastClick = Date.now(); }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      return !(await inGame());
     },
 
     async close() {
