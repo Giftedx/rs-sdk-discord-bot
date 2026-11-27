@@ -44,7 +44,7 @@ hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT
 chmod 600 "$hdr"
 printf 'Authorization: Bot %s\n' "$token" > "$hdr"
 if [ "$kind" = revision ]; then
-  text="Notice: the game server has a new client revision. a new game client revision; in split mode gamelink restarts with it (journalctl -u rs-revision-check). The operator can read: journalctl -u rs-revision-check"
+  text="Notice: the game server has a new client revision. In split mode, gamelink restarts with it. The operator can read: journalctl -u rs-revision-check"
 else
   text="Warning: the server unit ${unit} stopped with an error. The operator can read: journalctl -u ${unit}"
 fi
