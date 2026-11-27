@@ -188,7 +188,7 @@ Phase `chrome` downloads `https://storage.googleapis.com/chrome-for-testing-publ
 
 ```bash
 cd "$(mktemp -d)"
-url=https://storage.googleapis.com/chrome-for-testing-public/148.0.7778.97/linux64/chrome-linux64.zip
+url=https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.88/linux64/chrome-linux64.zip
 curl -fsSL -o chrome-linux64.zip "$url"
 openssl dgst -md5 -binary chrome-linux64.zip | base64
 curl -sI "$url" | grep -i x-goog-hash

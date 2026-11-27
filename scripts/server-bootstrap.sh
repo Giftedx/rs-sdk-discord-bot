@@ -177,8 +177,8 @@ install_app() {
 #   https://storage.googleapis.com/chrome-for-testing-public/<version>/linux64/chrome-linux64.zip
 # on your machine, compare `openssl dgst -md5 -binary <zip> | base64` with the md5 of
 # `curl -sI <url> | grep x-goog-hash`, put `sha256sum <zip>` in CHROME_ZIP_SHA256, and run phase chrome.
-CHROME_VERSION=148.0.7778.97
-CHROME_ZIP_SHA256=8a760543807c67d3836d530cc4bc2e39c93e217f1629ec6ea311415fdfa21a75
+CHROME_VERSION=158.0.8127.88
+CHROME_ZIP_SHA256=59e3b43f8b3aaa292238fbdcfb36a93127debd53e212510dcdc2cc8812b4b57e
 CHROME_ZIP_URL=https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chrome-linux64.zip
 CHROME_ROOT=/opt/rs-chrome
 PROFILE_NAME=rsbot-chrome-for-testing
