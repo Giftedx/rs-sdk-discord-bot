@@ -107,18 +107,18 @@ describe('wiki knowledge', () => {
 });
 
 describe('wiki skill headings', () => {
-  const skill = ['# Woodcutting', '## Axes', '| Rune | 41 |', '## Trees', '### Wilderness Course (Level 52+)', '## Notes', '## Training Tips'].join('\n');
+  const skill = ['# Woodcutting', '## Axes', '| Rune | 41 |', '## Trees', '### Wilderness Course (Level 52+)', '## Woodcutting Guild', '## Notes', '## Training Tips'].join('\n');
 
   test('wikiHeadingText keeps the topic words of the headings', () => {
-    expect(wikiHeadingText(skill)).toBe('axe tree wilderness course');
+    expect(wikiHeadingText(skill)).toBe('axe tree wilderness course guild');
   });
 
   test('a heading word of a skill page beats one title word of an item page', async () => {
     const pages = [
-      { source: 'wiki/items/bronze-axe.md', file: '/i' },
-      { source: 'wiki/skills/woodcutting.md', file: '/s' },
+      { source: 'wiki/items/bronze-axe.md', file: '/w/bronze-axe.md' },
+      { source: 'wiki/skills/woodcutting.md', file: '/w/woodcutting.md' },
     ];
-    const text: Record<string, string> = { '/i': '# Bronze axe\n- Sold by: [Bob\'s Brilliant Axes](x.md)', '/s': skill };
+    const text: Record<string, string> = { '/w/bronze-axe.md': '# Bronze axe\n- Sold by: [Bob\'s Brilliant Axes](x.md)', '/w/woodcutting.md': skill };
     const idx = createWikiIndex(pages, f => text[f] ?? '');
     expect(await loadWikiBodies(idx, pages, async f => text[f] ?? '')).toBe(1);
     expect(idx.search('axe').map(h => h.source)).toEqual(['wiki/skills/woodcutting.md', 'wiki/items/bronze-axe.md']);

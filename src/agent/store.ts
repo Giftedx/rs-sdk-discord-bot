@@ -196,13 +196,16 @@ export function wikiBodyText(text: string): string {
 const GENERIC_HEADING = new Set(['note', 'training', 'tip', 'special']);
 /**
  * The topic words of the "##" and "###" headings of a skill page, such as "Axes" and "Trees" on
- * the Woodcutting page. A search for "axe" then finds the page with the axe table.
+ * the Woodcutting page. A search for "axe" then finds the page with the axe table. A word of the
+ * "#" title ("Fishing" in "## Fishing Locations") is left out: the title already counts it.
  */
 export function wikiHeadingText(text: string): string {
+  const lines = text.split('\n');
+  const title = new Set(textWords(lines.find(l => l.startsWith('# ')) ?? ''));
   const out: string[] = [];
-  for (const line of text.split('\n')) {
+  for (const line of lines) {
     const m = /^#{2,3} (.+)/.exec(line);
-    if (m) out.push(...textWords(m[1]!.replace(/\(.*?\)/g, '')).filter(w => !GENERIC_HEADING.has(w) && !/^\d+$/.test(w)));
+    if (m) out.push(...textWords(m[1]!.replace(/\(.*?\)/g, '')).filter(w => !GENERIC_HEADING.has(w) && !title.has(w) && !/^\d+$/.test(w)));
   }
   return out.join(' ');
 }
