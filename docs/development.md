@@ -1,6 +1,6 @@
 # Development
 
-The [README](../README.md#terms) has the terms table.
+[design.md](design.md#2-terms) has the terms table.
 
 ## Tools
 

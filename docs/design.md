@@ -18,10 +18,33 @@ The operator is the person who runs a deployment. The operator needs the agreeme
 
 ## 2. Terms
 
-The [README](../README.md#terms) has the terms of the built parts: account, bot page, game tab, gateway, control connection, gamelink, proxy, action policy, box, box stand-in, boot token, job, orchestrator, state message, state tap and frame. This table adds the terms of the other parts.
+All documents of this project use these terms with these meanings.
 
 | Term | Meaning |
 |---|---|
+| the bot | The Discord bot (`src/bot/main.ts`). It runs as the Unix user `rsbot`. |
+| account | The one game account that a Discord server shares. |
+| bot page | The page `/bot` of an rs-sdk game server. It holds the rs-sdk browser client. |
+| game tab | The bot page in headless Chromium. It stays logged in. |
+| gateway | The rs-sdk service that connects SDK code to a game tab. |
+| control connection | The one connection per account through which the gateway accepts actions. |
+| gamelink | The process that holds the game password. It runs the game tab and the proxy. |
+| proxy | The part between AI-written code and the gateway. It holds the game password. |
+| action policy | The allow list of game actions that the proxy passes. |
+| box | Where AI-written code runs: one job at a time, as the Unix user `BOX_USER`, through `sudo`. It holds no secret. |
+| box stand-in | `scripts/box-standin.ts`, the child process that the measurement scripts start in place of a job. |
+| boot token | A random value that the proxy accepts from the box in place of the game password. It changes at each start. |
+| job | One run of AI-written code in the box. |
+| orchestrator | The part of the bot that talks to Discord and to the AI API, keeps the queue and starts the jobs. |
+| state message | One `sdk_state` message: the game state that the game tab sends through the gateway. |
+| state tap | The copy of each state message that the proxy gives to a callback of its host process. The orchestrator reads it. |
+| frame | One picture of the game from the game tab. |
+| local stack | An rs-sdk game server on your own machine. `scripts/dev-stack.sh` starts and stops it. |
+| demo world | The public rs-sdk game server `rs-sdk.maxbittker.com`. |
+| remote game server | Any rs-sdk game server that is not the local stack. The demo world is one. |
+| proxy proof | The script `scripts/proxy-proof.ts` and its run. |
+| template script | `scripts/proof-script.ts`, a copy of the rs-sdk script template. The proxy proof runs it. |
+| Chromium, Chrome | Chromium is the browser engine. Chrome for Testing is the build of it that puppeteer downloads. These documents say Chromium for the sandbox and the behaviour, and Chrome for the binary and its path. |
 | guild | One Discord server that has the bot. |
 | instruction | A request that a Discord user gives to the AI. |
 | saved script | A TypeScript file that the AI wrote and kept for reuse. |
