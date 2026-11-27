@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>fixture bot page</title></head>
+<body>
+<script>
+  const params = new URLSearchParams(location.search);
+  if (!params.has('nocanvas')) {
+    const canvas = document.createElement('canvas');
+    canvas.id = 'canvas';
+    canvas.width = params.has('bad') ? 800 : 765;
+    canvas.height = params.has('bad') ? 600 : 503;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(4, 4, 512, 334);
+  }
+  window.gameClient = { ingame: true, idleTimer: 0 };
+</script>
+</body>
+</html>

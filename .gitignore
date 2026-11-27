@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Secrets. Only .env.example is tracked.
+.env
+.env.*
+!.env.example
+*.env
+secrets/
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Output of the scripts: logs, raw results and frames of the game
+measurements/
+*.log
+coverage/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

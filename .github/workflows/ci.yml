@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The type check and the tests that need no browser.
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # GitHub's Ubuntu runners restrict unprivileged user namespaces with AppArmor, so
+      # Chromium cannot start its sandbox there. This job skips the 13 tests that launch
+      # Chromium and downloads no browser. Job browser-tests runs them.
+      RS_SKIP_BROWSER_TESTS: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      - run: bun test
+
+  # All tests, with the Chromium sandbox on. This project never uses --no-sandbox.
+  browser-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bunx puppeteer browsers install chrome
+      # The runner is a throwaway machine. This step turns off the AppArmor restriction of
+      # the runner, so that Chromium can create the user namespaces that its sandbox needs.
+      # Chromium keeps its own sandbox. Do not do this on a server: docs/deploy-server.md
+      # describes the AppArmor profile that a server gets.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: bun test

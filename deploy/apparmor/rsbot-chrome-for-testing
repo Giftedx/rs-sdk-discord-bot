@@ -1,0 +1,20 @@
+# This profile allows everything and only exists to give the root-owned copy of
+# Chrome for Testing a name instead of the label "unconfined", so that it can
+# create the user namespaces of the Chromium sandbox while
+# kernel.apparmor_restrict_unprivileged_userns stays 1.
+# Same form as the chrome profile that Ubuntu 26.04 ships in /etc/apparmor.d/chrome.
+# Installed by scripts/server-bootstrap.sh (phase chrome).
+# This profile does not confine Chrome. Every local user who can run this binary
+# can create user namespaces through it. See docs/security.md.
+# Tested on Ubuntu 26.04 only.
+
+abi <abi/5.0>,
+include <tunables/global>
+
+profile rsbot-chrome-for-testing /opt/rs-chrome/*/chrome-linux64/chrome flags=(unconfined) {
+  userns,
+  @{exec_path} mr,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/rsbot-chrome-for-testing>
+}
