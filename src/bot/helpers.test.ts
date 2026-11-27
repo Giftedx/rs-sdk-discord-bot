@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { cardFor, cardView, createAdmission, createKeyedLock, jobSignal, receiptEvent } from './helpers';
+import { cardFor, cardView, createAdmission, createKeyedLock, jobSignal, mentionsBot, receiptEvent, stripMentions } from './helpers';
 
 const state = { hp: 5, maxHp: 10, x: 3222, z: 3218, plane: 0, skills: { Woodcutting: { level: 10, xp: 1200 } }, inventory: {}, inCombat: false };
 
@@ -110,5 +110,18 @@ describe('jobSignal', () => {
     instr.abort();
     expect(js.signal.aborted).toBe(true);
     expect(js.reason()).toBeNull();
+  });
+});
+
+describe('mentions', () => {
+  test('a mention of the bot user or of the role of the bot counts', () => {
+    expect(mentionsBot(['1'], [], '1', null)).toBe(true);
+    expect(mentionsBot([], ['9'], '1', '9')).toBe(true);
+    expect(mentionsBot([], ['8'], '1', '9')).toBe(false);
+    expect(mentionsBot(['2'], ['9'], '1', null)).toBe(false);
+  });
+  test('stripMentions removes user and role mentions', () => {
+    expect(stripMentions('<@&123> help')).toBe('help');
+    expect(stripMentions('<@!12> <@34> chop trees')).toBe('chop trees');
   });
 });

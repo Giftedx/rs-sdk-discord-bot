@@ -137,3 +137,16 @@ export function jobSignal(instruction: AbortSignal): { signal: AbortSignal; abor
     reason: () => why,
   };
 }
+
+// A message is for the bot when it mentions the bot user or the role that Discord made for the
+// bot (that role has the bot's name, and the mention list of Discord offers both).
+export function mentionsBot(userIds: Iterable<string>, roleIds: Iterable<string>, botId: string, botRoleId: string | null): boolean {
+  for (const id of userIds) if (id === botId) return true;
+  if (botRoleId !== null) for (const id of roleIds) if (id === botRoleId) return true;
+  return false;
+}
+
+// The instruction text without user and role mentions.
+export function stripMentions(content: string): string {
+  return content.replace(/<@[!&]?\d+>/g, '').trim();
+}

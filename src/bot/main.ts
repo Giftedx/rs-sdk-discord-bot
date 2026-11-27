@@ -15,7 +15,7 @@ import { createWakeScheduler } from '../orchestrator/wakes';
 import { sanitizeForDiscord } from '../shared/sanitize';
 import { loadBotConfig } from './config';
 import { startGuild, type Guild } from './guild';
-import { createKeyedLock } from './helpers';
+import { createKeyedLock, mentionsBot, stripMentions } from './helpers';
 
 const ROOT = resolve(dirname(import.meta.path), '..', '..');
 const TICK_MS = 5_000;
@@ -135,8 +135,19 @@ ticker = setInterval(() => {
 discord.on(Events.MessageCreate, async (message: Message) => {
   if (message.author.bot || !discord.user) return;
   const g = byChannel.get(message.channelId);
-  if (!g || !message.mentions.users.has(discord.user.id)) return;
-  await g.onMessage(message, message.content.replace(/<@!?\d+>/g, '').trim());
+  if (!g) return;
+  const botRoleId = message.guild?.members.me?.roles.botRole?.id ?? null;
+  if (!mentionsBot(message.mentions.users.keys(), message.mentions.roles.keys(), discord.user.id, botRoleId)) return;
+  // Without the Message Content intent, Discord sends the text only when the message mentions
+  // the bot user. A mention of the bot role then arrives with no text at all.
+  if (message.content === '' && message.attachments.size === 0) {
+    await message.reply({
+      content: `I cannot read that message. Mention me as a user: type @${discord.user.username} and pick the entry with my picture, not the role.`,
+      allowedMentions: { parse: [], repliedUser: false },
+    }).catch(() => {});
+    return;
+  }
+  await g.onMessage(message, stripMentions(message.content));
 });
 
 discord.on(Events.InteractionCreate, async (interaction: Interaction) => {
