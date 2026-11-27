@@ -113,8 +113,9 @@ const MIGRATIONS: string[] = [
      json TEXT NOT NULL,
      PRIMARY KEY (guild, key)
    );`,
-  // How many times the bot restarted while the row was running. recoverAfterRestart() stops a row
-  // at MAX_RESTARTS, so a request that crashes the bot does not run again and again.
+  // How many times the bot restarted while the row was running, without a clean stop.
+  // recoverAfterRestart() stops a row at MAX_RESTARTS, so a request that crashes the bot does not
+  // run again and again. requeueAfterShutdown() keeps a clean stop out of the count.
   `ALTER TABLE instructions ADD COLUMN restarts INTEGER NOT NULL DEFAULT 0;`,
 ];
 
@@ -215,6 +216,13 @@ export function openDb(path: string, now: () => number = Date.now) {
     /** Stops one waiting instruction. Returns false when it is not waiting. */
     cancelWaiting(id: number): boolean {
       return db.query('UPDATE instructions SET status = \'stopped\', ended_at = ?, summary = \'Removed from the queue.\' WHERE id = ? AND status = \'waiting\'').run(now(), id).changes === 1;
+    },
+    /**
+     * A clean stop cut this instruction: it goes back to waiting now, so the restart does not
+     * count toward MAX_RESTARTS. Returns false when the row is not running.
+     */
+    requeueAfterShutdown(id: number): boolean {
+      return db.query('UPDATE instructions SET status = \'waiting\', started_at = NULL WHERE id = ? AND status = \'running\'').run(id).changes === 1;
     },
     /**
      * After a restart no instruction runs. Each running row goes back to waiting, and returns the

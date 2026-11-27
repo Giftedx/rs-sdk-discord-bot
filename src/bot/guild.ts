@@ -328,10 +328,14 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       script = null;
       if (editTimer) clearTimeout(editTimer);
       log(`instruction ${row.id} ended: ${result.stopReason}, ${result.turns} turns, $${result.usd.toFixed(3)}${result.escalated ? `, escalated to ${result.model}` : ''}`);
-      // The bot stops: the row stays 'running', so recoverAfterRestart() queues it again at the next
-      // start. No Done edit and no receipt event.
+      // The bot stops: the row goes back to waiting, and runs again at the next start. A clean stop
+      // does not count as a crash restart. No Done edit and no receipt event.
       // Only when the shutdown really cut the loop: a request that ended by itself must not run twice.
-      if (abort.signal.reason === 'shutdown' && result.stopReason === 'aborted') { log(`instruction ${row.id} runs again after the restart`); return; }
+      if (abort.signal.reason === 'shutdown' && result.stopReason === 'aborted') {
+        try { db.requeueAfterShutdown(row.id); } catch { /* the row stays running: recovery requeues it */ }
+        log(`instruction ${row.id} runs again after the restart`);
+        return;
+      }
       db.finishInstruction(row.id, result.stopReason === 'aborted' ? 'stopped' : 'done', result.summary.slice(0, 2_000), result.usd);
 
       const endState = (() => { const s = freshState(); return s ? eventState(s) : null; })();

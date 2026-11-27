@@ -123,6 +123,18 @@ describe('orchestrator db', () => {
     expect(db.getInstruction(a)!.summary).toContain('restarted');
   });
 
+  test('a clean stop requeues the row and does not count as a restart', () => {
+    const db = openDb(':memory:');
+    const a = db.enqueueInstruction('g1', 'alice', 'one');
+    for (let i = 0; i < 5; i++) {
+      expect(db.startInstruction(a)).toBe(true);
+      expect(db.requeueAfterShutdown(a)).toBe(true);
+      expect(db.recoverAfterRestart()).toBe(0);
+      expect(db.getInstruction(a)!.status).toBe('waiting');
+    }
+    expect(db.requeueAfterShutdown(a)).toBe(false);
+  });
+
   test('finishInstruction does not change a row that already ended', () => {
     const db = openDb(':memory:');
     const a = db.enqueueInstruction('g1', 'alice', 'one');
