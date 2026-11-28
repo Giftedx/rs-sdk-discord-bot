@@ -40,17 +40,28 @@ export function createKeyedLock() {
 export type AdmitResult = { ok: true; text: string } | { ok: false; reason: 'full' | 'cooldown' | 'empty' | 'too_long' };
 
 // The checks of a new instruction. The queue itself is in the database.
-export function createAdmission(opts: { max: number; userCooldownMs: number; now?: () => number }) {
+export function createAdmission(opts: { max: number; userCooldownMs: number; now?: () => number; maxTrackedUsers?: number }) {
   const now = opts.now ?? Date.now;
+  const maxTracked = opts.maxTrackedUsers ?? 4_096;
   const lastByUser = new Map<string, number>();
   return (userId: string, text: string, waiting: number): AdmitResult => {
     const t = text.trim();
     if (t === '') return { ok: false, reason: 'empty' };
     if (t.length > MAX_INSTRUCTION_CHARS) return { ok: false, reason: 'too_long' };
+    const ts = now();
     const last = lastByUser.get(userId);
-    if (last !== undefined && now() - last < opts.userCooldownMs) return { ok: false, reason: 'cooldown' };
+    if (last !== undefined && ts - last < opts.userCooldownMs) return { ok: false, reason: 'cooldown' };
     if (waiting >= opts.max) return { ok: false, reason: 'full' };
-    lastByUser.set(userId, now());
+    // Prune expired cooldown entries once the map grows so unique callers cannot accumulate forever.
+    if (lastByUser.size >= 256) {
+      const cutoff = ts - opts.userCooldownMs;
+      for (const [k, at] of lastByUser) {
+        if (at <= cutoff) lastByUser.delete(k);
+      }
+    }
+    lastByUser.delete(userId);
+    lastByUser.set(userId, ts);
+    while (lastByUser.size > maxTracked) lastByUser.delete(lastByUser.keys().next().value as string);
     return { ok: true, text: t };
   };
 }
@@ -345,14 +356,27 @@ export function stripMentions(content: string): string {
 }
 
 // At most `max` events per key in a sliding window.
-export function createRateLimit(max: number, windowMs: number, now: () => number = Date.now) {
+export function createRateLimit(max: number, windowMs: number, now: () => number = Date.now, maxTrackedKeys = 4_096) {
   const seen = new Map<string, number[]>();
   return (key: string): boolean => {
     const t = now();
-    const list = (seen.get(key) ?? []).filter(x => x > t - windowMs);
-    if (list.length >= max) { seen.set(key, list); return false; }
+    const cutoff = t - windowMs;
+    if (seen.size >= 256) {
+      for (const [k, times] of seen) {
+        if (times.length === 0 || times[times.length - 1]! <= cutoff) seen.delete(k);
+      }
+    }
+    const prev = seen.get(key);
+    const list = prev ? prev.filter(x => x > cutoff) : [];
+    if (list.length >= max) {
+      seen.delete(key);
+      seen.set(key, list);
+      return false;
+    }
     list.push(t);
+    seen.delete(key);
     seen.set(key, list);
+    while (seen.size > maxTrackedKeys) seen.delete(seen.keys().next().value as string);
     return true;
   };
 }

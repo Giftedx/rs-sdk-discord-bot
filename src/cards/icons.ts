@@ -102,7 +102,7 @@ export class IconCache {
       if (!type.startsWith('image/png')) return this.fail(id);
       const bytes = new Uint8Array(await res.arrayBuffer());
       if (bytes.length > this.maxBytes || !isPng(bytes)) return this.fail(id);
-      const url = `data:image/png;base64,${Buffer.from(bytes).toString('base64')}`;
+      const url = `data:image/png;base64,${Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')}`;
       this.failedAt.delete(id);
       this.hits.set(id, url);
       while (this.hits.size > this.maxEntries) this.hits.delete(this.hits.keys().next().value!);
@@ -115,7 +115,16 @@ export class IconCache {
   }
 
   private fail(id: number): null {
-    this.failedAt.set(id, this.now());
+    const now = this.now();
+    if (this.failedAt.size >= this.maxEntries) {
+      const cutoff = now - this.retryAfterMs;
+      for (const [k, at] of this.failedAt) {
+        if (at <= cutoff) this.failedAt.delete(k);
+      }
+    }
+    this.failedAt.delete(id);
+    this.failedAt.set(id, now);
+    while (this.failedAt.size > this.maxEntries) this.failedAt.delete(this.failedAt.keys().next().value!);
     return null;
   }
 }

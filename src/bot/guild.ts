@@ -63,6 +63,7 @@ const SNAPSHOT_MS = 30_000;
 // The loop checks its time limit before each turn. This backstop stops a model call that hangs.
 const TIME_CAP_GRACE_MS = 5 * 60_000;
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const asBuffer = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 // stop() waits this long for the running instruction and its job.
 const STOP_WAIT_MS = 8_000;
 // The waits between the tries to fetch the channel at start: 5 tries in about 1 min.
@@ -351,9 +352,11 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       const view = shot && isCardFrame(shot) ? shot : null;
       lastReceiptFrame = view;
       const receiptPng = cfg.cards ? await draw({ kind: 'instruction_done', instruction: row.text, outcome: result.summary }, view).catch(err => { log(`receipt card not drawn: ${errText(err)}`); return null; }) : null;
-      if (receiptPng) files.push(new AttachmentBuilder(Buffer.from(receiptPng), { name: 'receipt.png' }));
+      // Release the receipt PNG once drawn so idle guilds do not retain a full-res frame in RAM.
+      lastReceiptFrame = null;
+      if (receiptPng) files.push(new AttachmentBuilder(asBuffer(receiptPng), { name: 'receipt.png' }));
       const png = receiptPng && view ? null : shot;
-      if (png) files.push(new AttachmentBuilder(Buffer.from(png), { name: 'frame.png' }));
+      if (png) files.push(new AttachmentBuilder(asBuffer(png), { name: 'frame.png' }));
       // A show request ("show bank") also gets the card that it asks for, drawn from the state that
       // the instruction just saw.
       const showKind = cfg.cards && wake === 'instruction' && ended === 'done' ? showCardKind(row.text) : null;
@@ -361,7 +364,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       if (showKind && !shown) log(`${showKind} card: no data to draw`);
       if (shown) {
         const card = await link.drawCard(shown.req.kind, shown.req.data as never).catch(err => { log(`${shown.req.kind} card not drawn: ${errText(err)}`); return null; });
-        if (card) files.push(new AttachmentBuilder(Buffer.from(card), { name: `${shown.req.kind}.png` }));
+        if (card) files.push(new AttachmentBuilder(asBuffer(card), { name: `${shown.req.kind}.png` }));
       }
       frames.stop();
       const b = budget.status();
@@ -384,6 +387,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
       script = null;
       current = null;
       step = null;
+      lastReceiptFrame = null;
       if (!stopping) {
         void card?.instructionEnded();
         runNext();
@@ -641,7 +645,7 @@ export async function startGuild(sh: Shared, g: GuildConfig) {
           answerQuestion(author, text, history, info?.facts.slice(0, 6_000) ?? ''),
           info ? link.drawCard(info.req.kind, info.req.data as never).catch(err => { log(`${info.req.kind} card not drawn: ${errText(err)}`); return null; }) : Promise.resolve(null),
         ]);
-        await reply(answer, png ? [new AttachmentBuilder(Buffer.from(png), { name: `${info!.req.kind}.png` })] : []);
+        await reply(answer, png ? [new AttachmentBuilder(asBuffer(png), { name: `${info!.req.kind}.png` })] : []);
         return;
       }
       const ok = admit(message.author.id, text, db.countWaiting(g.name));

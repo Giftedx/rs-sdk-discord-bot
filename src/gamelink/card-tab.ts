@@ -75,7 +75,9 @@ export async function openCardTab(browser: Browser, opts: CardTabOptions = {}): 
     const iconMap = await icons.getMany(cardIconIds(kind, data));
     const { width, height: maxHeight } = CARD_SIZES[kind];
     await page.setViewport({ width, height: maxHeight, deviceScaleFactor: CARD_DEVICE_SCALE });
-    const view = frame && kind === 'instruction_receipt' ? `data:image/png;base64,${Buffer.from(frame).toString('base64')}` : null;
+    const view = frame && kind === 'instruction_receipt'
+      ? `data:image/png;base64,${Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength).toString('base64')}`
+      : null;
     const content = await page.evaluate(
       (k, d, i, v) => (window as unknown as { renderCard(k: string, d: unknown, i: unknown, v: string | null): Promise<number> }).renderCard(k, d, i, v),
       kind,
@@ -86,7 +88,7 @@ export async function openCardTab(browser: Browser, opts: CardTabOptions = {}): 
     // The picture is as high as the card content, between the minimum and the largest height.
     const height = cardHeight(content, maxHeight);
     const png = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width, height }, omitBackground: false });
-    return new Uint8Array(png);
+    return new Uint8Array(png.buffer, png.byteOffset, png.byteLength);
   }
 
   function withTimeout<T>(p: Promise<T>): Promise<T> {

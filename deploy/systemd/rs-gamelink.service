@@ -30,7 +30,7 @@ UMask=0007
 WorkingDirectory=/opt/rs-discord-bot
 Environment=GAMELINK_SOCKET=/run/rs-gamelink/gamelink.sock
 Environment=GAMELINK_TOKEN_FILE=/etc/rs-gamelink/token
-ExecStart=/bin/bash -c 'set -a; . /etc/rs-gamelink/account.env; if [ -r /opt/rs-discord-bot/server.env ]; then . /opt/rs-discord-bot/server.env; fi; if [ -r /etc/rs-gamelink/gamelink.env ]; then . /etc/rs-gamelink/gamelink.env; fi; set +a; exec /usr/local/bin/bun --no-env-file src/gamelink/main.ts'
+ExecStart=/bin/bash -c 'set -a; . /etc/rs-gamelink/account.env; if [ -r /opt/rs-discord-bot/server.env ]; then . /opt/rs-discord-bot/server.env; fi; if [ -r /etc/rs-gamelink/gamelink.env ]; then . /etc/rs-gamelink/gamelink.env; fi; set +a; exec /usr/local/bin/bun --smol --no-env-file src/gamelink/main.ts'
 Restart=on-failure
 # More than 10 s, so that a new login does not follow the old session at once.
 RestartSec=30

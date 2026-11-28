@@ -138,7 +138,6 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
   let lastError: string | null = null;
   let attempts = 0;
   let lastConnected: string | null = null;   // last upstream sdk_connected, as received
-  let lastInfo: string | null = null;        // last upstream sdk_info, as received
   let box: ServerWebSocket<BoxData> | null = null;
   const inFlightMaxAgeMs = opts.inFlightMaxAgeMs ?? 120_000;
   const inFlight = new Map<string, number>();   // action key -> time sent
@@ -248,7 +247,6 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
         return;
       }
       if (!RELAYED_TYPES.has(msg.type as string)) return;
-      if (msg.type === 'sdk_info') lastInfo = text;
       if (msg.type === 'sdk_action_result' && inFlight.delete(actionKey(msg.actionId))) notifyIdle();
       if (msg.type === 'sdk_state' && opts.onState) {
         try { opts.onState(msg.state, now()); } catch { /* a failing tap must not stop the relay */ }

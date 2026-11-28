@@ -38,9 +38,9 @@ export const BOX_ENV_NAMES = ['BOT_USERNAME', 'PASSWORD', 'GATEWAY_URL', 'SHOW_C
 
 // The command of a job child. With a box user, sudo keeps only the listed variables.
 export function jobCommand(opts: Pick<JobRunnerOptions, 'boxUser' | 'bunPath' | 'sudoPath'>, file: string): string[] {
-  if (!opts.boxUser) return [opts.bunPath ?? process.execPath, '--no-env-file', file];
+  if (!opts.boxUser) return [opts.bunPath ?? process.execPath, '--smol', '--no-env-file', file];
   return [opts.sudoPath ?? '/usr/bin/sudo', '-n', '-u', opts.boxUser, `--preserve-env=${BOX_ENV_NAMES.join(',')}`, '--',
-    opts.bunPath ?? '/usr/local/bin/bun', '--no-env-file', file];
+    opts.bunPath ?? '/usr/local/bin/bun', '--smol', '--no-env-file', file];
 }
 
 export function boxKillCommand(opts: Pick<JobRunnerOptions, 'boxUser' | 'sudoPath' | 'pkillPath'>): string[] | null {

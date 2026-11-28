@@ -12,6 +12,7 @@ import { errText, type Handle, type Logger, type Timers } from './types';
 export const MILESTONE_LEVELS: readonly number[] = [10, 25, 50, 75, 90, 99];
 export const DEFAULT_MAX_PER_HOUR = 4;
 export const DEFAULT_MERGE_WINDOW_SEC = 60;
+export const MAX_IN_MEMORY_EVENTS = 10_000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -226,7 +227,13 @@ export class MainPosts {
   record(e: GameEvent): void {
     const now = this.o.timers.now();
     this.events.push({ at: now, e });
-    this.events = this.events.filter((x) => x.at > now - DAY);
+    const cutoff = now - DAY;
+    let drop = 0;
+    while (drop < this.events.length && this.events[drop]!.at <= cutoff) drop++;
+    if (this.events.length - drop > MAX_IN_MEMORY_EVENTS) {
+      drop = this.events.length - MAX_IN_MEMORY_EVENTS;
+    }
+    if (drop > 0) this.events.splice(0, drop);
   }
 
   recap(): Recap {

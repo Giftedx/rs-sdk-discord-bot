@@ -4,7 +4,7 @@
 // in the gamelink process (src/gamelink/main.ts) and this process holds no game password.
 // Start: bun src/bot/main.ts (docs/running-the-bot.md).
 import Anthropic from '@anthropic-ai/sdk';
-import { Client, Events, GatewayIntentBits, Partials, type Interaction, type Message } from 'discord.js';
+import { Client, Events, type Interaction, type Message } from 'discord.js';
 import { chmodSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createKnowledgePack } from '../agent/store';
@@ -15,6 +15,7 @@ import { openLocalGameLink, readTokenFile, type GameLink } from '../gamelink/lin
 import { openDb } from '../orchestrator/db';
 import { createWakeScheduler } from '../orchestrator/wakes';
 import { redactNames, sanitizeForDiscord } from '../shared/sanitize';
+import { discordClientOptions } from './client-options';
 import { loadBotConfig } from './config';
 import { startGuild, type Guild } from './guild';
 import { createKeyedLock, mentionsBot, retryUntil, stripMentions, takeRevisionFlag } from './helpers';
@@ -84,14 +85,7 @@ const guilds: Guild[] = [];
 let shuttingDown = false;
 let ticker: ReturnType<typeof setInterval> | null = null;
 
-const makeClient = (content: boolean) => new Client({
-  intents: [
-    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions,
-    ...(content ? [GatewayIntentBits.MessageContent] : []),
-  ],
-  // Reactions on messages from before the start arrive as partials (queue votes).
-  partials: [Partials.Message, Partials.Reaction, Partials.User],
-});
+const makeClient = (content: boolean) => new Client(discordClientOptions(content));
 let discord = makeClient(cfg.readAll);
 
 async function shutdown(code: number) {

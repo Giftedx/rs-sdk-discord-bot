@@ -23,7 +23,7 @@ StartLimitBurst=3
 Type=simple
 User=rsbot
 WorkingDirectory=/opt/rs-discord-bot
-ExecStart=/bin/bash -c 'set -a; if [ -r secrets/account.env ]; then . secrets/account.env; fi; . secrets/bot.env; . server.env; set +a; exec /home/rsbot/.bun/bin/bun --no-env-file src/bot/main.ts'
+ExecStart=/bin/bash -c 'set -a; if [ -r secrets/account.env ]; then . secrets/account.env; fi; . secrets/bot.env; . server.env; set +a; exec /home/rsbot/.bun/bin/bun --smol --no-env-file src/bot/main.ts'
 Restart=on-failure
 # More than 10 s, so that a new login does not follow the old session at once.
 RestartSec=30

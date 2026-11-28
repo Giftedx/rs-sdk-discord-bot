@@ -290,21 +290,22 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
     try {
       dataUrl = await page.evaluate((m: FrameMode, p: { x: number; y: number; w: number; h: number }) => {
         const src = document.getElementById('canvas') as HTMLCanvasElement;
-        const out = document.createElement('canvas');
+        const win = window as unknown as { __rsBotCaptureCanvas?: HTMLCanvasElement };
+        const out = win.__rsBotCaptureCanvas ?? (win.__rsBotCaptureCanvas = document.createElement('canvas'));
+        const targetW = m === 'portrait' ? p.w * 2 : m === 'view' ? 1024 : src.width;
+        const targetH = m === 'portrait' ? p.h * 2 : m === 'view' ? 668 : src.height;
+        if (out.width !== targetW || out.height !== targetH) {
+          out.width = targetW;
+          out.height = targetH;
+        }
         const ctx = out.getContext('2d')!;
         if (m === 'portrait') {
-          out.width = p.w * 2;
-          out.height = p.h * 2;
           ctx.imageSmoothingEnabled = false;
-          ctx.drawImage(src, p.x, p.y, p.w, p.h, 0, 0, p.w * 2, p.h * 2);
+          ctx.drawImage(src, p.x, p.y, p.w, p.h, 0, 0, targetW, targetH);
         } else if (m === 'view') {
-          out.width = 1024;
-          out.height = 668;
           ctx.imageSmoothingEnabled = false;
-          ctx.drawImage(src, 4, 4, 512, 334, 0, 0, 1024, 668);
+          ctx.drawImage(src, 4, 4, 512, 334, 0, 0, targetW, targetH);
         } else {
-          out.width = src.width;
-          out.height = src.height;
           ctx.drawImage(src, 0, 0);
         }
         return out.toDataURL('image/png');
@@ -312,6 +313,7 @@ export async function openGameTab(opts: GameTabOptions): Promise<GameTab> {
     } catch {
       throw new TabNotReadyError('The page changed or closed while the frame was read.');
     }
-    return new Uint8Array(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
+    const buf = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
 }

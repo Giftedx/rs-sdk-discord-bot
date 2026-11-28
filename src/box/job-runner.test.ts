@@ -40,11 +40,11 @@ describe('job runner helpers', () => {
   });
 
   test('jobCommand with a box user uses sudo and keeps the token out of argv', () => {
-    expect(jobCommand({}, '/j.ts')).toEqual([process.execPath, '--no-env-file', '/j.ts']);
+    expect(jobCommand({}, '/j.ts')).toEqual([process.execPath, '--smol', '--no-env-file', '/j.ts']);
     const cmd = jobCommand({ boxUser: 'rsbox' }, '/j.ts');
     expect(cmd.slice(0, 4)).toEqual(['/usr/bin/sudo', '-n', '-u', 'rsbox']);
     expect(cmd[4]).toStartWith('--preserve-env=BOT_USERNAME,PASSWORD,GATEWAY_URL');
-    expect(cmd.slice(-3)).toEqual(['/usr/local/bin/bun', '--no-env-file', '/j.ts']);
+    expect(cmd.slice(-4)).toEqual(['/usr/local/bin/bun', '--smol', '--no-env-file', '/j.ts']);
     expect(boxKillCommand({})).toBeNull();
     expect(boxKillCommand({ boxUser: 'rsbox' })).toEqual(['/usr/bin/sudo', '-n', '-u', 'rsbox', '--', '/usr/bin/pkill', '-KILL', '-u', 'rsbox']);
   });
